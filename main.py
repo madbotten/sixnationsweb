@@ -17,6 +17,466 @@ from champions import Champion
 
 
 
+def draw_left_power_statistics_panel(screen, selected_power, left_panel_rect, map_grid, assigned_power, mouse_x, mouse_y):
+    """
+    Renders the statistics HUD panel for the selected Power unit on the left.
+    """
+    # Draw panel background glass overlay
+    pygame.draw.rect(screen, settings.COLOR_HUD_BG, left_panel_rect)
+    
+    # Determine glow color matching alignment
+    glow_color = (189, 0, 255) # default purple
+    parts = selected_power.get_alignment_parts()
+    if parts:
+        moral = parts[1]
+        if "good" in moral:
+            glow_color = settings.COLOR_NEON_CYAN
+        elif "evil" in moral:
+            glow_color = settings.COLOR_NEON_PINK
+        elif "neutral" in moral:
+            glow_color = settings.COLOR_NEON_GREEN
+            
+    pygame.draw.rect(screen, glow_color, left_panel_rect, width=1) # Neon border
+    
+    try:
+        # Fonts
+        font_hud = pygame.font.SysFont("Courier", 22, bold=True)
+        font_label = pygame.font.SysFont("Courier", 14, bold=True)
+        font_value = pygame.font.SysFont("Courier", 16)
+        font_title_bold = pygame.font.SysFont("Courier", 26, bold=True)
+        
+        # Power Image Card Container
+        img_rect = pygame.Rect(110, 50, 180, 180)
+        pygame.draw.rect(screen, settings.COLOR_BACKGROUND, img_rect, border_radius=15)
+        pygame.draw.rect(screen, glow_color, img_rect, width=3, border_radius=15)
+        
+        # Power square surface scaling
+        power_surf = selected_power.get_surface(size=(174, 174), mask_type="square")
+        screen.blit(power_surf, (113, 53))
+        
+        # Power Name
+        name_text = selected_power.name.upper()
+        name_surf = font_title_bold.render(name_text, True, settings.COLOR_TEXT_PRIMARY)
+        name_rect = name_surf.get_rect(center=(200, 270))
+        screen.blit(name_surf, name_rect)
+        
+        # Statistics rows
+        start_y = 320
+        row_h = 75
+        
+        # Location Row
+        loc_rect = pygame.Rect(30, start_y, 340, 60)
+        pygame.draw.rect(screen, (20, 24, 33), loc_rect, border_radius=8)
+        pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, loc_rect, width=1, border_radius=8)
+        
+        lbl_loc = font_label.render("LOCATION", True, settings.COLOR_NEON_CYAN)
+        screen.blit(lbl_loc, (45, start_y + 10))
+        
+        tile = map_grid.get_tile(selected_power.q, selected_power.r)
+        formatted_loc = util.format_location_name(tile.terrain_type) if tile else "Empty Space"
+        val_loc = font_value.render(formatted_loc, True, settings.COLOR_TEXT_PRIMARY)
+        screen.blit(val_loc, (45, start_y + 30))
+        
+        # Strength Row
+        str_rect = pygame.Rect(30, start_y + row_h, 340, 60)
+        pygame.draw.rect(screen, (20, 24, 33), str_rect, border_radius=8)
+        pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, str_rect, width=1, border_radius=8)
+        
+        lbl_str = font_label.render("STRENGTH", True, settings.COLOR_NEON_CYAN)
+        screen.blit(lbl_str, (45, start_y + row_h + 10))
+        
+        val_str = font_value.render(str(selected_power.strength), True, settings.COLOR_TEXT_PRIMARY)
+        screen.blit(val_str, (45, start_y + row_h + 30))
+        
+        # Futuristic horizontal progress bar for strength
+        max_str = 15
+        bar_w = 200
+        bar_h = 10
+        bx = 150
+        by = start_y + row_h + 33
+        pygame.draw.rect(screen, (40, 45, 55), (bx, by, bar_w, bar_h), border_radius=5)
+        
+        fill_w = int(bar_w * min(1.0, selected_power.strength / max_str))
+        pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, (bx, by, fill_w, bar_h), border_radius=5)
+        
+        # Alignment Row
+        align_rect = pygame.Rect(30, start_y + 2 * row_h, 340, 60)
+        pygame.draw.rect(screen, (20, 24, 33), align_rect, border_radius=8)
+        pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, align_rect, width=1, border_radius=8)
+        
+        lbl_align = font_label.render("ALIGNMENT", True, settings.COLOR_NEON_CYAN)
+        screen.blit(lbl_align, (45, start_y + 2 * row_h + 10))
+        
+        align_parts = selected_power.get_alignment_parts()
+        align_str = " ".join([p.capitalize() for p in align_parts]) if align_parts else "Unaligned"
+        val_align = font_value.render(align_str, True, glow_color)
+        screen.blit(val_align, (45, start_y + 2 * row_h + 30))
+        
+        # Unique Ability Button (above Move Button)
+        unique_ability_name = selected_power.unique_ability.upper()
+        unique_btn_rect = pygame.Rect(30, 660, 340, 45)
+        is_hover_unique = unique_btn_rect.collidepoint(mouse_x, mouse_y)
+        unique_fill = (40, 45, 55) if is_hover_unique else (25, 29, 38)
+        # Unique ability border glows with the unit's alignment color on hover
+        unique_border = glow_color if is_hover_unique else settings.COLOR_TEXT_MUTED
+        
+        pygame.draw.rect(screen, unique_fill, unique_btn_rect, border_radius=10)
+        pygame.draw.rect(screen, unique_border, unique_btn_rect, width=2, border_radius=10)
+        
+        lbl_unique = font_hud.render(unique_ability_name, True, settings.COLOR_TEXT_PRIMARY if is_hover_unique else settings.COLOR_TEXT_MUTED)
+        lbl_unique_rect = lbl_unique.get_rect(center=unique_btn_rect.center)
+        screen.blit(lbl_unique, lbl_unique_rect)
+ 
+        is_assigned = selected_power is not None and assigned_power is not None and selected_power.name.lower() == assigned_power.name.lower() and selected_power.hex_location == assigned_power.hex_location
+ 
+        # Move Button (above Close Button) - Only if selected power is the assigned power
+        if is_assigned:
+            move_btn_rect = pygame.Rect(30, 730, 340, 45)
+            is_hover_move = move_btn_rect.collidepoint(mouse_x, mouse_y)
+            move_fill = (40, 45, 55) if is_hover_move else (25, 29, 38)
+            move_border = settings.COLOR_NEON_CYAN if is_hover_move else settings.COLOR_TEXT_MUTED
+            
+            pygame.draw.rect(screen, move_fill, move_btn_rect, border_radius=10)
+            pygame.draw.rect(screen, move_border, move_btn_rect, width=2, border_radius=10)
+            
+            lbl_move = font_hud.render("MOVE", True, settings.COLOR_TEXT_PRIMARY if is_hover_move else settings.COLOR_TEXT_MUTED)
+            lbl_move_rect = lbl_move.get_rect(center=move_btn_rect.center)
+            screen.blit(lbl_move, lbl_move_rect)
+ 
+        # Summon Champion Button - Only if assigned and not Void
+        if is_assigned and selected_power.name.lower() != "void":
+            summon_btn_rect = pygame.Rect(30, 800, 340, 45)
+            is_hover_summon = summon_btn_rect.collidepoint(mouse_x, mouse_y)
+            summon_fill = (40, 45, 55) if is_hover_summon else (25, 29, 38)
+            summon_border = settings.COLOR_NEON_CYAN if is_hover_summon else settings.COLOR_TEXT_MUTED
+            
+            pygame.draw.rect(screen, summon_fill, summon_btn_rect, border_radius=10)
+            pygame.draw.rect(screen, summon_border, summon_btn_rect, width=2, border_radius=10)
+            
+            lbl_summon = font_hud.render("SUMMON CHAMPION", True, settings.COLOR_TEXT_PRIMARY if is_hover_summon else settings.COLOR_TEXT_MUTED)
+            lbl_summon_rect = lbl_summon.get_rect(center=summon_btn_rect.center)
+            screen.blit(lbl_summon, lbl_summon_rect)
+        
+        # Close Button at bottom
+        close_btn_rect = pygame.Rect(30, 870, 340, 45)
+        is_hover_close = close_btn_rect.collidepoint(mouse_x, mouse_y)
+        btn_fill = (40, 45, 55) if is_hover_close else (25, 29, 38)
+        btn_border = settings.COLOR_NEON_CYAN if is_hover_close else settings.COLOR_TEXT_MUTED
+        
+        pygame.draw.rect(screen, btn_fill, close_btn_rect, border_radius=10)
+        pygame.draw.rect(screen, btn_border, close_btn_rect, width=2, border_radius=10)
+        
+        lbl_close = font_hud.render("CLOSE PROFILE", True, settings.COLOR_TEXT_PRIMARY if is_hover_close else settings.COLOR_TEXT_MUTED)
+        lbl_close_rect = lbl_close.get_rect(center=close_btn_rect.center)
+        screen.blit(lbl_close, lbl_close_rect)
+        
+    except Exception as e:
+        print(f"[Render Error] Failed to draw power stats: {e}")
+
+
+def draw_left_champion_statistics_panel(screen, selected_champion, left_panel_rect, map_grid, mouse_x, mouse_y):
+    """
+    Renders the statistics HUD panel for the selected Champion unit on the left.
+    """
+    # Draw panel background glass overlay
+    pygame.draw.rect(screen, settings.COLOR_HUD_BG, left_panel_rect)
+    
+    # Determine glow color matching alignment
+    glow_color = (189, 0, 255) # default purple
+    opt = selected_champion.alignment.lower()
+    if opt == "good":
+        glow_color = settings.COLOR_NEON_CYAN
+    elif opt == "evil":
+        glow_color = settings.COLOR_NEON_PINK
+    elif opt == "neutral":
+        glow_color = settings.COLOR_NEON_GREEN
+    elif opt == "lawful":
+        glow_color = (0, 100, 255)
+    elif opt == "chaotic":
+        glow_color = (255, 128, 0)
+            
+    pygame.draw.rect(screen, glow_color, left_panel_rect, width=1) # Neon border
+    
+    try:
+        # Fonts
+        font_hud = pygame.font.SysFont("Courier", 22, bold=True)
+        font_label = pygame.font.SysFont("Courier", 14, bold=True)
+        font_value = pygame.font.SysFont("Courier", 16)
+        font_title_bold = pygame.font.SysFont("Courier", 22, bold=True)
+        
+        # Champion Image Card Container
+        img_rect = pygame.Rect(110, 50, 180, 180)
+        pygame.draw.rect(screen, settings.COLOR_BACKGROUND, img_rect, border_radius=15)
+        pygame.draw.rect(screen, glow_color, img_rect, width=3, border_radius=15)
+        
+        # Champion square surface scaling
+        champ_surf = selected_champion.get_surface(size=(174, 174), mask_type="square")
+        screen.blit(champ_surf, (113, 53))
+        
+        # Champion Title
+        name_text = selected_champion.name.upper()
+        name_surf = font_title_bold.render(name_text, True, settings.COLOR_TEXT_PRIMARY)
+        name_rect = name_surf.get_rect(center=(200, 270))
+        screen.blit(name_surf, name_rect)
+        
+        # Statistics rows
+        start_y = 320
+        row_h = 75
+        
+        # Location Row
+        loc_rect = pygame.Rect(30, start_y, 340, 60)
+        pygame.draw.rect(screen, (20, 24, 33), loc_rect, border_radius=8)
+        pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, loc_rect, width=1, border_radius=8)
+        
+        lbl_loc = font_label.render("LOCATION", True, settings.COLOR_NEON_CYAN)
+        screen.blit(lbl_loc, (45, start_y + 10))
+        
+        tile = map_grid.get_tile(selected_champion.q, selected_champion.r)
+        formatted_loc = util.format_location_name(tile.terrain_type) if tile else "Empty Space"
+        val_loc = font_value.render(formatted_loc, True, settings.COLOR_TEXT_PRIMARY)
+        screen.blit(val_loc, (45, start_y + 30))
+        
+        # Strength Row
+        str_rect = pygame.Rect(30, start_y + row_h, 340, 60)
+        pygame.draw.rect(screen, (20, 24, 33), str_rect, border_radius=8)
+        pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, str_rect, width=1, border_radius=8)
+        
+        lbl_str = font_label.render("STRENGTH", True, settings.COLOR_NEON_CYAN)
+        screen.blit(lbl_str, (45, start_y + row_h + 10))
+        
+        val_str = font_value.render(str(selected_champion.strength), True, settings.COLOR_TEXT_PRIMARY)
+        screen.blit(val_str, (45, start_y + row_h + 30))
+        
+        # Horizontal progress bar for strength
+        max_str = 15
+        bar_w = 200
+        bar_h = 10
+        bx = 150
+        by = start_y + row_h + 33
+        pygame.draw.rect(screen, (40, 45, 55), (bx, by, bar_w, bar_h), border_radius=5)
+        fill_w = int(bar_w * min(1.0, selected_champion.strength / max_str))
+        pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, (bx, by, fill_w, bar_h), border_radius=5)
+        
+        # Alignment Row
+        align_rect = pygame.Rect(30, start_y + 2 * row_h, 340, 60)
+        pygame.draw.rect(screen, (20, 24, 33), align_rect, border_radius=8)
+        pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, align_rect, width=1, border_radius=8)
+        
+        lbl_align = font_label.render("ALIGNMENT", True, settings.COLOR_NEON_CYAN)
+        screen.blit(lbl_align, (45, start_y + 2 * row_h + 10))
+        
+        val_align = font_value.render(selected_champion.alignment.capitalize(), True, glow_color)
+        screen.blit(val_align, (45, start_y + 2 * row_h + 30))
+        
+        # Close Button at bottom (y = 800 since there are no moves/summon options)
+        close_btn_rect = pygame.Rect(30, 800, 340, 45)
+        is_hover_close = close_btn_rect.collidepoint(mouse_x, mouse_y)
+        btn_fill = (40, 45, 55) if is_hover_close else (25, 29, 38)
+        btn_border = settings.COLOR_NEON_CYAN if is_hover_close else settings.COLOR_TEXT_MUTED
+        
+        pygame.draw.rect(screen, btn_fill, close_btn_rect, border_radius=10)
+        pygame.draw.rect(screen, btn_border, close_btn_rect, width=2, border_radius=10)
+        
+        lbl_close = font_hud.render("CLOSE PROFILE", True, settings.COLOR_TEXT_PRIMARY if is_hover_close else settings.COLOR_TEXT_MUTED)
+        lbl_close_rect = lbl_close.get_rect(center=close_btn_rect.center)
+        screen.blit(lbl_close, lbl_close_rect)
+        
+    except Exception as e:
+        print(f"[Render Error] Failed to draw champion stats: {e}")
+
+
+def draw_mouseover_tooltip(screen, tooltip_to_draw, mouse_x, mouse_y):
+    """
+    Renders the mouseover tooltip on top of all UI overlays.
+    """
+    if tooltip_to_draw is None:
+        return
+        
+    hover_text, glow_color = tooltip_to_draw
+    try:
+        font_tooltip = pygame.font.SysFont("Courier", 12, bold=True)
+        txt_surf = font_tooltip.render(hover_text.upper(), True, settings.COLOR_TEXT_PRIMARY)
+        
+        tw = txt_surf.get_width() + 16
+        th = txt_surf.get_height() + 10
+        
+        tx = mouse_x + 15
+        ty = mouse_y + 15
+        
+        # Enforce boundary checking
+        if tx + tw > settings.SCREEN_WIDTH:
+            tx = mouse_x - tw - 5
+        if ty + th > settings.SCREEN_HEIGHT:
+            ty = mouse_y - th - 5
+            
+        tooltip_rect = pygame.Rect(tx, ty, tw, th)
+        
+        # Render using a semi-transparent surface for rich aesthetics
+        tooltip_surf = pygame.Surface((tw, th), pygame.SRCALPHA)
+        pygame.draw.rect(tooltip_surf, (20, 24, 33, 240), (0, 0, tw, th), border_radius=6)
+        pygame.draw.rect(tooltip_surf, glow_color, (0, 0, tw, th), width=1, border_radius=6)
+        
+        tooltip_surf.blit(txt_surf, (8, 5))
+        screen.blit(tooltip_surf, (tx, ty))
+    except Exception as e:
+        print(f"[Render Warning] Failed to draw tooltip: {e}")
+
+
+def draw_summoning_dialog_modal(screen, summoning_source_power, summoning_options, map_grid, mouse_x, mouse_y):
+    """
+    Renders the summoning alignment choice dialog modal popup.
+    """
+    # A. Draw semi-transparent full-screen dimming overlay
+    overlay = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.SRCALPHA)
+    overlay.fill((11, 14, 20, 200))  # Dark transparent overlay
+    screen.blit(overlay, (0, 0))
+    
+    # B. Draw Dialog Box container
+    dialog_rect = pygame.Rect(550, 325, 500, 350)
+    pygame.draw.rect(screen, (20, 24, 33), dialog_rect, border_radius=15)
+    pygame.draw.rect(screen, settings.COLOR_NEON_CYAN, dialog_rect, width=2, border_radius=15)
+    
+    try:
+        # Fonts
+        font_title = pygame.font.SysFont("Courier", 22, bold=True)
+        font_body = pygame.font.SysFont("Courier", 14)
+        font_btn = pygame.font.SysFont("Courier", 16, bold=True)
+        
+        # Title text
+        title_surf = font_title.render("SUMMON CHAMPION", True, settings.COLOR_NEON_CYAN)
+        title_rect = title_surf.get_rect(center=(800, 360))
+        screen.blit(title_surf, title_rect)
+        
+        # Instructions or status info
+        inst_text = f"Choose alignment to summon at ({summoning_source_power.q}, {summoning_source_power.r}):"
+        inst_surf = font_body.render(inst_text, True, settings.COLOR_TEXT_PRIMARY)
+        inst_rect = inst_surf.get_rect(center=(800, 395))
+        screen.blit(inst_surf, inst_rect)
+        
+        # Render options (maximum of 2, since a power has max 2 alignments)
+        if not summoning_options:
+            # No options available (both at limit 4)
+            none_surf = font_body.render("NO ALIGNMENTS AVAILABLE (LIMIT 4 REACHED)", True, settings.COLOR_NEON_PINK)
+            none_rect = none_surf.get_rect(center=(800, 465))
+            screen.blit(none_surf, none_rect)
+        else:
+            for idx, opt in enumerate(summoning_options):
+                btn_y = 410 + idx * 60
+                btn_rect = pygame.Rect(600, btn_y, 400, 45)
+                
+                is_hover = btn_rect.collidepoint(mouse_x, mouse_y)
+                btn_fill = (40, 45, 55) if is_hover else (25, 29, 38)
+                
+                # Set color based on alignment
+                glow_color = settings.COLOR_TEXT_MUTED
+                if opt == "good":
+                    glow_color = settings.COLOR_NEON_CYAN
+                elif opt == "evil":
+                    glow_color = settings.COLOR_NEON_PINK
+                elif opt == "neutral":
+                    glow_color = settings.COLOR_NEON_GREEN
+                elif opt == "lawful":
+                    glow_color = (0, 100, 255)
+                elif opt == "chaotic":
+                    glow_color = (255, 128, 0)
+                    
+                pygame.draw.rect(screen, btn_fill, btn_rect, border_radius=10)
+                pygame.draw.rect(screen, glow_color, btn_rect, width=2, border_radius=10)
+                
+                # Count of current champions
+                curr_count = map_grid.get_champion_count(opt)
+                label = f"SUMMON {opt.upper()} CHAMPION ({curr_count}/4)"
+                lbl_surf = font_btn.render(label, True, settings.COLOR_TEXT_PRIMARY if is_hover else glow_color)
+                lbl_rect = lbl_surf.get_rect(center=btn_rect.center)
+                screen.blit(lbl_surf, lbl_rect)
+                
+        # Draw Cancel Button at bottom
+        cancel_rect = pygame.Rect(600, 560, 400, 45)
+        is_hover_cancel = cancel_rect.collidepoint(mouse_x, mouse_y)
+        cancel_fill = (40, 45, 55) if is_hover_cancel else (25, 29, 38)
+        pygame.draw.rect(screen, cancel_fill, cancel_rect, border_radius=10)
+        pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, cancel_rect, width=2, border_radius=10)
+        
+        cancel_lbl = font_btn.render("CANCEL", True, settings.COLOR_TEXT_PRIMARY if is_hover_cancel else settings.COLOR_TEXT_MUTED)
+        cancel_lbl_rect = cancel_lbl.get_rect(center=cancel_rect.center)
+        screen.blit(cancel_lbl, cancel_lbl_rect)
+        
+    except Exception as e:
+        print(f"[Render Error] Failed to draw summoning modal: {e}")
+
+
+def draw_hud_status_card(screen, active_game_turn, assigned_power, bot_player_obj, moving_power, human_player_obj, mouse_x, mouse_y):
+    """
+    Renders the gameplay HUD status card at the top right, including Zoom buttons.
+    """
+    try:
+        font_title = pygame.font.SysFont("Courier", 18, bold=True)
+        font_body = pygame.font.SysFont("Courier", 12)
+        
+        hud_card = pygame.Surface((450, 80), pygame.SRCALPHA)
+        pygame.draw.rect(hud_card, settings.COLOR_HUD_BG, (0, 0, 450, 80), border_radius=10)
+        
+        if active_game_turn == 'bot':
+            pygame.draw.rect(hud_card, settings.COLOR_NEON_PURPLE, (0, 0, 450, 80), width=2, border_radius=10)
+            status_text = "BOT TURN: SELECTING MOVEMENT"
+            color_status = settings.COLOR_NEON_PURPLE
+            assigned_name = assigned_power.name.upper() if assigned_power else "NONE"
+            tip_text = f"Bot assigned: {assigned_name}. Alignment: {bot_player_obj.get_alignment_parts()}"
+            txt_scroll = font_body.render("Please wait for the bot's action.", True, settings.COLOR_TEXT_MUTED)
+        else:
+            if moving_power is not None:
+                pygame.draw.rect(hud_card, settings.COLOR_NEON_PINK, (0, 0, 450, 80), width=2, border_radius=10)
+                status_text = "PLAYER TURN: MOVE POWER"
+                color_status = settings.COLOR_NEON_PINK
+                tip_text = f"Click highlighted adjacent hex to move {moving_power.name}."
+                txt_scroll = font_body.render("Click Map: Move Power  |  ESC: Cancel", True, settings.COLOR_TEXT_MUTED)
+            else:
+                pygame.draw.rect(hud_card, settings.COLOR_NEON_GREEN, (0, 0, 450, 80), width=2, border_radius=10)
+                status_text = "PLAYER TURN: CHOOSE ACTION"
+                color_status = settings.COLOR_NEON_GREEN
+                assigned_name = assigned_power.name.upper() if assigned_power else "NONE"
+                tip_text = f"ASSIGNED UNIT: {assigned_name}. Player alignment: {human_player_obj.get_alignment_parts()}"
+                txt_scroll = font_body.render("WASD or Arrows: Camera Scroll  |  ESC: Deselect", True, settings.COLOR_TEXT_MUTED)
+            
+        txt_status = font_title.render(status_text, True, color_status)
+        txt_tip = font_body.render(tip_text, True, settings.COLOR_TEXT_PRIMARY)
+        
+        hud_card.blit(txt_status, (20, 12))
+        hud_card.blit(txt_tip, (20, 36))
+        hud_card.blit(txt_scroll, (20, 54))
+
+        # Zoom Out Button
+        zoom_out_rect = pygame.Rect(355, 10, 28, 28)
+        zoom_out_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 355, 20 + 10, 28, 28)
+        is_hover_out = zoom_out_global_rect.collidepoint(mouse_x, mouse_y)
+        out_fill = (40, 45, 55) if is_hover_out else (25, 29, 38)
+        out_border = settings.COLOR_NEON_CYAN if is_hover_out else settings.COLOR_TEXT_MUTED
+        pygame.draw.rect(hud_card, out_fill, zoom_out_rect, border_radius=6)
+        pygame.draw.rect(hud_card, out_border, zoom_out_rect, width=1, border_radius=6)
+        
+        font_zoom = pygame.font.SysFont("Courier", 18, bold=True)
+        txt_out = font_zoom.render("-", True, settings.COLOR_TEXT_PRIMARY if is_hover_out else settings.COLOR_TEXT_MUTED)
+        txt_out_rect = txt_out.get_rect(center=zoom_out_rect.center)
+        hud_card.blit(txt_out, txt_out_rect)
+
+        # Zoom In Button
+        zoom_in_rect = pygame.Rect(395, 10, 28, 28)
+        zoom_in_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 395, 20 + 10, 28, 28)
+        is_hover_in = zoom_in_global_rect.collidepoint(mouse_x, mouse_y)
+        in_fill = (40, 45, 55) if is_hover_in else (25, 29, 38)
+        in_border = settings.COLOR_NEON_CYAN if is_hover_in else settings.COLOR_TEXT_MUTED
+        pygame.draw.rect(hud_card, in_fill, zoom_in_rect, border_radius=6)
+        pygame.draw.rect(hud_card, in_border, zoom_in_rect, width=1, border_radius=6)
+        
+        txt_in = font_zoom.render("+", True, settings.COLOR_TEXT_PRIMARY if is_hover_in else settings.COLOR_TEXT_MUTED)
+        txt_in_rect = txt_in.get_rect(center=zoom_in_rect.center)
+        hud_card.blit(txt_in, txt_in_rect)
+
+        screen.blit(hud_card, (settings.SCREEN_WIDTH - 480, 20))
+    except Exception as e:
+        print(f"[Render Warning] Failed to draw gameplay HUD: {e}")
+
+
 def main():
     # 1. Initialize Pygame modules & Audio Mixer
     pygame.init()
@@ -353,7 +813,7 @@ def main():
             left_panel_rect = pygame.Rect(0, 0, 0, 0)
             map_viewport_rect = pygame.Rect(0, 0, settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT)
 
-        # --- B. Event Processing ---
+        # --- B. Main Game Event Processing ---
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -618,444 +1078,21 @@ def main():
 
         # 2. Render Left Statistics Panel (Only if Power is selected)
         if selected_power is not None:
-            # Draw panel background glass overlay
-            pygame.draw.rect(screen, settings.COLOR_HUD_BG, left_panel_rect)
+            draw_left_power_statistics_panel(screen, selected_power, left_panel_rect, map_grid, assigned_power, mouse_x, mouse_y)
             
-            # Determine glow color matching alignment
-            glow_color = (189, 0, 255) # default purple
-            parts = selected_power.get_alignment_parts()
-            if parts:
-                moral = parts[1]
-                if "good" in moral:
-                    glow_color = settings.COLOR_NEON_CYAN
-                elif "evil" in moral:
-                    glow_color = settings.COLOR_NEON_PINK
-                elif "neutral" in moral:
-                    glow_color = settings.COLOR_NEON_GREEN
-                    
-            pygame.draw.rect(screen, glow_color, left_panel_rect, width=1) # Neon border
-            
-            try:
-                # Fonts
-                font_hud = pygame.font.SysFont("Courier", 22, bold=True)
-                font_label = pygame.font.SysFont("Courier", 14, bold=True)
-                font_value = pygame.font.SysFont("Courier", 16)
-                font_title_bold = pygame.font.SysFont("Courier", 26, bold=True)
-                
-                # Power Image Card Container
-                img_rect = pygame.Rect(110, 50, 180, 180)
-                pygame.draw.rect(screen, settings.COLOR_BACKGROUND, img_rect, border_radius=15)
-                pygame.draw.rect(screen, glow_color, img_rect, width=3, border_radius=15)
-                
-                # Power square surface scaling
-                power_surf = selected_power.get_surface(size=(174, 174), mask_type="square")
-                screen.blit(power_surf, (113, 53))
-                
-                # Power Name
-                name_text = selected_power.name.upper()
-                name_surf = font_title_bold.render(name_text, True, settings.COLOR_TEXT_PRIMARY)
-                name_rect = name_surf.get_rect(center=(200, 270))
-                screen.blit(name_surf, name_rect)
-                
-                # Statistics rows
-                start_y = 320
-                row_h = 75
-                
-                # Location Row
-                loc_rect = pygame.Rect(30, start_y, 340, 60)
-                pygame.draw.rect(screen, (20, 24, 33), loc_rect, border_radius=8)
-                pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, loc_rect, width=1, border_radius=8)
-                
-                lbl_loc = font_label.render("LOCATION", True, settings.COLOR_NEON_CYAN)
-                screen.blit(lbl_loc, (45, start_y + 10))
-                
-                tile = map_grid.get_tile(selected_power.q, selected_power.r)
-                formatted_loc = util.format_location_name(tile.terrain_type) if tile else "Empty Space"
-                val_loc = font_value.render(formatted_loc, True, settings.COLOR_TEXT_PRIMARY)
-                screen.blit(val_loc, (45, start_y + 30))
-                
-                # Strength Row
-                str_rect = pygame.Rect(30, start_y + row_h, 340, 60)
-                pygame.draw.rect(screen, (20, 24, 33), str_rect, border_radius=8)
-                pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, str_rect, width=1, border_radius=8)
-                
-                lbl_str = font_label.render("STRENGTH", True, settings.COLOR_NEON_CYAN)
-                screen.blit(lbl_str, (45, start_y + row_h + 10))
-                
-                val_str = font_value.render(str(selected_power.strength), True, settings.COLOR_TEXT_PRIMARY)
-                screen.blit(val_str, (45, start_y + row_h + 30))
-                
-                # Futuristic horizontal progress bar for strength
-                max_str = 15
-                bar_w = 200
-                bar_h = 10
-                bx = 150
-                by = start_y + row_h + 33
-                pygame.draw.rect(screen, (40, 45, 55), (bx, by, bar_w, bar_h), border_radius=5)
-                
-                fill_w = int(bar_w * min(1.0, selected_power.strength / max_str))
-                pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, (bx, by, fill_w, bar_h), border_radius=5)
-                
-                # Alignment Row
-                align_rect = pygame.Rect(30, start_y + 2 * row_h, 340, 60)
-                pygame.draw.rect(screen, (20, 24, 33), align_rect, border_radius=8)
-                pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, align_rect, width=1, border_radius=8)
-                
-                lbl_align = font_label.render("ALIGNMENT", True, settings.COLOR_NEON_CYAN)
-                screen.blit(lbl_align, (45, start_y + 2 * row_h + 10))
-                
-                align_parts = selected_power.get_alignment_parts()
-                align_str = " ".join([p.capitalize() for p in align_parts]) if align_parts else "Unaligned"
-                val_align = font_value.render(align_str, True, glow_color)
-                screen.blit(val_align, (45, start_y + 2 * row_h + 30))
-                
-                # Unique Ability Button (above Move Button)
-                unique_ability_name = selected_power.unique_ability.upper()
-                unique_btn_rect = pygame.Rect(30, 660, 340, 45)
-                is_hover_unique = unique_btn_rect.collidepoint(mouse_x, mouse_y)
-                unique_fill = (40, 45, 55) if is_hover_unique else (25, 29, 38)
-                # Unique ability border glows with the unit's alignment color on hover
-                unique_border = glow_color if is_hover_unique else settings.COLOR_TEXT_MUTED
-                
-                pygame.draw.rect(screen, unique_fill, unique_btn_rect, border_radius=10)
-                pygame.draw.rect(screen, unique_border, unique_btn_rect, width=2, border_radius=10)
-                
-                lbl_unique = font_hud.render(unique_ability_name, True, settings.COLOR_TEXT_PRIMARY if is_hover_unique else settings.COLOR_TEXT_MUTED)
-                lbl_unique_rect = lbl_unique.get_rect(center=unique_btn_rect.center)
-                screen.blit(lbl_unique, lbl_unique_rect)
- 
-                is_assigned = selected_power is not None and assigned_power is not None and selected_power.name.lower() == assigned_power.name.lower() and selected_power.hex_location == assigned_power.hex_location
- 
-                # Move Button (above Close Button) - Only if selected power is the assigned power
-                if is_assigned:
-                    move_btn_rect = pygame.Rect(30, 730, 340, 45)
-                    is_hover_move = move_btn_rect.collidepoint(mouse_x, mouse_y)
-                    move_fill = (40, 45, 55) if is_hover_move else (25, 29, 38)
-                    move_border = settings.COLOR_NEON_CYAN if is_hover_move else settings.COLOR_TEXT_MUTED
-                    
-                    pygame.draw.rect(screen, move_fill, move_btn_rect, border_radius=10)
-                    pygame.draw.rect(screen, move_border, move_btn_rect, width=2, border_radius=10)
-                    
-                    lbl_move = font_hud.render("MOVE", True, settings.COLOR_TEXT_PRIMARY if is_hover_move else settings.COLOR_TEXT_MUTED)
-                    lbl_move_rect = lbl_move.get_rect(center=move_btn_rect.center)
-                    screen.blit(lbl_move, lbl_move_rect)
- 
-                # Summon Champion Button - Only if assigned and not Void
-                if is_assigned and selected_power.name.lower() != "void":
-                    summon_btn_rect = pygame.Rect(30, 800, 340, 45)
-                    is_hover_summon = summon_btn_rect.collidepoint(mouse_x, mouse_y)
-                    summon_fill = (40, 45, 55) if is_hover_summon else (25, 29, 38)
-                    summon_border = settings.COLOR_NEON_CYAN if is_hover_summon else settings.COLOR_TEXT_MUTED
-                    
-                    pygame.draw.rect(screen, summon_fill, summon_btn_rect, border_radius=10)
-                    pygame.draw.rect(screen, summon_border, summon_btn_rect, width=2, border_radius=10)
-                    
-                    lbl_summon = font_hud.render("SUMMON CHAMPION", True, settings.COLOR_TEXT_PRIMARY if is_hover_summon else settings.COLOR_TEXT_MUTED)
-                    lbl_summon_rect = lbl_summon.get_rect(center=summon_btn_rect.center)
-                    screen.blit(lbl_summon, lbl_summon_rect)
-                
-                # Close Button at bottom
-                close_btn_rect = pygame.Rect(30, 870, 340, 45)
-                is_hover_close = close_btn_rect.collidepoint(mouse_x, mouse_y)
-                btn_fill = (40, 45, 55) if is_hover_close else (25, 29, 38)
-                btn_border = settings.COLOR_NEON_CYAN if is_hover_close else settings.COLOR_TEXT_MUTED
-                
-                pygame.draw.rect(screen, btn_fill, close_btn_rect, border_radius=10)
-                pygame.draw.rect(screen, btn_border, close_btn_rect, width=2, border_radius=10)
-                
-                lbl_close = font_hud.render("CLOSE PROFILE", True, settings.COLOR_TEXT_PRIMARY if is_hover_close else settings.COLOR_TEXT_MUTED)
-                lbl_close_rect = lbl_close.get_rect(center=close_btn_rect.center)
-                screen.blit(lbl_close, lbl_close_rect)
-                
-            except Exception as e:
-                print(f"[Render Error] Failed to draw power stats: {e}")
-
         # 2.5 Render Left Statistics Panel for selected Champion
         elif selected_champion is not None:
-            # Draw panel background glass overlay
-            pygame.draw.rect(screen, settings.COLOR_HUD_BG, left_panel_rect)
-            
-            # Determine glow color matching alignment
-            glow_color = (189, 0, 255) # default purple
-            opt = selected_champion.alignment.lower()
-            if opt == "good":
-                glow_color = settings.COLOR_NEON_CYAN
-            elif opt == "evil":
-                glow_color = settings.COLOR_NEON_PINK
-            elif opt == "neutral":
-                glow_color = settings.COLOR_NEON_GREEN
-            elif opt == "lawful":
-                glow_color = (0, 100, 255)
-            elif opt == "chaotic":
-                glow_color = (255, 128, 0)
-                    
-            pygame.draw.rect(screen, glow_color, left_panel_rect, width=1) # Neon border
-            
-            try:
-                # Fonts
-                font_hud = pygame.font.SysFont("Courier", 22, bold=True)
-                font_label = pygame.font.SysFont("Courier", 14, bold=True)
-                font_value = pygame.font.SysFont("Courier", 16)
-                font_title_bold = pygame.font.SysFont("Courier", 22, bold=True)
-                
-                # Champion Image Card Container
-                img_rect = pygame.Rect(110, 50, 180, 180)
-                pygame.draw.rect(screen, settings.COLOR_BACKGROUND, img_rect, border_radius=15)
-                pygame.draw.rect(screen, glow_color, img_rect, width=3, border_radius=15)
-                
-                # Champion square surface scaling
-                champ_surf = selected_champion.get_surface(size=(174, 174), mask_type="square")
-                screen.blit(champ_surf, (113, 53))
-                
-                # Champion Title
-                name_text = selected_champion.name.upper()
-                name_surf = font_title_bold.render(name_text, True, settings.COLOR_TEXT_PRIMARY)
-                name_rect = name_surf.get_rect(center=(200, 270))
-                screen.blit(name_surf, name_rect)
-                
-                # Statistics rows
-                start_y = 320
-                row_h = 75
-                
-                # Location Row
-                loc_rect = pygame.Rect(30, start_y, 340, 60)
-                pygame.draw.rect(screen, (20, 24, 33), loc_rect, border_radius=8)
-                pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, loc_rect, width=1, border_radius=8)
-                
-                lbl_loc = font_label.render("LOCATION", True, settings.COLOR_NEON_CYAN)
-                screen.blit(lbl_loc, (45, start_y + 10))
-                
-                tile = map_grid.get_tile(selected_champion.q, selected_champion.r)
-                formatted_loc = util.format_location_name(tile.terrain_type) if tile else "Empty Space"
-                val_loc = font_value.render(formatted_loc, True, settings.COLOR_TEXT_PRIMARY)
-                screen.blit(val_loc, (45, start_y + 30))
-                
-                # Strength Row
-                str_rect = pygame.Rect(30, start_y + row_h, 340, 60)
-                pygame.draw.rect(screen, (20, 24, 33), str_rect, border_radius=8)
-                pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, str_rect, width=1, border_radius=8)
-                
-                lbl_str = font_label.render("STRENGTH", True, settings.COLOR_NEON_CYAN)
-                screen.blit(lbl_str, (45, start_y + row_h + 10))
-                
-                val_str = font_value.render(str(selected_champion.strength), True, settings.COLOR_TEXT_PRIMARY)
-                screen.blit(val_str, (45, start_y + row_h + 30))
-                
-                # Horizontal progress bar for strength
-                max_str = 15
-                bar_w = 200
-                bar_h = 10
-                bx = 150
-                by = start_y + row_h + 33
-                pygame.draw.rect(screen, (40, 45, 55), (bx, by, bar_w, bar_h), border_radius=5)
-                fill_w = int(bar_w * min(1.0, selected_champion.strength / max_str))
-                pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, (bx, by, fill_w, bar_h), border_radius=5)
-                
-                # Alignment Row
-                align_rect = pygame.Rect(30, start_y + 2 * row_h, 340, 60)
-                pygame.draw.rect(screen, (20, 24, 33), align_rect, border_radius=8)
-                pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, align_rect, width=1, border_radius=8)
-                
-                lbl_align = font_label.render("ALIGNMENT", True, settings.COLOR_NEON_CYAN)
-                screen.blit(lbl_align, (45, start_y + 2 * row_h + 10))
-                
-                val_align = font_value.render(selected_champion.alignment.capitalize(), True, glow_color)
-                screen.blit(val_align, (45, start_y + 2 * row_h + 30))
-                
-                # Close Button at bottom (y = 800 since there are no moves/summon options)
-                close_btn_rect = pygame.Rect(30, 800, 340, 45)
-                is_hover_close = close_btn_rect.collidepoint(mouse_x, mouse_y)
-                btn_fill = (40, 45, 55) if is_hover_close else (25, 29, 38)
-                btn_border = settings.COLOR_NEON_CYAN if is_hover_close else settings.COLOR_TEXT_MUTED
-                
-                pygame.draw.rect(screen, btn_fill, close_btn_rect, border_radius=10)
-                pygame.draw.rect(screen, btn_border, close_btn_rect, width=2, border_radius=10)
-                
-                lbl_close = font_hud.render("CLOSE PROFILE", True, settings.COLOR_TEXT_PRIMARY if is_hover_close else settings.COLOR_TEXT_MUTED)
-                lbl_close_rect = lbl_close.get_rect(center=close_btn_rect.center)
-                screen.blit(lbl_close, lbl_close_rect)
-                
-            except Exception as e:
-                print(f"[Render Error] Failed to draw champion stats: {e}")
+            draw_left_champion_statistics_panel(screen, selected_champion, left_panel_rect, map_grid, mouse_x, mouse_y)
 
         # 3. Render HUD status card (Phase 2 version)
-        try:
-            font_title = pygame.font.SysFont("Courier", 18, bold=True)
-            font_body = pygame.font.SysFont("Courier", 12)
-            
-            hud_card = pygame.Surface((450, 80), pygame.SRCALPHA)
-            pygame.draw.rect(hud_card, settings.COLOR_HUD_BG, (0, 0, 450, 80), border_radius=10)
-            
-            if active_game_turn == 'bot':
-                pygame.draw.rect(hud_card, settings.COLOR_NEON_PURPLE, (0, 0, 450, 80), width=2, border_radius=10)
-                status_text = "BOT TURN: SELECTING MOVEMENT"
-                color_status = settings.COLOR_NEON_PURPLE
-                assigned_name = assigned_power.name.upper() if assigned_power else "NONE"
-                tip_text = f"Bot assigned: {assigned_name}. Alignment: {bot_player_obj.get_alignment_parts()}"
-                txt_scroll = font_body.render("Please wait for the bot's action.", True, settings.COLOR_TEXT_MUTED)
-            else:
-                if moving_power is not None:
-                    pygame.draw.rect(hud_card, settings.COLOR_NEON_PINK, (0, 0, 450, 80), width=2, border_radius=10)
-                    status_text = "PLAYER TURN: MOVE POWER"
-                    color_status = settings.COLOR_NEON_PINK
-                    tip_text = f"Click highlighted adjacent hex to move {moving_power.name}."
-                    txt_scroll = font_body.render("Click Map: Move Power  |  ESC: Cancel", True, settings.COLOR_TEXT_MUTED)
-                else:
-                    pygame.draw.rect(hud_card, settings.COLOR_NEON_GREEN, (0, 0, 450, 80), width=2, border_radius=10)
-                    status_text = "PLAYER TURN: CHOOSE ACTION"
-                    color_status = settings.COLOR_NEON_GREEN
-                    assigned_name = assigned_power.name.upper() if assigned_power else "NONE"
-                    tip_text = f"ASSIGNED UNIT: {assigned_name}. Player alignment: {human_player_obj.get_alignment_parts()}"
-                    txt_scroll = font_body.render("WASD or Arrows: Camera Scroll  |  ESC: Deselect", True, settings.COLOR_TEXT_MUTED)
-                
-            txt_status = font_title.render(status_text, True, color_status)
-            txt_tip = font_body.render(tip_text, True, settings.COLOR_TEXT_PRIMARY)
-            
-            hud_card.blit(txt_status, (20, 12))
-            hud_card.blit(txt_tip, (20, 36))
-            hud_card.blit(txt_scroll, (20, 54))
-
-            # Zoom Out Button
-            zoom_out_rect = pygame.Rect(355, 10, 28, 28)
-            zoom_out_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 355, 20 + 10, 28, 28)
-            is_hover_out = zoom_out_global_rect.collidepoint(mouse_x, mouse_y)
-            out_fill = (40, 45, 55) if is_hover_out else (25, 29, 38)
-            out_border = settings.COLOR_NEON_CYAN if is_hover_out else settings.COLOR_TEXT_MUTED
-            pygame.draw.rect(hud_card, out_fill, zoom_out_rect, border_radius=6)
-            pygame.draw.rect(hud_card, out_border, zoom_out_rect, width=1, border_radius=6)
-            
-            font_zoom = pygame.font.SysFont("Courier", 18, bold=True)
-            txt_out = font_zoom.render("-", True, settings.COLOR_TEXT_PRIMARY if is_hover_out else settings.COLOR_TEXT_MUTED)
-            txt_out_rect = txt_out.get_rect(center=zoom_out_rect.center)
-            hud_card.blit(txt_out, txt_out_rect)
-
-            # Zoom In Button
-            zoom_in_rect = pygame.Rect(395, 10, 28, 28)
-            zoom_in_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 395, 20 + 10, 28, 28)
-            is_hover_in = zoom_in_global_rect.collidepoint(mouse_x, mouse_y)
-            in_fill = (40, 45, 55) if is_hover_in else (25, 29, 38)
-            in_border = settings.COLOR_NEON_CYAN if is_hover_in else settings.COLOR_TEXT_MUTED
-            pygame.draw.rect(hud_card, in_fill, zoom_in_rect, border_radius=6)
-            pygame.draw.rect(hud_card, in_border, zoom_in_rect, width=1, border_radius=6)
-            
-            txt_in = font_zoom.render("+", True, settings.COLOR_TEXT_PRIMARY if is_hover_in else settings.COLOR_TEXT_MUTED)
-            txt_in_rect = txt_in.get_rect(center=zoom_in_rect.center)
-            hud_card.blit(txt_in, txt_in_rect)
-
-            screen.blit(hud_card, (settings.SCREEN_WIDTH - 480, 20))
-        except Exception as e:
-            print(f"[Render Warning] Failed to draw gameplay HUD: {e}")
+        draw_hud_status_card(screen, active_game_turn, assigned_power, bot_player_obj, moving_power, human_player_obj, mouse_x, mouse_y)
 
         # 4. Render Summoning Dialog Modal Popup (if active)
         if summoning_dialog_active:
-            # A. Draw semi-transparent full-screen dimming overlay
-            overlay = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT), pygame.SRCALPHA)
-            overlay.fill((11, 14, 20, 200))  # Dark transparent overlay
-            screen.blit(overlay, (0, 0))
-            
-            # B. Draw Dialog Box container
-            dialog_rect = pygame.Rect(550, 325, 500, 350)
-            pygame.draw.rect(screen, (20, 24, 33), dialog_rect, border_radius=15)
-            pygame.draw.rect(screen, settings.COLOR_NEON_CYAN, dialog_rect, width=2, border_radius=15)
-            
-            try:
-                # Fonts
-                font_title = pygame.font.SysFont("Courier", 22, bold=True)
-                font_body = pygame.font.SysFont("Courier", 14)
-                font_btn = pygame.font.SysFont("Courier", 16, bold=True)
-                
-                # Title text
-                title_surf = font_title.render("SUMMON CHAMPION", True, settings.COLOR_NEON_CYAN)
-                title_rect = title_surf.get_rect(center=(800, 360))
-                screen.blit(title_surf, title_rect)
-                
-                # Instructions or status info
-                inst_text = f"Choose alignment to summon at ({summoning_source_power.q}, {summoning_source_power.r}):"
-                inst_surf = font_body.render(inst_text, True, settings.COLOR_TEXT_PRIMARY)
-                inst_rect = inst_surf.get_rect(center=(800, 395))
-                screen.blit(inst_surf, inst_rect)
-                
-                # Render options (maximum of 2, since a power has max 2 alignments)
-                if not summoning_options:
-                    # No options available (both at limit 4)
-                    none_surf = font_body.render("NO ALIGNMENTS AVAILABLE (LIMIT 4 REACHED)", True, settings.COLOR_NEON_PINK)
-                    none_rect = none_surf.get_rect(center=(800, 465))
-                    screen.blit(none_surf, none_rect)
-                else:
-                    for idx, opt in enumerate(summoning_options):
-                        btn_y = 410 + idx * 60
-                        btn_rect = pygame.Rect(600, btn_y, 400, 45)
-                        
-                        is_hover = btn_rect.collidepoint(mouse_x, mouse_y)
-                        btn_fill = (40, 45, 55) if is_hover else (25, 29, 38)
-                        
-                        # Set color based on alignment
-                        glow_color = settings.COLOR_TEXT_MUTED
-                        if opt == "good":
-                            glow_color = settings.COLOR_NEON_CYAN
-                        elif opt == "evil":
-                            glow_color = settings.COLOR_NEON_PINK
-                        elif opt == "neutral":
-                            glow_color = settings.COLOR_NEON_GREEN
-                        elif opt == "lawful":
-                            glow_color = (0, 100, 255)
-                        elif opt == "chaotic":
-                            glow_color = (255, 128, 0)
-                            
-                        pygame.draw.rect(screen, btn_fill, btn_rect, border_radius=10)
-                        pygame.draw.rect(screen, glow_color, btn_rect, width=2, border_radius=10)
-                        
-                        # Count of current champions
-                        curr_count = map_grid.get_champion_count(opt)
-                        label = f"SUMMON {opt.upper()} CHAMPION ({curr_count}/4)"
-                        lbl_surf = font_btn.render(label, True, settings.COLOR_TEXT_PRIMARY if is_hover else glow_color)
-                        lbl_rect = lbl_surf.get_rect(center=btn_rect.center)
-                        screen.blit(lbl_surf, lbl_rect)
-                        
-                # Draw Cancel Button at bottom
-                cancel_rect = pygame.Rect(600, 560, 400, 45)
-                is_hover_cancel = cancel_rect.collidepoint(mouse_x, mouse_y)
-                cancel_fill = (40, 45, 55) if is_hover_cancel else (25, 29, 38)
-                pygame.draw.rect(screen, cancel_fill, cancel_rect, border_radius=10)
-                pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, cancel_rect, width=2, border_radius=10)
-                
-                cancel_lbl = font_btn.render("CANCEL", True, settings.COLOR_TEXT_PRIMARY if is_hover_cancel else settings.COLOR_TEXT_MUTED)
-                cancel_lbl_rect = cancel_lbl.get_rect(center=cancel_rect.center)
-                screen.blit(cancel_lbl, cancel_lbl_rect)
-                
-            except Exception as e:
-                print(f"[Render Error] Failed to draw summoning modal: {e}")
+            draw_summoning_dialog_modal(screen, summoning_source_power, summoning_options, map_grid, mouse_x, mouse_y)
 
         # 5. Draw Mouseover Tooltip on top of all UI overlays
-        if tooltip_to_draw is not None:
-            hover_text, glow_color = tooltip_to_draw
-            try:
-                font_tooltip = pygame.font.SysFont("Courier", 12, bold=True)
-                txt_surf = font_tooltip.render(hover_text.upper(), True, settings.COLOR_TEXT_PRIMARY)
-                
-                tw = txt_surf.get_width() + 16
-                th = txt_surf.get_height() + 10
-                
-                tx = mouse_x + 15
-                ty = mouse_y + 15
-                
-                # Enforce boundary checking
-                if tx + tw > settings.SCREEN_WIDTH:
-                    tx = mouse_x - tw - 5
-                if ty + th > settings.SCREEN_HEIGHT:
-                    ty = mouse_y - th - 5
-                    
-                tooltip_rect = pygame.Rect(tx, ty, tw, th)
-                
-                # Render using a semi-transparent surface for rich aesthetics
-                tooltip_surf = pygame.Surface((tw, th), pygame.SRCALPHA)
-                pygame.draw.rect(tooltip_surf, (20, 24, 33, 240), (0, 0, tw, th), border_radius=6)
-                pygame.draw.rect(tooltip_surf, glow_color, (0, 0, tw, th), width=1, border_radius=6)
-                
-                tooltip_surf.blit(txt_surf, (8, 5))
-                screen.blit(tooltip_surf, (tx, ty))
-            except Exception as e:
-                print(f"[Render Warning] Failed to draw tooltip: {e}")
+        draw_mouseover_tooltip(screen, tooltip_to_draw, mouse_x, mouse_y)
 
         pygame.display.flip()
 
