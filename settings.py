@@ -14,8 +14,8 @@ PHASE_MAP_BUILDING = 0
 PHASE_MAIN_GAME = 1
 
 # Hex Grid Layout Constants
-HEX_WIDTH = 220           # Width of the squashed hex artwork on screen
-HEX_HEIGHT = 120          # Height of the squashed hex artwork on screen
+HEX_WIDTH = 293           # Width of the squashed hex artwork on screen (33% larger)
+HEX_HEIGHT = 160          # Height of the squashed hex artwork on screen (33% larger)
 PANEL_WIDTH = 400         # Width of the left side panel (25% of 1600)
 SCROLL_SPEED = 500        # Camera scroll speed in pixels per second
 

@@ -44,6 +44,9 @@ class MapGrid:
         self.camera_x = 0
         self.camera_y = 0
         
+        self.hex_width = settings.HEX_WIDTH
+        self.hex_height = settings.HEX_HEIGHT
+        
         # Populate initial "woods" tile at (0, 0)
         self.place_tile(0, 0, "woods", "system")
 
@@ -140,8 +143,8 @@ class MapGrid:
         """
         Converts axial grid coordinates (q, r) to local cartesian coordinates (x, y) relative to map center.
         """
-        x = settings.HEX_WIDTH * 0.75 * q
-        y = settings.HEX_HEIGHT * (r + q / 2.0)
+        x = self.hex_width * 0.75 * q
+        y = self.hex_height * (r + q / 2.0)
         return x, y
 
     def screen_to_axial(self, screen_x, screen_y, viewport_rect):
@@ -156,8 +159,8 @@ class MapGrid:
         local_y = screen_y - view_cy - self.camera_y
         
         # Generalized squashed fractional axial coordinates
-        q = local_x / (settings.HEX_WIDTH * 0.75)
-        r = (local_y / settings.HEX_HEIGHT) - q / 2.0
+        q = local_x / (self.hex_width * 0.75)
+        r = (local_y / self.hex_height) - q / 2.0
         
         return self.hex_round(q, r)
 
@@ -262,6 +265,16 @@ class MapGrid:
         self.camera_x += dx
         self.camera_y += dy
 
+    def center_on_power(self, power):
+        """
+        Adjusts the camera scroll offsets so that the hex containing the specified power
+        is centered in the map viewport.
+        """
+        if power is not None:
+            lx, ly = self.get_hex_center(power.q, power.r)
+            self.camera_x = -lx
+            self.camera_y = -ly
+
     def draw_hex_polygon(self, surface, cx, cy, w, h, color, width=0):
         """
         Draws a squashed flat-topped hexagon onto a surface with custom width and height.
@@ -291,8 +304,8 @@ class MapGrid:
         
         # Draw background space grid coordinates (faint aesthetic dots or lines to guide map scale)
         # We can dynamically iterate through visible coordinates
-        w = settings.HEX_WIDTH
-        h = settings.HEX_HEIGHT
+        w = self.hex_width
+        h = self.hex_height
         
         # Determine placements based on constraints for currently dragged tile
         all_spots = self.get_valid_placements(None)
@@ -351,17 +364,8 @@ class MapGrid:
                 blit_y = int(cy - tile_surf.get_height() / 2)
                 screen.blit(tile_surf, (blit_x, blit_y))
                 
-                # Draw hexagon neon trim around placed nodes for extreme visual polish
-                # The starting tile gets cyan, player tiles get cyan/green, bot gets purple/pink
-                trim_color = settings.COLOR_NEON_CYAN
-                if tile.owner == 'bot':
-                    trim_color = settings.COLOR_NEON_PURPLE
-                elif tile.owner == 'system':
-                    trim_color = settings.COLOR_NEON_GREEN
-                elif tile.terrain_type in settings.UNIQUE_TILES:
-                    trim_color = tile.glow_color
-                
-                self.draw_hex_polygon(screen, cx, cy, w - 2, h - 2, trim_color, width=1)
+                # Draw solid black boundary lines around all placed hexes
+                self.draw_hex_polygon(screen, cx, cy, w - 2, h - 2, (0, 0, 0), width=3)
                 
                 # If this tile contains Powers, display their images nested within the hex tile
                 powers_list = self.powers.get((q, r), [])

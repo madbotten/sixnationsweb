@@ -313,6 +313,8 @@ def main():
 
     # Initial random assignment for player's first turn
     assigned_power = get_assigned_power_for_player(human_player_obj)
+    if assigned_power:
+        map_grid.center_on_power(assigned_power)
     
     while running and game_phase == settings.PHASE_MAIN_GAME:
         dt = clock.tick(settings.FPS) / 1000.0
@@ -364,6 +366,27 @@ def main():
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1: # Left click
                     if active_game_turn == 'player':
+                        # Check HUD Zoom buttons first
+                        zoom_out_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 355, 20 + 10, 28, 28)
+                        zoom_in_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 395, 20 + 10, 28, 28)
+                        
+                        if zoom_out_global_rect.collidepoint(mouse_x, mouse_y):
+                            # Zoom out
+                            new_w = int(map_grid.hex_width * 0.9)
+                            if new_w >= 100:
+                                map_grid.hex_width = new_w
+                                map_grid.hex_height = int(new_w / 1.83125)
+                                util.play_sound(filename=None, volume=0.3, pitch_hz=440.0, duration_ms=50)
+                            continue
+                        elif zoom_in_global_rect.collidepoint(mouse_x, mouse_y):
+                            # Zoom in
+                            new_w = int(map_grid.hex_width * 1.1)
+                            if new_w <= 600:
+                                map_grid.hex_width = new_w
+                                map_grid.hex_height = int(new_w / 1.83125)
+                                util.play_sound(filename=None, volume=0.3, pitch_hz=587.33, duration_ms=50)
+                            continue
+
                         if moving_power is not None:
                             # Convert click to axial coordinate on map
                             dq, dr = map_grid.screen_to_axial(mouse_x, mouse_y, map_viewport_rect)
@@ -385,6 +408,8 @@ def main():
                                 active_game_turn = 'bot'
                                 bot_game_turn_timer = pygame.time.get_ticks()
                                 assigned_power = get_assigned_power_for_player(bot_player_obj)
+                                if assigned_power:
+                                    map_grid.center_on_power(assigned_power)
                                 moving_power = None
                             else:
                                 # Cancel movement if click is invalid (non-adjacent or off-map)
@@ -403,7 +428,7 @@ def main():
                                     clicked_close = True
                                     util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
                                     
-                                if not clicked_close and selected_power is not None and human_player_obj.can_control_power(selected_power):
+                                if not clicked_close and selected_power is not None and assigned_power is not None and selected_power.name.lower() == assigned_power.name.lower() and selected_power.hex_location == assigned_power.hex_location:
                                     move_btn_rect = pygame.Rect(30, 730, 340, 45)
                                     if move_btn_rect.collidepoint(mouse_x, mouse_y):
                                         moving_power = selected_power
@@ -457,6 +482,8 @@ def main():
                 # Turn goes back to player, select new assigned power
                 active_game_turn = 'player'
                 assigned_power = get_assigned_power_for_player(human_player_obj)
+                if assigned_power:
+                    map_grid.center_on_power(assigned_power)
 
         # --- C. Rendering ---
         screen.fill(settings.COLOR_BACKGROUND)
@@ -576,8 +603,8 @@ def main():
                 lbl_unique_rect = lbl_unique.get_rect(center=unique_btn_rect.center)
                 screen.blit(lbl_unique, lbl_unique_rect)
 
-                # Move Button (above Close Button) - Only if selected power is controllable by the player
-                if selected_power is not None and human_player_obj.can_control_power(selected_power):
+                # Move Button (above Close Button) - Only if selected power is the assigned power
+                if selected_power is not None and assigned_power is not None and selected_power.name.lower() == assigned_power.name.lower() and selected_power.hex_location == assigned_power.hex_location:
                     move_btn_rect = pygame.Rect(30, 730, 340, 45)
                     is_hover_move = move_btn_rect.collidepoint(mouse_x, mouse_y)
                     move_fill = (40, 45, 55) if is_hover_move else (25, 29, 38)
@@ -642,6 +669,34 @@ def main():
             hud_card.blit(txt_status, (20, 12))
             hud_card.blit(txt_tip, (20, 36))
             hud_card.blit(txt_scroll, (20, 54))
+
+            # Zoom Out Button
+            zoom_out_rect = pygame.Rect(355, 10, 28, 28)
+            zoom_out_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 355, 20 + 10, 28, 28)
+            is_hover_out = zoom_out_global_rect.collidepoint(mouse_x, mouse_y)
+            out_fill = (40, 45, 55) if is_hover_out else (25, 29, 38)
+            out_border = settings.COLOR_NEON_CYAN if is_hover_out else settings.COLOR_TEXT_MUTED
+            pygame.draw.rect(hud_card, out_fill, zoom_out_rect, border_radius=6)
+            pygame.draw.rect(hud_card, out_border, zoom_out_rect, width=1, border_radius=6)
+            
+            font_zoom = pygame.font.SysFont("Courier", 18, bold=True)
+            txt_out = font_zoom.render("-", True, settings.COLOR_TEXT_PRIMARY if is_hover_out else settings.COLOR_TEXT_MUTED)
+            txt_out_rect = txt_out.get_rect(center=zoom_out_rect.center)
+            hud_card.blit(txt_out, txt_out_rect)
+
+            # Zoom In Button
+            zoom_in_rect = pygame.Rect(395, 10, 28, 28)
+            zoom_in_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 395, 20 + 10, 28, 28)
+            is_hover_in = zoom_in_global_rect.collidepoint(mouse_x, mouse_y)
+            in_fill = (40, 45, 55) if is_hover_in else (25, 29, 38)
+            in_border = settings.COLOR_NEON_CYAN if is_hover_in else settings.COLOR_TEXT_MUTED
+            pygame.draw.rect(hud_card, in_fill, zoom_in_rect, border_radius=6)
+            pygame.draw.rect(hud_card, in_border, zoom_in_rect, width=1, border_radius=6)
+            
+            txt_in = font_zoom.render("+", True, settings.COLOR_TEXT_PRIMARY if is_hover_in else settings.COLOR_TEXT_MUTED)
+            txt_in_rect = txt_in.get_rect(center=zoom_in_rect.center)
+            hud_card.blit(txt_in, txt_in_rect)
+
             screen.blit(hud_card, (settings.SCREEN_WIDTH - 480, 20))
         except Exception as e:
             print(f"[Render Warning] Failed to draw gameplay HUD: {e}")
