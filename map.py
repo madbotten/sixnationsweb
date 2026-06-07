@@ -7,6 +7,7 @@ import math
 import pygame
 import settings
 import util
+from powers import Power
 
 class Tile:
     def __init__(self, q, r, terrain_type, owner='player'):
@@ -29,12 +30,14 @@ class Tile:
 
     def get_surface(self, size):
         # Delegate image loading to cache utility
-        return util.load_image(self.terrain_type, alpha=True, color_fallback=self.glow_color, size=size)
+        return util.load_terrain_image(self.terrain_type, alpha=True, color_fallback=self.glow_color, size=size)
 
 class MapGrid:
     def __init__(self):
         # Key: (q, r), Value: Tile
         self.tiles = {}
+        # Key: (q, r), Value: Power
+        self.powers = {}
         
         # Camera scroll offset (center of the screen)
         # Starting camera is centered on (0, 0)
@@ -49,6 +52,86 @@ class MapGrid:
         Adds a tile to the map coordinates.
         """
         self.tiles[(q, r)] = Tile(q, r, terrain_type, owner)
+        
+        # Spawn associated Powers when specific tiles are placed
+        clean_terrain = terrain_type.replace(" ", "").lower()
+        if clean_terrain == "woods" and q == 0 and r == 0:
+            # The Void starts in the initial game tile used to start the map
+            self.add_power(Power("Void", q, r, strength=10))
+        elif clean_terrain == "pitofdespair":
+            # The Demon starts in Pit of Despair
+            self.add_power(Power("Demon", q, r, strength=10))
+        elif clean_terrain == "towerofjustice":
+            # The Angel starts in Tower of Justice
+            self.add_power(Power("Angel", q, r, strength=10))
+        elif clean_terrain == "templeofevil":
+            # Rakshasa starts in Temple of Evil
+            self.add_power(Power("Rakshasa", q, r, strength=10))
+        elif clean_terrain == "tanelorn":
+            # Couatl starts in Tanelorn
+            self.add_power(Power("Couatl", q, r, strength=10))
+        elif clean_terrain == "echoingcaverns":
+            # Shoggoth starts in Echoing Caverns
+            self.add_power(Power("Shoggoth", q, r, strength=10))
+        elif clean_terrain == "obsidianwastes":
+            # Dragon starts in Obsidian Wastes
+            self.add_power(Power("Dragon", q, r, strength=10))
+        elif clean_terrain == "thewilds":
+            # Pegasus starts in The Wilds
+            self.add_power(Power("Pegasus", q, r, strength=10))
+        elif clean_terrain == "limbo":
+            # Kirin starts in Limbo
+            self.add_power(Power("Kirin", q, r, strength=10))
+
+
+    def add_power(self, power):
+        """
+        Adds a power unit to the map. Supports multiple units at the same location.
+        """
+        loc = power.hex_location
+        if loc not in self.powers:
+            self.powers[loc] = []
+        self.powers[loc].append(power)
+
+    def get_power_at_screen_pos(self, mouse_x, mouse_y, viewport_rect):
+        """
+        Checks if a left-click occurred on any Power unit nested in the map grid.
+        Returns the Power object if hit, otherwise None.
+        """
+        view_cx = viewport_rect.x + viewport_rect.width / 2.0
+        view_cy = viewport_rect.y + viewport_rect.height / 2.0
+        
+        # Identify axial coordinates under the mouse
+        q, r = self.screen_to_axial(mouse_x, mouse_y, viewport_rect)
+        
+        powers_list = self.powers.get((q, r), [])
+        if not powers_list:
+            return None
+            
+        lx, ly = self.get_hex_center(q, r)
+        cx = view_cx + self.camera_x + lx
+        cy = view_cy + self.camera_y + ly
+        
+        num_powers = len(powers_list)
+        unit_size = (36, 36)
+        
+        for idx, power in enumerate(powers_list):
+            if num_powers == 1:
+                ox, oy = 0, 0
+            else:
+                angle = idx * (2.0 * math.pi / num_powers)
+                radius = 24.0
+                ox = int(radius * math.cos(angle))
+                oy = int(radius * math.sin(angle))
+                
+            px = int(cx + ox - unit_size[0] / 2)
+            py = int(cy + oy - unit_size[1] / 2)
+            
+            power_rect = pygame.Rect(px, py, unit_size[0], unit_size[1])
+            if power_rect.collidepoint(mouse_x, mouse_y):
+                return power
+        return None
+
 
     def get_tile(self, q, r):
         return self.tiles.get((q, r))
@@ -114,22 +197,37 @@ class MapGrid:
             (q - 1, r + 1)
         ]
 
+    def get_valid_movement_destinations(self, power):
+        """
+        Returns a list of axial coordinate tuples (q, r) that are adjacent to the power
+        and have a tile placed on the map grid.
+        """
+        q, r = power.hex_location
+        neighbors = self.get_neighbors(q, r)
+        valid_destinations = [n for n in neighbors if n in self.tiles]
+        return valid_destinations
+
+
     def is_valid_placement(self, q, r, terrain_type=None):
         """
         Validates if a tile can be placed at (q, r).
         1. Coordinate must be empty.
         2. Must have at least one adjacent tile in the current map grid.
         3. Restricted tiles (Limbo, PitofDespair, etc.) cannot be adjacent to each other.
+        4. Restricted tiles cannot be placed next to the starting hex (0, 0).
         """
         if (q, r) in self.tiles:
             return False
             
-        # Ensure we check case-insensitively or cleanly with the list
+        # Lowercase restricted tiles list for robust comparison
+        restricted_lower = [t.lower() for t in settings.RESTRICTED_TILES]
         is_restricted_dragging = False
         if terrain_type is not None:
-            # Capitalize to match RESTRICTED_TILES casing
-            clean_dragged = terrain_type.capitalize() if terrain_type.islower() else terrain_type
-            is_restricted_dragging = clean_dragged in settings.RESTRICTED_TILES
+            is_restricted_dragging = terrain_type.replace(" ", "").lower() in restricted_lower
+
+        # Enforce rule: RESTRICTED_TILES may not be placed next to the starting hex (0, 0)
+        if is_restricted_dragging and (q, r) in self.get_neighbors(0, 0):
+            return False
 
         has_neighbor = False
         for n_q, n_r in self.get_neighbors(q, r):
@@ -139,11 +237,11 @@ class MapGrid:
                 
                 # Check restricted placement constraint
                 if is_restricted_dragging:
-                    clean_neighbor = neighbor_tile.terrain_type.capitalize() if neighbor_tile.terrain_type.islower() else neighbor_tile.terrain_type
-                    if clean_neighbor in settings.RESTRICTED_TILES:
+                    if neighbor_tile.terrain_type.replace(" ", "").lower() in restricted_lower:
                         return False
                 
         return has_neighbor
+
 
     def get_valid_placements(self, terrain_type=None):
         """
@@ -178,7 +276,7 @@ class MapGrid:
         ]
         pygame.draw.polygon(surface, color, vertices, width)
 
-    def draw(self, screen, viewport_rect, ghost_info=None, dragged_terrain=None):
+    def draw(self, screen, viewport_rect, ghost_info=None, dragged_terrain=None, highlight_coords=None, highlight_color=(255, 0, 127)):
         """
         Renders the active map and visual guidelines onto the screen, clipped to viewport_rect.
         ghost_info is a dictionary: {'q': int, 'r': int, 'terrain': str, 'valid': bool}
@@ -264,6 +362,46 @@ class MapGrid:
                     trim_color = tile.glow_color
                 
                 self.draw_hex_polygon(screen, cx, cy, w - 2, h - 2, trim_color, width=1)
+                
+                # If this tile contains Powers, display their images nested within the hex tile
+                powers_list = self.powers.get((q, r), [])
+                if powers_list:
+                    num_powers = len(powers_list)
+                    unit_size = (36, 36) # Small square unit token size
+                    
+                    for idx, power in enumerate(powers_list):
+                        # Calculate layout offsets so all powers in the same hex are visible
+                        if num_powers == 1:
+                            ox, oy = 0, 0
+                        else:
+                            # Distribute offset in a circle around the center of the hex tile
+                            angle = idx * (2.0 * math.pi / num_powers)
+                            radius = 24.0 # Offset distance in pixels from hex center
+                            ox = int(radius * math.cos(angle))
+                            oy = int(radius * math.sin(angle))
+                            
+                        # Retrieve the square unit token surface
+                        power_surf = power.get_surface(size=unit_size, mask_type="square")
+                        
+                        # Center the square token at (cx + ox, cy + oy)
+                        px = int(cx + ox - power_surf.get_width() / 2)
+                        py = int(cy + oy - power_surf.get_height() / 2)
+                        screen.blit(power_surf, (px, py))
+                        
+                        # Draw a distinct glowing neon square border for the Power's token
+                        glow_color = (189, 0, 255) # default purple
+                        parts = power.get_alignment_parts()
+                        if parts:
+                            moral = parts[1]
+                            if "good" in moral:
+                                glow_color = settings.COLOR_NEON_CYAN
+                            elif "evil" in moral:
+                                glow_color = settings.COLOR_NEON_PINK
+                            elif "neutral" in moral:
+                                glow_color = settings.COLOR_NEON_GREEN
+                        
+                        # Draw a beautiful glowing border around the small square
+                        pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), 1)
 
         # Draw ghost preview (snapping guideline) under drag and drop
         if ghost_info:
@@ -300,5 +438,18 @@ class MapGrid:
                 
                 screen.blit(ghost_surface, (int(cx - w / 2.0), int(cy - h / 2.0)))
                 
+        # Draw highlight borders around specific tiles if provided
+        if highlight_coords:
+            for q, r in highlight_coords:
+                lx, ly = self.get_hex_center(q, r)
+                cx = view_cx + self.camera_x + lx
+                cy = view_cy + self.camera_y + ly
+                
+                if (viewport_rect.x - w / 2 < cx < viewport_rect.x + viewport_rect.width + w / 2 and
+                    viewport_rect.y - h / 2 < cy < viewport_rect.y + viewport_rect.height + h / 2):
+                    
+                    # Draw a nice thick neon glowing outline for movement destinations
+                    self.draw_hex_polygon(screen, cx, cy, w - 2, h - 2, highlight_color, width=3)
+
         # Restore clip
         screen.set_clip(original_clip)

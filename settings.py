@@ -20,16 +20,16 @@ PANEL_WIDTH = 400         # Width of the left side panel (25% of 1600)
 SCROLL_SPEED = 500        # Camera scroll speed in pixels per second
 
 # Tile Pool Specifications
-# The 11 unique tiles (only one copy of each exists in the entire game)
+# The 17 unique tiles (only one copy of each exists in the entire game)
 UNIQUE_TILES = [
-    "Elmany", "GoldenCanyon", "Gonce", "Limbo", "PitofDespair",
+    "Elmany", "FungalJungle", "GoldenCanyon", "Gonce", "Limbo", "PitofDespair",
     "Tanelorn", "TempleofEvil", "TheDark", "TheWilds", "Tileronde",
-    "TowerofJustice"
+    "TowerofJustice", "SunkenCanopy", "PetrifiedForest", "EchoingCaverns", "ObsidianWastes", "StormTundra"
 ]
 
-# The 5 common tiles (can be duplicated at random to pad decks to 12)
+# The 6 common tiles (can be duplicated at random to pad decks to 16)
 COMMON_TILES = [
-    "Woods", "Swamp", "Mountains", "Plains", "Desert"
+    "Woods", "Swamp", "Mountains", "Plains", "Desert", "Hills"
 ]
 
 # Unique tiles that cannot be placed adjacent to each other (constraint list)
@@ -38,7 +38,7 @@ RESTRICTED_TILES = [
 ]
 
 # Total hand capacity per player
-TOTAL_TILES_PER_PLAYER = 12
+TOTAL_TILES_PER_PLAYER = 16
 
 # Premium Sci-Fi Visual Theme Colors (RGB format)
 COLOR_BACKGROUND = (11, 14, 20)      # Sleek deep space charcoal-navy
