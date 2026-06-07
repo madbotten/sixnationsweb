@@ -26,14 +26,6 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Pygame specific
-*.wav
-*.mp3
-*.ogg
-*.png
-*.jpg
-*.jpeg
-
 # Operating System Files
 .DS_Store
 Thumbs.db
