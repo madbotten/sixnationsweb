@@ -105,6 +105,36 @@ class Power:
             return []
         return [self.alignment_part1, self.alignment_part2]
 
+    def is_aligned(self, part):
+        """
+        Returns True if the Power has the specified alignment part (case-insensitive).
+        If one of the Power's alignment parts is 'neutral', it acts as a wildcard
+        for that axis (matching both parts of that axis).
+        Any non-neutral part matches itself and 'neutral'.
+        """
+        part_lower = part.lower()
+        parts = self.get_alignment_parts()
+        if not parts:
+            return False
+            
+        p_order, p_moral = parts[0], parts[1]
+        
+        order_matches = set()
+        if p_order == "neutral":
+            order_matches = {"neutral", "lawful", "chaotic"}
+        else:
+            order_matches = {p_order, "neutral"}
+            
+        moral_matches = set()
+        if p_moral == "neutral":
+            moral_matches = {"neutral", "good", "evil"}
+        else:
+            moral_matches = {p_moral, "neutral"}
+            
+        allowed = order_matches.union(moral_matches)
+        return part_lower in allowed
+
+
     def get_surface(self, size=(100, 100), mask_type="circle"):
         """
         Loads and returns the cached, masked Pygame surface representing this power's image.

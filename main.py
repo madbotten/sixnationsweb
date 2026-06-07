@@ -302,6 +302,18 @@ def main():
     active_game_turn = 'player'  # 'player' or 'bot'
     bot_game_turn_timer = 0
     
+    # Helper function to assign a random controllable Power to a player
+    def get_assigned_power_for_player(player_obj):
+        controllable_powers = []
+        for loc, p_list in map_grid.powers.items():
+            for p in p_list:
+                if player_obj.can_control_power(p):
+                    controllable_powers.append(p)
+        return random.choice(controllable_powers) if controllable_powers else None
+
+    # Initial random assignment for player's first turn
+    assigned_power = get_assigned_power_for_player(human_player_obj)
+    
     while running and game_phase == settings.PHASE_MAIN_GAME:
         dt = clock.tick(settings.FPS) / 1000.0
         
@@ -372,6 +384,7 @@ def main():
                                 # End player turn and pass to bot
                                 active_game_turn = 'bot'
                                 bot_game_turn_timer = pygame.time.get_ticks()
+                                assigned_power = get_assigned_power_for_player(bot_player_obj)
                                 moving_power = None
                             else:
                                 # Cancel movement if click is invalid (non-adjacent or off-map)
@@ -390,7 +403,7 @@ def main():
                                     clicked_close = True
                                     util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
                                     
-                                if not clicked_close:
+                                if not clicked_close and selected_power is not None and human_player_obj.can_control_power(selected_power):
                                     move_btn_rect = pygame.Rect(30, 730, 340, 45)
                                     if move_btn_rect.collidepoint(mouse_x, mouse_y):
                                         moving_power = selected_power
@@ -421,23 +434,29 @@ def main():
         if active_game_turn == 'bot':
             current_time = pygame.time.get_ticks()
             if current_time - bot_game_turn_timer >= 1000:
-                action = bot_player.choose_power_movement(map_grid)
-                if action:
-                    p_unit, b_q, b_r = action
-                    old_loc = p_unit.hex_location
-                    if old_loc in map_grid.powers:
-                        if p_unit in map_grid.powers[old_loc]:
-                            map_grid.powers[old_loc].remove(p_unit)
-                            if not map_grid.powers[old_loc]:
-                                del map_grid.powers[old_loc]
-                    p_unit.hex_location = (b_q, b_r)
-                    map_grid.add_power(p_unit)
-                    
-                    # Play bot movement chime
-                    util.play_sound(filename=None, volume=0.5, pitch_hz=493.88, duration_ms=180) # B4
+                if assigned_power is not None:
+                    valid_dests = map_grid.get_valid_movement_destinations(assigned_power)
+                    if valid_dests:
+                        b_q, b_r = random.choice(valid_dests)
+                        old_loc = assigned_power.hex_location
+                        if old_loc in map_grid.powers:
+                            if assigned_power in map_grid.powers[old_loc]:
+                                map_grid.powers[old_loc].remove(assigned_power)
+                                if not map_grid.powers[old_loc]:
+                                    del map_grid.powers[old_loc]
+                        assigned_power.hex_location = (b_q, b_r)
+                        map_grid.add_power(assigned_power)
+                        
+                        # Play bot movement chime
+                        util.play_sound(filename=None, volume=0.5, pitch_hz=493.88, duration_ms=180) # B4
+                    else:
+                        print(f"[Bot] Assigned power {assigned_power.name} has no valid moves. Skipping turn.")
+                else:
+                    print("[Bot] No controllable power assigned for bot. Skipping turn.")
                 
-                # Turn goes back to player
+                # Turn goes back to player, select new assigned power
                 active_game_turn = 'player'
+                assigned_power = get_assigned_power_for_player(human_player_obj)
 
         # --- C. Rendering ---
         screen.fill(settings.COLOR_BACKGROUND)
@@ -557,18 +576,19 @@ def main():
                 lbl_unique_rect = lbl_unique.get_rect(center=unique_btn_rect.center)
                 screen.blit(lbl_unique, lbl_unique_rect)
 
-                # Move Button (above Close Button)
-                move_btn_rect = pygame.Rect(30, 730, 340, 45)
-                is_hover_move = move_btn_rect.collidepoint(mouse_x, mouse_y)
-                move_fill = (40, 45, 55) if is_hover_move else (25, 29, 38)
-                move_border = settings.COLOR_NEON_CYAN if is_hover_move else settings.COLOR_TEXT_MUTED
-                
-                pygame.draw.rect(screen, move_fill, move_btn_rect, border_radius=10)
-                pygame.draw.rect(screen, move_border, move_btn_rect, width=2, border_radius=10)
-                
-                lbl_move = font_hud.render("MOVE", True, settings.COLOR_TEXT_PRIMARY if is_hover_move else settings.COLOR_TEXT_MUTED)
-                lbl_move_rect = lbl_move.get_rect(center=move_btn_rect.center)
-                screen.blit(lbl_move, lbl_move_rect)
+                # Move Button (above Close Button) - Only if selected power is controllable by the player
+                if selected_power is not None and human_player_obj.can_control_power(selected_power):
+                    move_btn_rect = pygame.Rect(30, 730, 340, 45)
+                    is_hover_move = move_btn_rect.collidepoint(mouse_x, mouse_y)
+                    move_fill = (40, 45, 55) if is_hover_move else (25, 29, 38)
+                    move_border = settings.COLOR_NEON_CYAN if is_hover_move else settings.COLOR_TEXT_MUTED
+                    
+                    pygame.draw.rect(screen, move_fill, move_btn_rect, border_radius=10)
+                    pygame.draw.rect(screen, move_border, move_btn_rect, width=2, border_radius=10)
+                    
+                    lbl_move = font_hud.render("MOVE", True, settings.COLOR_TEXT_PRIMARY if is_hover_move else settings.COLOR_TEXT_MUTED)
+                    lbl_move_rect = lbl_move.get_rect(center=move_btn_rect.center)
+                    screen.blit(lbl_move, lbl_move_rect)
                 
                 # Close Button at bottom
                 close_btn_rect = pygame.Rect(30, 800, 340, 45)
@@ -598,7 +618,8 @@ def main():
                 pygame.draw.rect(hud_card, settings.COLOR_NEON_PURPLE, (0, 0, 450, 80), width=2, border_radius=10)
                 status_text = "BOT TURN: SELECTING MOVEMENT"
                 color_status = settings.COLOR_NEON_PURPLE
-                tip_text = "The bot is deciding which Power unit to move."
+                assigned_name = assigned_power.name.upper() if assigned_power else "NONE"
+                tip_text = f"Bot assigned: {assigned_name}. Alignment: {bot_player_obj.get_alignment_parts()}"
                 txt_scroll = font_body.render("Please wait for the bot's action.", True, settings.COLOR_TEXT_MUTED)
             else:
                 if moving_power is not None:
@@ -611,9 +632,8 @@ def main():
                     pygame.draw.rect(hud_card, settings.COLOR_NEON_GREEN, (0, 0, 450, 80), width=2, border_radius=10)
                     status_text = "PLAYER TURN: CHOOSE ACTION"
                     color_status = settings.COLOR_NEON_GREEN
-                    tip_text = "Click a Power to view profile. WASD to scroll."
-                    if selected_power is not None:
-                        tip_text = f"Selected: {selected_power.name}. Use an ability button."
+                    assigned_name = assigned_power.name.upper() if assigned_power else "NONE"
+                    tip_text = f"ASSIGNED UNIT: {assigned_name}. Player alignment: {human_player_obj.get_alignment_parts()}"
                     txt_scroll = font_body.render("WASD or Arrows: Camera Scroll  |  ESC: Deselect", True, settings.COLOR_TEXT_MUTED)
                 
             txt_status = font_title.render(status_text, True, color_status)

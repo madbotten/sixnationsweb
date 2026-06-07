@@ -327,6 +327,218 @@ def run_player_tests():
     print("Player initialization checks passed successfully!")
 
 
+def run_player_control_alignment_tests():
+    print("\n=============================================")
+    print("--- Running Player Control Alignment Tests ---")
+    print("=============================================")
+    
+    from player import Player
+
+    demon = Power("Demon", 0, 0, 10) # demon should be chaotic evil
+    couatl = Power("Couatl", 0, 0, 10) # couatl should be chaotic good
+    rakshasa = Power("Rakshasa", 0, 0, 10) # rakshasa should be lawful evil
+    shoggoth = Power("Shoggoth", 0, 0, 10) # shoggoth should be neutral evil
+    void = Power("Void", 0, 0, 10) # void has no alignment
+    angel = Power("Angel", 0, 0, 10) # angel should be lawful good
+    kirin = Power("Kirin", 0, 0, 10) # kirin should be lawful neutral
+    dragon = Power("Dragon", 0, 0, 10) # dragon should be chaotic neutral
+    pegasus = Power("Pegasus", 0, 0, 10) # pegasus should be neutral good
+
+    # 1. Chaotic Evil player controls anything with either chaotic part or evil part
+    ce_player = Player("chaotic", "evil")
+    print(f"Chaotic Evil player alignment: {ce_player.get_alignment_parts()}")
+    # can control void
+    assert ce_player.can_control_power(void) == True, "CE player should control Void"
+    # can control anything with chaotic or evil
+    assert ce_player.can_control_power(demon) == True, "CE player should control Demon"
+    assert ce_player.can_control_power(couatl) == True, "CE player should control Couatl"
+    assert ce_player.can_control_power(dragon) == True, "CE player should control Dragon"
+    assert ce_player.can_control_power(rakshasa) == True, "CE player should control Rakshasa"
+    assert ce_player.can_control_power(shoggoth) == True, "CE player should control Shoggoth"
+    # cannot control with neither chaotic nor evil
+    assert ce_player.can_control_power(angel) == False, "CE player should NOT control Angel"
+    assert ce_player.can_control_power(kirin) == False, "CE player should NOT control Kirin"
+    assert ce_player.can_control_power(pegasus) == False, "CE player should NOT control Pegasus"
+    print("Chaotic Evil player tests passed.")
+
+
+    # 2. Lawful Neutral player controls (any non-chaotic)
+    ln_player = Player("lawful", "neutral")
+    print(f"Lawful Neutral player alignment: {ln_player.get_alignment_parts()}")
+    # can control void
+    assert ln_player.can_control_power(void) == True, "LN player should control Void"
+    # can control anything not chaotic
+    assert ln_player.can_control_power(angel) == True, "LN player should control Angel"
+    assert ln_player.can_control_power(rakshasa) == True, "LN player should control Rakshasa"
+    assert ln_player.can_control_power(pegasus) == True, "LN player should control Pegasus"
+    assert ln_player.can_control_power(shoggoth) == True, "LN player should control Shoggoth"
+    assert ln_player.can_control_power(kirin) == True, "LN player should control Kirin (Lawful Neutral)"
+    # cannot control anything chaotic
+    assert ln_player.can_control_power(demon) == False, "LN player should NOT control Demon (because chaotic)"
+    assert ln_player.can_control_power(dragon) == False, "LN player should NOT control Dragon (because chaotic)"
+    assert ln_player.can_control_power(couatl) == False, "LN player should NOT control Couatl (because chaotic)"
+    print("Lawful Neutral player tests passed.")
+
+
+    # 3. Lawful Good player controls (cannot move Chaotic Evil power)
+    lg_player = Player("lawful", "good")
+    print(f"Lawful Good player alignment: {lg_player.get_alignment_parts()}")
+    # can control void
+    assert lg_player.can_control_power(void) == True, "LG player should control Void"
+    # can control anything lawful or good
+    assert lg_player.can_control_power(angel) == True, "LG player should control Angel"
+    assert lg_player.can_control_power(demon) == False, "LG player should NOT control Demon (Chaotic Evil)"
+    assert lg_player.can_control_power(rakshasa) == True, "LG player should control Rakshasa (Lawful Evil)"
+    assert lg_player.can_control_power(pegasus) == True, "LG player should control Pegasus (Neutral Good)"
+    assert lg_player.can_control_power(kirin) == True, "LG player should control Kirin (Lawful Neutral)"
+    # cannot control anything neither lawful nor good
+    assert lg_player.can_control_power(shoggoth) == False, "LG player should NOT control Shoggoth (Neutral Evil)"
+    assert lg_player.can_control_power(dragon) == False, "LG player should NOT control Dragon (Chaotic Neutral)"
+    assert lg_player.can_control_power(couatl) == False, "LG player should NOT control Couatl (Chaotic Good)"
+    print("Lawful Good player tests passed.")
+
+
+    # 4. Neutral Evil player controls (any non-Good)
+    ne_player = Player("neutral", "evil")
+    print(f"Neutral Evil player alignment: {ne_player.get_alignment_parts()}")
+    # can control void
+    assert ne_player.can_control_power(void) == True, "NE player should control Void"
+    # can control anything non-good
+    assert ne_player.can_control_power(demon) == True, "NE player should control Demon (Chaotic Evil)"
+    assert ne_player.can_control_power(shoggoth) == True, "NE player should control Shoggoth (Neutral Evil)"
+    assert ne_player.can_control_power(kirin) == True, "NE player should control Kirin (Lawful Neutral)"
+    assert ne_player.can_control_power(rakshasa) == True, "NE player should control Rakshasa (Lawful Evil)"
+    assert ne_player.can_control_power(dragon) == True, "NE player should control Dragon (Chaotic Neutral)"
+    # cannot control anything good
+    assert ne_player.can_control_power(angel) == False, "NE player should NOT control Angel (Good)"
+    assert ne_player.can_control_power(couatl) == False, "NE player should NOT control Couatl (Good)"
+    assert ne_player.can_control_power(pegasus) == False, "NE player should NOT control Pegasus (Neutral Good)"
+    print("Neutral Evil player tests passed.")
+
+
+    # 5. Chaotic Neutral player controls (any non-Lawful)
+    cn_player = Player("chaotic", "neutral")
+    print(f"Chaotic Neutral player alignment: {cn_player.get_alignment_parts()}")
+    # can control void
+    assert cn_player.can_control_power(void) == True, "CN player should control Void"
+    # can control anything non-lawful
+    assert cn_player.can_control_power(demon) == True, "CN player should control Demon"
+    assert cn_player.can_control_power(dragon) == True, "CN player should control Dragon"
+    assert cn_player.can_control_power(couatl) == True, "CN player should control Couatl (Chaotic Good)"
+    assert cn_player.can_control_power(shoggoth) == True, "CN player should control Shoggoth (Neutral Evil)"
+    assert cn_player.can_control_power(pegasus) == True, "CN player should control Pegasus (Neutral Good)"
+    # cannot control anything lawful
+    assert cn_player.can_control_power(angel) == False, "CN player should NOT control Angel (Lawful)"
+    assert cn_player.can_control_power(rakshasa) == False, "CN player should NOT control Rakshasa (Lawful)"
+    assert cn_player.can_control_power(kirin) == False, "CN player should NOT control Kirin (Lawful Neutral)"
+    print("Chaotic Neutral player tests passed.")
+    
+
+    # 6. Neutral Good player controls (any non-Evil)
+    ng_player = Player("neutral", "good")
+    print(f"Neutral Good player alignment: {ng_player.get_alignment_parts()}")
+    # can control void
+    assert ng_player.can_control_power(void) == True, "NG player should control Void"
+    # can control any non-Evil
+    assert ng_player.can_control_power(kirin) == True, "NG player should control Kirin (Lawful Neutral)"
+    assert ng_player.can_control_power(angel) == True, "NG player should control Angel (Lawful Good)"
+    assert ng_player.can_control_power(pegasus) == True, "NG player should control Pegasus (Neutral Good)"
+    assert ng_player.can_control_power(dragon) == True, "NG player should control Dragon (Chaotic Neutral)"
+    assert ng_player.can_control_power(couatl) == True, "NG player should control Couatl (Chaotic Good)"
+    # cannot control any evil
+    assert ng_player.can_control_power(shoggoth) == False, "NG player should NOT control Shoggoth (Neutral Evil)"
+    assert ng_player.can_control_power(demon) == False, "NG player should NOT control Demon (Chaotic Evil)"
+    assert ng_player.can_control_power(rakshasa) == False, "NG player should NOT control Rakshasa (Lawful Evil)"
+    print("Neutral Good player tests passed.")
+    
+
+    # 7. Lawful Evil player controls (anything lawful or evil)
+    le_player = Player("lawful", "evil")
+    print(f"Lawful Evil player alignment: {le_player.get_alignment_parts()}")
+    # can control void
+    assert le_player.can_control_power(void) == True, "LE player should control Void"
+    # can control anything lawful or evil
+    assert le_player.can_control_power(angel) == True, "LE player should control Angel (Lawful Good)"
+    assert le_player.can_control_power(rakshasa) == True, "LE player should control Rakshasa (Lawful Evil)"
+    assert le_player.can_control_power(kirin) == True, "LE player should control Kirin (Lawful Neutral)"
+    assert le_player.can_control_power(demon) == True, "LE player should control Demon (Chaotic Evil)"
+    assert le_player.can_control_power(shoggoth) == True, "LE player should control Shoggoth (Neutral Evil)"
+    
+    # cannot control anything neither lawful nor evil
+    assert le_player.can_control_power(pegasus) == False, "LE player should NOT control Pegasus (Neutral Good)"
+    assert le_player.can_control_power(couatl) == False, "LE player should NOT control Couatl (Chaotic Good)"
+    assert le_player.can_control_power(dragon) == False, "LE player should NOT control Dragon (Chaotic Neutral)"
+    
+    print("Lawful Evil player tests passed.")
+    
+
+    # 8. Chaotic Good player controls anything chaotic or good
+    ce_player = Player("chaotic", "good")
+    print(f"Chaotic Good player alignment: {ce_player.get_alignment_parts()}")
+    # can control void
+    assert ce_player.can_control_power(void) == True, "CE player should control Void"
+    # can control anything chaotic or good
+    assert ce_player.can_control_power(angel) == True, "CE player should control Angel (Lawful Good)"
+    assert ce_player.can_control_power(dragon) == True, "CE player should control Dragon (Chaotic Neutral)"
+    assert ce_player.can_control_power(couatl) == True, "CE player should control Couatl (Chaotic Good)"
+    assert ce_player.can_control_power(demon) == True, "CE player should control Demon (Chaotic Evil)"
+    assert ce_player.can_control_power(pegasus) == True, "CE player should control Pegasus (Neutral Good)"
+    # cannot control anything neither chaotic nor good
+    assert ce_player.can_control_power(kirin) == False, "CE player should NOT control Kirin (Lawful Neutral)"
+    assert ce_player.can_control_power(rakshasa) == False, "CE player should NOT control Rakshasa (Lawful Evil)"
+    assert ce_player.can_control_power(shoggoth) == False, "CE player should NOT control Shoggoth (Neutral Evil)"
+
+    print("Chaotic Good player tests passed.")
+    
+    print("Player control alignment checks passed successfully!")
+
+
+def run_is_aligned_tests():
+    print("\n=============================================")
+    print("--- Running Power is_aligned Wildcard Tests ---")
+    print("=============================================")
+    
+    # 1. Angel (lawful, good)
+    # matches only: "good", "lawful", "neutral"
+    angel = Power("Angel", 0, 0, 10)
+    for part in ["good", "lawful", "neutral", "Good", "LAWFUL", "Neutral"]:
+        assert angel.is_aligned(part) == True, f"Angel should be aligned with {part}"
+    for part in ["chaotic", "evil", "Chaotic", "EVIL", "other"]:
+        assert angel.is_aligned(part) == False, f"Angel should NOT be aligned with {part}"
+        
+    # 2. Shoggoth (neutral, evil)
+    # matches only: "chaotic", "lawful", "neutral", "evil"
+    shoggoth = Power("Shoggoth", 0, 0, 10)
+    for part in ["chaotic", "lawful", "neutral", "evil", "CHAOTIC", "Lawful", "NEUTRAL", "Evil"]:
+        assert shoggoth.is_aligned(part) == True, f"Shoggoth should be aligned with {part}"
+    for part in ["good", "Good", "something_else"]:
+        assert shoggoth.is_aligned(part) == False, f"Shoggoth should NOT be aligned with {part}"
+        
+    # 3. Kirin (lawful, neutral)
+    # matches only: "lawful", "good", "evil", "neutral"
+    kirin = Power("Kirin", 0, 0, 10)
+    for part in ["lawful", "good", "evil", "neutral", "Lawful", "GOOD", "Evil", "Neutral"]:
+        assert kirin.is_aligned(part) == True, f"Kirin should be aligned with {part}"
+    for part in ["chaotic", "Chaotic", "invalid"]:
+        assert kirin.is_aligned(part) == False, f"Kirin should NOT be aligned with {part}"
+
+    # 4. Pegasus (neutral, good)
+    # matches only: "chaotic", "lawful", "neutral", "good"
+    pegasus = Power("Pegasus", 0, 0, 10)
+    for part in ["chaotic", "lawful", "neutral", "good", "Chaotic", "LAWFUL", "Neutral", "Good"]:
+        assert pegasus.is_aligned(part) == True, f"Pegasus should be aligned with {part}"
+    for part in ["evil", "Evil", "test"]:
+        assert pegasus.is_aligned(part) == False, f"Pegasus should NOT be aligned with {part}"
+
+    # 5. Void (no alignment)
+    # matches nothing
+    void = Power("Void", 0, 0, 10)
+    for part in ["lawful", "chaotic", "neutral", "good", "evil", "Good", "Evil"]:
+        assert void.is_aligned(part) == False, f"Void should NOT be aligned with {part}"
+
+    print("Power is_aligned checks passed successfully!")
+
+
 def main():
     pygame.init()
     pygame.mixer.init()
@@ -341,6 +553,8 @@ def main():
     run_quick_setup_tests()
     run_movement_range_and_turn_tests()
     run_player_tests()
+    run_player_control_alignment_tests()
+    run_is_aligned_tests()
     run_rendering_generation_test()
     
     print("\n=============================================")
