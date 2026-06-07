@@ -40,6 +40,8 @@ class MapGrid:
         self.powers = {}
         # Key: (q, r), Value: List of Champion units
         self.champions = {}
+        # Key: (q, r), Value: List of Army units
+        self.armies = {}
         
         # Camera scroll offset (center of the screen)
         # Starting camera is centered on (0, 0)
@@ -107,6 +109,15 @@ class MapGrid:
             self.champions[loc] = []
         self.champions[loc].append(champion)
 
+    def add_army(self, army):
+        """
+        Adds an army unit to the map. Supports multiple units at the same location.
+        """
+        loc = army.hex_location
+        if loc not in self.armies:
+            self.armies[loc] = []
+        self.armies[loc].append(army)
+
     def get_champion_count(self, alignment):
         """
         Returns the number of active champions with the given alignment part on the grid.
@@ -131,6 +142,41 @@ class MapGrid:
             if idx not in used_indices:
                 return idx
         return None
+
+    def get_army_count(self, alignment):
+        """
+        Returns the number of active armies with the given alignment on the grid.
+        """
+        count = 0
+        for loc, a_list in self.armies.items():
+            for a in a_list:
+                if a.alignment.lower() == alignment.lower():
+                    count += 1
+        return count
+
+    def get_next_army_index(self, alignment):
+        """
+        Returns the first unused index (1 to 4) for a given army alignment.
+        """
+        used_indices = set()
+        for loc, a_list in self.armies.items():
+            for a in a_list:
+                if a.alignment.lower() == alignment.lower():
+                    used_indices.add(a.index)
+        for idx in range(1, 5):
+            if idx not in used_indices:
+                return idx
+        return None
+
+    def is_hex_muster_available(self, q, r):
+        """
+        Returns True if no currently alive army on the board was mustered from the hex at (q, r).
+        """
+        for loc, a_list in self.armies.items():
+            for a in a_list:
+                if getattr(a, "source_hex_coords", None) == (q, r):
+                    return False
+        return True
 
     def get_power_at_screen_pos(self, mouse_x, mouse_y, viewport_rect):
         """
@@ -206,6 +252,44 @@ class MapGrid:
             champ_rect = pygame.Rect(px, py, unit_size[0], unit_size[1])
             if champ_rect.collidepoint(mouse_x, mouse_y):
                 return champ
+        return None
+
+    def get_army_at_screen_pos(self, mouse_x, mouse_y, viewport_rect):
+        """
+        Checks if a left-click occurred on any Army unit nested in the map grid.
+        Returns the Army object if hit, otherwise None.
+        """
+        view_cx = viewport_rect.x + viewport_rect.width / 2.0
+        view_cy = viewport_rect.y + viewport_rect.height / 2.0
+        
+        # Identify axial coordinates under the mouse
+        q, r = self.screen_to_axial(mouse_x, mouse_y, viewport_rect)
+        
+        armies_list = self.armies.get((q, r), [])
+        if not armies_list:
+            return None
+            
+        lx, ly = self.get_hex_center(q, r)
+        cx = view_cx + self.camera_x + lx
+        cy = view_cy + self.camera_y + ly
+        
+        num_armies = len(armies_list)
+        
+        # Dynamic layout scaling based on current hex width (baseline 293)
+        scale = self.hex_width / 293.0
+        size_val = max(12, int(36 * scale))
+        unit_size = (size_val, size_val)
+        spacing = max(2, int(6 * scale))
+        oy = int(35 * scale)  # Bottom row for Armies
+        
+        for idx, army in enumerate(armies_list):
+            ox = int((idx - (num_armies - 1) / 2.0) * (unit_size[0] + spacing))
+            px = int(cx + ox - unit_size[0] / 2)
+            py = int(cy + oy - unit_size[1] / 2)
+            
+            army_rect = pygame.Rect(px, py, unit_size[0], unit_size[1])
+            if army_rect.collidepoint(mouse_x, mouse_y):
+                return army
         return None
 
 
@@ -495,6 +579,32 @@ class MapGrid:
                         elif champ.alignment == "lawful":
                             glow_color = (0, 100, 255)
                         elif champ.alignment == "chaotic":
+                            glow_color = (255, 128, 0)
+                        pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), border_w)
+
+                # 3. Render Armies in the bottom row
+                armies_list = self.armies.get((q, r), [])
+                if armies_list:
+                    num_armies = len(armies_list)
+                    oy_army = int(35 * scale)
+                    for idx, army in enumerate(armies_list):
+                        ox = int((idx - (num_armies - 1) / 2.0) * (unit_size[0] + spacing))
+                        px = int(cx + ox - unit_size[0] / 2)
+                        py = int(cy + oy_army - unit_size[1] / 2)
+                        
+                        army_surf = army.get_surface(size=unit_size, mask_type="square")
+                        screen.blit(army_surf, (px, py))
+                        
+                        glow_color = (189, 0, 255)
+                        if army.alignment == "good":
+                            glow_color = settings.COLOR_NEON_CYAN
+                        elif army.alignment == "evil":
+                            glow_color = settings.COLOR_NEON_PINK
+                        elif army.alignment == "neutral":
+                            glow_color = settings.COLOR_NEON_GREEN
+                        elif army.alignment == "lawful":
+                            glow_color = (0, 100, 255)
+                        elif army.alignment == "chaotic":
                             glow_color = (255, 128, 0)
                         pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), border_w)
 

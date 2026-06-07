@@ -697,6 +697,120 @@ def run_summon_champion_tests():
     print("Champion count tracking and index generation passed.")
 
 
+def run_army_tests():
+    print("\n=============================================")
+    print("--- Running Army Unit Tests ---")
+    print("=============================================")
+    from armies import Army
+    from map import MapGrid
+    
+    # 1. Test valid initialization
+    a = Army("neutral", 2, -1, strength=10, index=2)
+    assert a.alignment == "neutral"
+    assert a.hex_location == (2, -1)
+    assert a.strength == 10
+    assert a.index == 2
+    assert a.image_filename == "Neutral2.jpg"
+    assert a.name == "Neutral Army"
+    print("Valid Army initialization passed.")
+    
+    # 2. Test property getters and setters
+    a.alignment = "lawful"
+    assert a.alignment == "lawful"
+    assert a.image_filename == "Lawful2.jpg"
+    assert a.name == "Army of Law"
+    
+    a.alignment = "chaotic"
+    assert a.name == "Army of Chaos"
+    
+    a.alignment = "good"
+    assert a.name == "Good Army"
+    
+    a.alignment = "evil"
+    assert a.name == "Evil Army"
+    
+    a.strength = 5
+    assert a.strength == 5
+    
+    a.index = 4
+    assert a.index == 4
+    assert a.image_filename == "Evil4.jpg"
+    
+    a.hex_location = (-3, 1)
+    assert a.q == -3 and a.r == 1
+    print("Army property getters/setters passed.")
+    
+    # 3. Test validation rules
+    # Invalid alignment
+    try:
+        Army("neutral-good", 0, 0, 5)
+        assert False, "Should have raised ValueError for invalid alignment"
+    except ValueError:
+        pass
+        
+    # Invalid strength
+    try:
+        Army("lawful", 0, 0, -1)
+        assert False, "Should have raised ValueError for negative strength"
+    except ValueError:
+        pass
+        
+    try:
+        Army("lawful", 0, 0, 5.5)
+        assert False, "Should have raised ValueError for non-integer strength"
+    except ValueError:
+        pass
+
+    # Invalid index
+    try:
+        Army("lawful", 0, 0, 1, index=0)
+        assert False, "Should have raised ValueError for index=0"
+    except ValueError:
+        pass
+
+    try:
+        Army("lawful", 0, 0, 1, index=5)
+        assert False, "Should have raised ValueError for index=5"
+    except ValueError:
+        pass
+    print("Army validation checks passed.")
+    
+    # 4. Test surface loading
+    surf = a.get_surface(size=(50, 50), mask_type="circle")
+    assert surf is not None
+    assert surf.get_width() == 50
+    assert surf.get_height() == 50
+    print("Army image/surface retrieval passed.")
+    
+    # 5. Test grid tracking
+    grid = MapGrid()
+    assert len(grid.armies) == 0
+    grid.add_army(a)
+    assert len(grid.armies) == 1
+    assert grid.armies[(-3, 1)][0] == a
+    assert a.source_hex_name == "Unknown"
+    assert a.source_hex_coords == (0, 0)
+    
+    # Test army count
+    assert grid.get_army_count("evil") == 1
+    
+    # Test hex muster availability
+    assert grid.is_hex_muster_available(0, 0) is False  # 'a' was mustered from (0, 0)
+    assert grid.is_hex_muster_available(1, 1) is True
+    
+    # Test click collision at bottom row (oy = 35 * scale)
+    viewport_rect = pygame.Rect(400, 0, 1200, 1000)
+    a2 = Army("neutral", 0, 0, 1, index=1)
+    grid.add_army(a2)
+    hit_army = grid.get_army_at_screen_pos(1000, 535, viewport_rect)
+    assert hit_army == a2, f"Expected hit_army to be a2, got {hit_army}"
+    
+    miss_army = grid.get_army_at_screen_pos(1000, 500, viewport_rect)
+    assert miss_army is None, "Should not hit army at center (0, 0) center row"
+    print("Army grid collision and tracking passed.")
+    print("Army checks completed successfully!")
+
+
 def main():
     pygame.init()
     pygame.mixer.init()
@@ -715,6 +829,7 @@ def main():
     run_is_aligned_tests()
     run_champion_tests()
     run_summon_champion_tests()
+    run_army_tests()
     run_rendering_generation_test()
     
     print("\n=============================================")
