@@ -139,27 +139,29 @@ def run_selection_and_formatting_tests():
     print(f"Formatted 'Woods': '{formatted_woods}' (Expected: 'Woods')")
     assert formatted_woods == "Woods", "Error: Location formatting failed for Woods!"
     
-    # 2. Test get_power_at_screen_pos for a single Power (should be at hex center)
+    # 2. Test get_power_at_screen_pos for a single Power (should be in top row: oy = -35)
     viewport_rect = pygame.Rect(400, 0, 1200, 1000)
-    clicked = grid.get_power_at_screen_pos(1000, 500, viewport_rect)
-    print(f"Clicked at (1000, 500) (Hex center): {clicked} (Expected: Power 'Void')")
-    assert clicked is not None and clicked.name == "Void", "Error: Failed to hit single Power at center!"
+    clicked = grid.get_power_at_screen_pos(1000, 465, viewport_rect)
+    print(f"Clicked at (1000, 465) (Power position): {clicked} (Expected: Power 'Void')")
+    assert clicked is not None and clicked.name == "Void", "Error: Failed to hit single Power at top row!"
     
-    clicked_miss = grid.get_power_at_screen_pos(950, 500, viewport_rect)
-    print(f"Clicked at (950, 500) (Miss): {clicked_miss} (Expected: None)")
+    clicked_miss = grid.get_power_at_screen_pos(950, 465, viewport_rect)
+    print(f"Clicked at (950, 465) (Miss): {clicked_miss} (Expected: None)")
     assert clicked_miss is None, "Error: Incorrectly hit Power far off center!"
     
-    # 3. Test multiple Powers (circular offset checking)
+    # 3. Test multiple Powers (horizontal row spacing, oy = -35)
     grid.powers[(0, 0)] = [
         Power("Angel", 0, 0, 10),
         Power("Demon", 0, 0, 8)
     ]
-    hit_angel = grid.get_power_at_screen_pos(1024, 500, viewport_rect)
-    print(f"Clicked at (1024, 500) (Offset 0): {hit_angel} (Expected: Power 'Angel')")
+    # Angel at idx 0 is offset x by -21 -> center x = 979, y = 465
+    hit_angel = grid.get_power_at_screen_pos(979, 465, viewport_rect)
+    print(f"Clicked at (979, 465) (Angel position): {hit_angel} (Expected: Power 'Angel')")
     assert hit_angel is not None and hit_angel.name == "Angel", "Error: Failed to hit Angel at offset!"
     
-    hit_demon = grid.get_power_at_screen_pos(976, 500, viewport_rect)
-    print(f"Clicked at (976, 500) (Offset 1): {hit_demon} (Expected: Power 'Demon')")
+    # Demon at idx 1 is offset x by +21 -> center x = 1021, y = 465
+    hit_demon = grid.get_power_at_screen_pos(1021, 465, viewport_rect)
+    print(f"Clicked at (1021, 465) (Demon position): {hit_demon} (Expected: Power 'Demon')")
     assert hit_demon is not None and hit_demon.name == "Demon", "Error: Failed to hit Demon at offset!"
     print("Selection and formatting checks passed successfully!")
 
@@ -171,12 +173,12 @@ def run_abilities_and_movement_tests():
     
     # 1. Test Power abilities list (shared + unique)
     angel = Power("Angel", 0, 0, 5)
-    print(f"Angel abilities: {angel.abilities} (Expected: ['Move', 'Smite'])")
-    assert angel.abilities == ["Move", "Smite"], f"Error: Angel abilities incorrect! Got {angel.abilities}"
+    print(f"Angel abilities: {angel.abilities} (Expected: ['Move', 'Summon Champion', 'Smite'])")
+    assert angel.abilities == ["Move", "Summon Champion", "Smite"], f"Error: Angel abilities incorrect! Got {angel.abilities}"
     
     pegasus = Power("Pegasus", 2, 3, 4)
-    print(f"Pegasus abilities: {pegasus.abilities} (Expected: ['Move', 'Swift Flight'])")
-    assert pegasus.abilities == ["Move", "Swift Flight"], f"Error: Pegasus abilities incorrect! Got {pegasus.abilities}"
+    print(f"Pegasus abilities: {pegasus.abilities} (Expected: ['Move', 'Summon Champion', 'Swift Flight'])")
+    assert pegasus.abilities == ["Move", "Summon Champion", "Swift Flight"], f"Error: Pegasus abilities incorrect! Got {pegasus.abilities}"
     
     # 2. Test grid movements and coordinate transitions
     grid = MapGrid()
@@ -539,6 +541,162 @@ def run_is_aligned_tests():
     print("Power is_aligned checks passed successfully!")
 
 
+def run_champion_tests():
+    print("\n=============================================")
+    print("--- Running Champion Unit Tests ---")
+    print("=============================================")
+    from champions import Champion
+    
+    # 1. Test valid initialization
+    c = Champion("neutral", 3, 2, -1, 15)
+    assert c.alignment == "neutral"
+    assert c.index == 3
+    assert c.hex_location == (2, -1)
+    assert c.strength == 15
+    assert c.image_filename == "Neutral3.jpg"
+    assert c.name == "Neutral Champion 3"
+    print("Valid Champion initialization passed.")
+    
+    # 2. Test property getters and setters
+    c.alignment = "Good"
+    assert c.alignment == "good"
+    assert c.image_filename == "Good3.jpg"
+    assert c.name == "Good Champion 3"
+    
+    c.index = 1
+    assert c.index == 1
+    assert c.image_filename == "Good1.jpg"
+    assert c.name == "Good Champion 1"
+    
+    c.strength = 0
+    assert c.strength == 0
+    
+    c.hex_location = (-4, 2)
+    assert c.q == -4 and c.r == 2
+    assert c.hex_location == (-4, 2)
+    
+    # Check other specific alignment naming conventions
+    c_law = Champion("lawful", 2, 0, 0, 1)
+    assert c_law.name == "Champion of Law 2"
+    
+    c_chaos = Champion("chaotic", 4, 0, 0, 1)
+    assert c_chaos.name == "Champion of Chaos 4"
+    
+    c_evil = Champion("evil", 1, 0, 0, 1)
+    assert c_evil.name == "Evil Champion 1"
+    
+    print("Champion property getters/setters passed.")
+    
+    # 3. Test validation rules
+    # Invalid alignment
+    try:
+        Champion("neutral-good", 1, 0, 0, 5)
+        assert False, "Should have raised ValueError for invalid alignment"
+    except ValueError:
+        pass
+        
+    # Invalid index
+    try:
+        Champion("lawful", 5, 0, 0, 5)
+        assert False, "Should have raised ValueError for index > 4"
+    except ValueError:
+        pass
+        
+    try:
+        Champion("lawful", 0, 0, 0, 5)
+        assert False, "Should have raised ValueError for index < 1"
+    except ValueError:
+        pass
+        
+    # Invalid strength
+    try:
+        Champion("lawful", 1, 0, 0, -1)
+        assert False, "Should have raised ValueError for negative strength"
+    except ValueError:
+        pass
+        
+    try:
+        Champion("lawful", 1, 0, 0, 5.5)
+        assert False, "Should have raised ValueError for non-integer strength"
+    except ValueError:
+        pass
+    print("Champion validation checks passed.")
+    
+    # 4. Test surface loading
+    # We initialize pygame so we can test loading
+    surf = c.get_surface(size=(50, 50), mask_type="circle")
+    assert surf is not None
+    assert surf.get_width() == 50
+    assert surf.get_height() == 50
+    print("Champion image/surface retrieval passed.")
+    print("Champion checks completed successfully!")
+
+
+def run_summon_champion_tests():
+    print("\n=============================================")
+    print("--- Running Summon Champion Tests ---")
+    print("=============================================")
+    from powers import Power
+    from champions import Champion
+    from map import MapGrid
+    
+    # 1. Test Power abilities list
+    angel = Power("Angel", 0, 0, 10)
+    assert "Summon Champion" in angel.abilities, "Angel should have Summon Champion ability"
+    
+    void = Power("Void", 0, 0, 10)
+    assert "Summon Champion" not in void.abilities, "Void should NOT have Summon Champion ability"
+    print("Ability list checked for Summon Champion.")
+    
+    # 2. Test champion tracking in MapGrid
+    grid = MapGrid()
+    assert len(grid.champions) == 0, "Initial champions should be empty"
+    
+    # 3. Test champion count tracking and indexing logic
+    # Add a good champion
+    c1 = Champion("good", grid.get_next_champion_index("good"), 0, 0, 1)
+    assert c1.index == 1
+    grid.add_champion(c1)
+    assert grid.get_champion_count("good") == 1
+    
+    # Add a second good champion
+    c2 = Champion("good", grid.get_next_champion_index("good"), 0, 0, 1)
+    assert c2.index == 2
+    grid.add_champion(c2)
+    assert grid.get_champion_count("good") == 2
+    
+    # Add an evil champion
+    c3 = Champion("evil", grid.get_next_champion_index("evil"), 1, 0, 1)
+    assert c3.index == 1
+    grid.add_champion(c3)
+    assert grid.get_champion_count("evil") == 1
+    assert grid.get_champion_count("good") == 2
+    
+    # Fill up to 4 good champions
+    c4 = Champion("good", grid.get_next_champion_index("good"), 0, 0, 1)
+    assert c4.index == 3
+    grid.add_champion(c4)
+    c5 = Champion("good", grid.get_next_champion_index("good"), 0, 0, 1)
+    assert c5.index == 4
+    grid.add_champion(c5)
+    
+    assert grid.get_champion_count("good") == 4
+    assert grid.get_next_champion_index("good") is None, "Should not return an index when 4 exist"
+    
+    # Test releasing a champion makes its index available again
+    # We remove champion with index 2
+    for loc, c_list in grid.champions.items():
+        for c in c_list:
+            if c.alignment == "good" and c.index == 2:
+                c_list.remove(c)
+                break
+                
+    assert grid.get_champion_count("good") == 3
+    assert grid.get_next_champion_index("good") == 2, "Index 2 should be reclaimed"
+    
+    print("Champion count tracking and index generation passed.")
+
+
 def main():
     pygame.init()
     pygame.mixer.init()
@@ -555,6 +713,8 @@ def main():
     run_player_tests()
     run_player_control_alignment_tests()
     run_is_aligned_tests()
+    run_champion_tests()
+    run_summon_champion_tests()
     run_rendering_generation_test()
     
     print("\n=============================================")

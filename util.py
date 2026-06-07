@@ -17,6 +17,7 @@ _sound_cache = {}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HEXES_DIR = os.path.join(BASE_DIR, "hexes")
 POWERS_DIR = os.path.join(BASE_DIR, "powers")
+CHAMPIONS_DIR = os.path.join(BASE_DIR, "champions")
 
 # Dictionary mapping lowercase power keys to exact capitalized filenames on disk
 POWER_DISK_CASING = {
@@ -234,6 +235,91 @@ def load_power_image(power_name, alpha=True, color_fallback=(189, 0, 255), size=
         text_rect = text_surf.get_rect(center=(W // 2, H // 2))
         
         # Draw background shadow for readability
+        shadow_surf = font.render(label_text, True, (11, 14, 20))
+        fallback_surf.blit(shadow_surf, text_rect.move(1, 1))
+        fallback_surf.blit(text_surf, text_rect)
+    except:
+        pass
+        
+    _image_cache[cache_key] = fallback_surf
+    return fallback_surf
+
+def load_champion_image(alignment, index, alpha=True, color_fallback=(189, 0, 255), size=(100, 100), mask_type="circle"):
+    """
+    Loads a champion unit artwork image (e.g. 'Neutral3.jpg') from the 'champions' folder with caching.
+    Supports 'circle', 'hex', or 'square' mask types.
+    """
+    clean_name = f"{alignment.capitalize()}{index}"
+    
+    cache_key = ("champion_" + clean_name, alpha, size, mask_type)
+    if cache_key in _image_cache:
+        return _image_cache[cache_key]
+
+    file_path = os.path.join(CHAMPIONS_DIR, f"{clean_name}.jpg")
+    
+    if os.path.exists(file_path):
+        try:
+            original_surf = pygame.image.load(file_path)
+            original_surf = pygame.transform.smoothscale(original_surf, size)
+            original_surf = original_surf.convert_alpha() if alpha else original_surf.convert()
+            
+            W, H = size
+            masked_surf = pygame.Surface(size, pygame.SRCALPHA)
+            
+            if mask_type == "hex":
+                vertices = [
+                    (W, H / 2.0),
+                    (3.0 * W / 4.0, H),
+                    (W / 4.0, H),
+                    (0.0, H / 2.0),
+                    (W / 4.0, 0.0),
+                    (3.0 * W / 4.0, 0.0)
+                ]
+                pygame.draw.polygon(masked_surf, (255, 255, 255, 255), vertices)
+            elif mask_type == "square":
+                pygame.draw.rect(masked_surf, (255, 255, 255, 255), (0, 0, W, H))
+            else:
+                pygame.draw.circle(masked_surf, (255, 255, 255, 255), (W // 2, H // 2), min(W, H) // 2)
+            
+            masked_surf.blit(original_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+            _image_cache[cache_key] = masked_surf
+            return masked_surf
+        except pygame.error as e:
+            print(f"[Util Warning] Failed to load champion image {clean_name}.jpg: {e}. Creating placeholder.")
+    else:
+        print(f"[Util Warning] Champion image path not found: {file_path}. Creating placeholder.")
+
+    # Create dynamic aesthetic placeholder
+    fallback_surf = pygame.Surface(size, pygame.SRCALPHA)
+    W, H = size
+    
+    if mask_type == "hex":
+        vertices = [
+            (W, H // 2),
+            (3 * W // 4, H),
+            (W // 4, H),
+            (0, H // 2),
+            (W // 4, 0),
+            (3 * W // 4, 0)
+        ]
+        pygame.draw.polygon(fallback_surf, (*color_fallback, 40), vertices, 0)
+        pygame.draw.polygon(fallback_surf, color_fallback, vertices, 2)
+    elif mask_type == "square":
+        pygame.draw.rect(fallback_surf, (*color_fallback, 40), (0, 0, W, H), 0)
+        pygame.draw.rect(fallback_surf, color_fallback, (0, 0, W, H), 2)
+    else:
+        pygame.draw.circle(fallback_surf, (*color_fallback, 40), (W // 2, H // 2), min(W, H) // 2, 0)
+        pygame.draw.circle(fallback_surf, color_fallback, (W // 2, H // 2), min(W, H) // 2, 2)
+    
+    try:
+        font_size = max(6, min(10, W // 4))
+        font = pygame.font.SysFont("Courier", font_size, bold=True)
+        abbr_len = max(3, W // 10)
+        label_text = clean_name[:abbr_len].upper()
+        
+        text_surf = font.render(label_text, True, (255, 255, 255))
+        text_rect = text_surf.get_rect(center=(W // 2, H // 2))
+        
         shadow_surf = font.render(label_text, True, (11, 14, 20))
         fallback_surf.blit(shadow_surf, text_rect.move(1, 1))
         fallback_surf.blit(text_surf, text_rect)

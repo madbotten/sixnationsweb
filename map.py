@@ -38,6 +38,8 @@ class MapGrid:
         self.tiles = {}
         # Key: (q, r), Value: Power
         self.powers = {}
+        # Key: (q, r), Value: List of Champion units
+        self.champions = {}
         
         # Camera scroll offset (center of the screen)
         # Starting camera is centered on (0, 0)
@@ -96,6 +98,40 @@ class MapGrid:
             self.powers[loc] = []
         self.powers[loc].append(power)
 
+    def add_champion(self, champion):
+        """
+        Adds a champion unit to the map. Supports multiple units at the same location.
+        """
+        loc = champion.hex_location
+        if loc not in self.champions:
+            self.champions[loc] = []
+        self.champions[loc].append(champion)
+
+    def get_champion_count(self, alignment):
+        """
+        Returns the number of active champions with the given alignment part on the grid.
+        """
+        count = 0
+        for loc, c_list in self.champions.items():
+            for c in c_list:
+                if c.alignment.lower() == alignment.lower():
+                    count += 1
+        return count
+
+    def get_next_champion_index(self, alignment):
+        """
+        Returns the first unused index (1 to 4) for a given alignment.
+        """
+        used_indices = set()
+        for loc, c_list in self.champions.items():
+            for c in c_list:
+                if c.alignment.lower() == alignment.lower():
+                    used_indices.add(c.index)
+        for idx in range(1, 5):
+            if idx not in used_indices:
+                return idx
+        return None
+
     def get_power_at_screen_pos(self, mouse_x, mouse_y, viewport_rect):
         """
         Checks if a left-click occurred on any Power unit nested in the map grid.
@@ -116,23 +152,60 @@ class MapGrid:
         cy = view_cy + self.camera_y + ly
         
         num_powers = len(powers_list)
-        unit_size = (36, 36)
+        
+        # Dynamic layout scaling based on current hex width (baseline 293)
+        scale = self.hex_width / 293.0
+        size_val = max(12, int(36 * scale))
+        unit_size = (size_val, size_val)
+        spacing = max(2, int(6 * scale))
+        oy = int(-35 * scale)  # Top row for Powers
         
         for idx, power in enumerate(powers_list):
-            if num_powers == 1:
-                ox, oy = 0, 0
-            else:
-                angle = idx * (2.0 * math.pi / num_powers)
-                radius = 24.0
-                ox = int(radius * math.cos(angle))
-                oy = int(radius * math.sin(angle))
-                
+            ox = int((idx - (num_powers - 1) / 2.0) * (unit_size[0] + spacing))
             px = int(cx + ox - unit_size[0] / 2)
             py = int(cy + oy - unit_size[1] / 2)
             
             power_rect = pygame.Rect(px, py, unit_size[0], unit_size[1])
             if power_rect.collidepoint(mouse_x, mouse_y):
                 return power
+        return None
+
+    def get_champion_at_screen_pos(self, mouse_x, mouse_y, viewport_rect):
+        """
+        Checks if a left-click occurred on any Champion unit nested in the map grid.
+        Returns the Champion object if hit, otherwise None.
+        """
+        view_cx = viewport_rect.x + viewport_rect.width / 2.0
+        view_cy = viewport_rect.y + viewport_rect.height / 2.0
+        
+        # Identify axial coordinates under the mouse
+        q, r = self.screen_to_axial(mouse_x, mouse_y, viewport_rect)
+        
+        champions_list = self.champions.get((q, r), [])
+        if not champions_list:
+            return None
+            
+        lx, ly = self.get_hex_center(q, r)
+        cx = view_cx + self.camera_x + lx
+        cy = view_cy + self.camera_y + ly
+        
+        num_champs = len(champions_list)
+        
+        # Dynamic layout scaling based on current hex width (baseline 293)
+        scale = self.hex_width / 293.0
+        size_val = max(12, int(36 * scale))
+        unit_size = (size_val, size_val)
+        spacing = max(2, int(6 * scale))
+        oy = 0  # Middle row for Champions
+        
+        for idx, champ in enumerate(champions_list):
+            ox = int((idx - (num_champs - 1) / 2.0) * (unit_size[0] + spacing))
+            px = int(cx + ox - unit_size[0] / 2)
+            py = int(cy + oy - unit_size[1] / 2)
+            
+            champ_rect = pygame.Rect(px, py, unit_size[0], unit_size[1])
+            if champ_rect.collidepoint(mouse_x, mouse_y):
+                return champ
         return None
 
 
@@ -367,33 +440,27 @@ class MapGrid:
                 # Draw solid black boundary lines around all placed hexes
                 self.draw_hex_polygon(screen, cx, cy, w - 2, h - 2, (0, 0, 0), width=3)
                 
-                # If this tile contains Powers, display their images nested within the hex tile
+                # Dynamic layout scaling based on current hex width (baseline 293)
+                scale = self.hex_width / 293.0
+                size_val = max(12, int(36 * scale))
+                unit_size = (size_val, size_val)
+                spacing = max(2, int(6 * scale))
+                border_w = max(1, int(1.2 * scale))
+
+                # 1. Render Powers in the top row
                 powers_list = self.powers.get((q, r), [])
                 if powers_list:
                     num_powers = len(powers_list)
-                    unit_size = (36, 36) # Small square unit token size
-                    
+                    oy_power = int(-35 * scale)
                     for idx, power in enumerate(powers_list):
-                        # Calculate layout offsets so all powers in the same hex are visible
-                        if num_powers == 1:
-                            ox, oy = 0, 0
-                        else:
-                            # Distribute offset in a circle around the center of the hex tile
-                            angle = idx * (2.0 * math.pi / num_powers)
-                            radius = 24.0 # Offset distance in pixels from hex center
-                            ox = int(radius * math.cos(angle))
-                            oy = int(radius * math.sin(angle))
-                            
-                        # Retrieve the square unit token surface
-                        power_surf = power.get_surface(size=unit_size, mask_type="square")
+                        ox = int((idx - (num_powers - 1) / 2.0) * (unit_size[0] + spacing))
+                        px = int(cx + ox - unit_size[0] / 2)
+                        py = int(cy + oy_power - unit_size[1] / 2)
                         
-                        # Center the square token at (cx + ox, cy + oy)
-                        px = int(cx + ox - power_surf.get_width() / 2)
-                        py = int(cy + oy - power_surf.get_height() / 2)
+                        power_surf = power.get_surface(size=unit_size, mask_type="square")
                         screen.blit(power_surf, (px, py))
                         
-                        # Draw a distinct glowing neon square border for the Power's token
-                        glow_color = (189, 0, 255) # default purple
+                        glow_color = (189, 0, 255)
                         parts = power.get_alignment_parts()
                         if parts:
                             moral = parts[1]
@@ -403,9 +470,33 @@ class MapGrid:
                                 glow_color = settings.COLOR_NEON_PINK
                             elif "neutral" in moral:
                                 glow_color = settings.COLOR_NEON_GREEN
+                        pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), border_w)
+
+                # 2. Render Champions in the middle row
+                champions_list = self.champions.get((q, r), [])
+                if champions_list:
+                    num_champs = len(champions_list)
+                    oy_champ = 0
+                    for idx, champ in enumerate(champions_list):
+                        ox = int((idx - (num_champs - 1) / 2.0) * (unit_size[0] + spacing))
+                        px = int(cx + ox - unit_size[0] / 2)
+                        py = int(cy + oy_champ - unit_size[1] / 2)
                         
-                        # Draw a beautiful glowing border around the small square
-                        pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), 1)
+                        champ_surf = champ.get_surface(size=unit_size, mask_type="square")
+                        screen.blit(champ_surf, (px, py))
+                        
+                        glow_color = (189, 0, 255)
+                        if champ.alignment == "good":
+                            glow_color = settings.COLOR_NEON_CYAN
+                        elif champ.alignment == "evil":
+                            glow_color = settings.COLOR_NEON_PINK
+                        elif champ.alignment == "neutral":
+                            glow_color = settings.COLOR_NEON_GREEN
+                        elif champ.alignment == "lawful":
+                            glow_color = (0, 100, 255)
+                        elif champ.alignment == "chaotic":
+                            glow_color = (255, 128, 0)
+                        pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), border_w)
 
         # Draw ghost preview (snapping guideline) under drag and drop
         if ghost_info:

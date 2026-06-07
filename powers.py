@@ -67,6 +67,8 @@ class Power:
         # Initialize abilities
         self.unique_ability = UNIQUE_ABILITIES.get(name.lower(), "Special")
         self.shared_abilities = ["Move"]
+        if name.lower() != "void":
+            self.shared_abilities.append("Summon Champion")
 
     @property
     def abilities(self):
