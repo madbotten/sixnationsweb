@@ -13,6 +13,13 @@ FPS = 60
 PHASE_MAP_BUILDING = 0
 PHASE_MAIN_GAME = 1
 
+# Faction Turn Phase Enumerations
+TURN_PHASE_INCOME = 0
+TURN_PHASE_MOVE = 1
+TURN_PHASE_COMBAT = 2
+TURN_PHASE_CONTROL = 3
+TURN_PHASE_VICTORY = 4
+
 # Hex Grid Layout Constants
 HEX_WIDTH = 293           # Width of the squashed hex artwork on screen (33% larger)
 HEX_HEIGHT = 160          # Height of the squashed hex artwork on screen (33% larger)
@@ -22,19 +29,14 @@ SCROLL_SPEED = 500        # Camera scroll speed in pixels per second
 # Tile Pool Specifications
 # The 17 unique tiles (only one copy of each exists in the entire game)
 UNIQUE_TILES = [
-    "Elmany", "FungalJungle", "GoldenCanyon", "Gonce", "Limbo", "PitofDespair",
-    "Tanelorn", "TempleofEvil", "TheDark", "TheWilds", "Tileronde",
-    "TowerofJustice", "SunkenCanopy", "PetrifiedForest", "EchoingCaverns", "ObsidianWastes", "StormTundra"
+    "Elmany", "FungalJungle", "GoldenCanyon", "Limbo", "PitofDespair",
+    "Tanelorn", "TempleofEvil", "TheDark", "Tileronde",
+    "TowerofJustice", "SunkenCanopy", "PetrifiedForest", "StormTundra"
 ]
 
-# The 6 common tiles (can be duplicated at random to pad decks to 16)
+# The 10 common tiles (can be duplicated at random to pad decks to 16)
 COMMON_TILES = [
-    "Woods", "Swamp", "Mountains", "Plains", "Desert", "Hills"
-]
-
-# Unique tiles that cannot be placed adjacent to each other (constraint list)
-RESTRICTED_TILES = [
-    "Limbo", "PitofDespair", "TempleofEvil", "TowerofJustice", "Tanelorn"
+    "Woods", "Swamp", "Mountains", "Plains", "Desert", "Hills", "Coastal", "Subterranean", "Barrens", "Jungle"
 ]
 
 # Total hand capacity per player

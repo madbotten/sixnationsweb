@@ -7,20 +7,23 @@ import math
 import pygame
 import settings
 import util
-from powers import Power
 
 class Tile:
     def __init__(self, q, r, terrain_type, owner='player'):
         self.q = q
         self.r = r
         self.terrain_type = terrain_type
-        self.owner = owner  # 'player', 'bot', or 'system'
+        self.owner = owner  # 'player', 'bot', or a Faction object
+        self.is_stronghold = False
+        self.has_artifact = False
         
         # Unique tiles have distinct aesthetic colors when rendering placeholders
         self.glow_color = settings.COLOR_NEON_CYAN
-        if terrain_type in settings.UNIQUE_TILES:
+        uniques_lower = [t.lower() for t in settings.UNIQUE_TILES]
+        terrain_clean = terrain_type.lower()
+        if terrain_clean in uniques_lower:
             # Shift between hot pink, purple, and green for unique tiles
-            idx = settings.UNIQUE_TILES.index(terrain_type)
+            idx = uniques_lower.index(terrain_clean)
             if idx % 3 == 0:
                 self.glow_color = settings.COLOR_NEON_PINK
             elif idx % 3 == 1:
@@ -36,8 +39,6 @@ class MapGrid:
     def __init__(self):
         # Key: (q, r), Value: Tile
         self.tiles = {}
-        # Key: (q, r), Value: Power
-        self.powers = {}
         # Key: (q, r), Value: List of Champion units
         self.champions = {}
         # Key: (q, r), Value: List of Army units
@@ -50,55 +51,103 @@ class MapGrid:
         
         self.hex_width = settings.HEX_WIDTH
         self.hex_height = settings.HEX_HEIGHT
+
+    def get_ring_coords(self, n):
+        """
+        Returns ordered coordinates of concentric Ring n.
+        For Ring 0, returns [(0, 0)].
+        """
+        if n == 0:
+            return [(0, 0)]
+        results = []
+        q, r = 0, -n
+        directions = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)]
+        for d in directions:
+            for _ in range(n):
+                results.append((q, r))
+                q += d[0]
+                r += d[1]
+        return results
+
+    def generate_map(self):
+        """
+        Generates a 37-hex grid:
+        - Center 7 hexes (Ring 0 & Ring 1) are random unique terrains with artifacts.
+        - Outer 30 hexes (Ring 2 & Ring 3) are divided into 10 adjacent sectors of 3 hexes.
+        - Each Faction (0-9) is assigned to a sector such that no two opposed factions start next to each other.
+        - The 3 hexes of a faction's sector are placed with their home terrain and owned by the Faction.
+        - Exactly one Stronghold is placed in Ring 3 for each Faction.
+        """
+        import random
+        from factions import FACTIONS
         
-        # Populate initial "woods" tile at (0, 0)
-        self.place_tile(0, 0, "woods", "system")
+        self.tiles.clear()
+        
+        # 1. Place the center 7 unique tiles
+        center_coords = self.get_ring_coords(0) + self.get_ring_coords(1)
+        unique_terrains = random.sample(settings.UNIQUE_TILES, len(center_coords))
+        
+        for coord, terrain in zip(center_coords, unique_terrains):
+            q, r = coord
+            self.place_tile(q, r, terrain, "system")
+            self.tiles[(q, r)].has_artifact = True
+            
+        # 2. Find a valid faction placement cycle around the outside
+        faction_order = None
+        while not faction_order:
+            shuffled_factions = list(FACTIONS)
+            random.shuffle(shuffled_factions)
+            valid = True
+            for i in range(10):
+                f1 = shuffled_factions[i]
+                f2 = shuffled_factions[(i + 1) % 10]
+                if f1.isOpposed(f2):
+                    valid = False
+                    break
+            if valid:
+                faction_order = shuffled_factions
+
+        # 3. Retrieve Ring 2 and Ring 3 coordinates
+        ring2 = self.get_ring_coords(2)
+        ring3 = self.get_ring_coords(3)
+        outer_coords = ring2 + ring3
+        
+        # Sort outer coordinates by polar angle
+        def get_polar_key(coord):
+            q, r = coord
+            x, y = self.get_hex_center(q, r)
+            angle = math.atan2(y, x)
+            if angle < 0:
+                angle += 2 * math.pi
+            # Sub-sort: outer ring (Ring 3) has distance 3, inner (Ring 2) has distance 2.
+            dist = max(abs(q), abs(r), abs(q + r))
+            return (angle, -dist)
+            
+        outer_coords.sort(key=get_polar_key)
+        
+        # 4. Partition the sorted coordinates into 10 sectors of 3 hexes each
+        # And place tiles for each Faction in the cycle
+        for idx, faction in enumerate(faction_order):
+            sector_coords = outer_coords[idx * 3 : (idx + 1) * 3]
+            
+            # Place the 3 home terrain tiles
+            for coord in sector_coords:
+                q, r = coord
+                self.place_tile(q, r, faction.home_terrain, faction)
+                
+            # Randomly pick a tile in the outer ring (Ring 3) to be the Stronghold.
+            ring3_candidates = [
+                c for c in sector_coords if max(abs(c[0]), abs(c[1]), abs(c[0] + c[1])) == 3
+            ]
+            
+            stronghold_coord = random.choice(ring3_candidates) if ring3_candidates else random.choice(sector_coords)
+            self.tiles[stronghold_coord].is_stronghold = True
 
     def place_tile(self, q, r, terrain_type, owner):
         """
         Adds a tile to the map coordinates.
         """
         self.tiles[(q, r)] = Tile(q, r, terrain_type, owner)
-        
-        # Spawn associated Powers when specific tiles are placed
-        clean_terrain = terrain_type.replace(" ", "").lower()
-        if clean_terrain == "woods" and q == 0 and r == 0:
-            # The Void starts in the initial game tile used to start the map
-            self.add_power(Power("Void", q, r, strength=10))
-        elif clean_terrain == "pitofdespair":
-            # The Demon starts in Pit of Despair
-            self.add_power(Power("Demon", q, r, strength=10))
-        elif clean_terrain == "towerofjustice":
-            # The Angel starts in Tower of Justice
-            self.add_power(Power("Angel", q, r, strength=10))
-        elif clean_terrain == "templeofevil":
-            # Rakshasa starts in Temple of Evil
-            self.add_power(Power("Rakshasa", q, r, strength=10))
-        elif clean_terrain == "tanelorn":
-            # Couatl starts in Tanelorn
-            self.add_power(Power("Couatl", q, r, strength=10))
-        elif clean_terrain == "echoingcaverns":
-            # Shoggoth starts in Echoing Caverns
-            self.add_power(Power("Shoggoth", q, r, strength=10))
-        elif clean_terrain == "obsidianwastes":
-            # Dragon starts in Obsidian Wastes
-            self.add_power(Power("Dragon", q, r, strength=10))
-        elif clean_terrain == "thewilds":
-            # Pegasus starts in The Wilds
-            self.add_power(Power("Pegasus", q, r, strength=10))
-        elif clean_terrain == "limbo":
-            # Kirin starts in Limbo
-            self.add_power(Power("Kirin", q, r, strength=10))
-
-
-    def add_power(self, power):
-        """
-        Adds a power unit to the map. Supports multiple units at the same location.
-        """
-        loc = power.hex_location
-        if loc not in self.powers:
-            self.powers[loc] = []
-        self.powers[loc].append(power)
 
     def add_champion(self, champion):
         """
@@ -118,103 +167,165 @@ class MapGrid:
             self.armies[loc] = []
         self.armies[loc].append(army)
 
-    def get_champion_count(self, alignment):
+    def remove_army(self, army):
         """
-        Returns the number of active champions with the given alignment part on the grid.
+        Removes an army from its current location on the map.
+        """
+        loc = army.hex_location
+        if loc in self.armies:
+            if army in self.armies[loc]:
+                self.armies[loc].remove(army)
+            if not self.armies[loc]:
+                del self.armies[loc]
+
+    def remove_champion(self, champion):
+        """
+        Removes a champion from its current location on the map.
+        """
+        loc = champion.hex_location
+        if loc in self.champions:
+            if champion in self.champions[loc]:
+                self.champions[loc].remove(champion)
+            if not self.champions[loc]:
+                del self.champions[loc]
+
+    def can_muster_army(self, faction, q, r):
+        """
+        Checks if the faction controls the hex (owns the tile) and can muster there.
+        """
+        tile = self.get_tile(q, r)
+        if not tile:
+            return False
+        return tile.owner == faction
+
+    def muster_army(self, faction, q, r, strength=1):
+        """
+        Creates and adds an army to the map at (q, r) if controlled by the faction.
+        """
+        if not self.can_muster_army(faction, q, r):
+            raise ValueError(f"Faction {faction.race} does not control hex ({q}, {r}) to muster an army.")
+        
+        from armies import Army
+        index = self.get_next_army_index(faction)
+        army = Army(faction, q, r, strength=strength, index=index)
+        self.add_army(army)
+        return army
+
+    def can_move_army(self, army, target_q, target_r):
+        """
+        Checks if the army can move to the target coordinates.
+        The target hex must have an existing tile, and must be adjacent to the army's current location.
+        """
+        if not self.get_tile(target_q, target_r):
+            return False
+        
+        current_loc = army.hex_location
+        neighbors = self.get_neighbors(current_loc[0], current_loc[1])
+        return (target_q, target_r) in neighbors
+
+    def move_army(self, army, new_q, new_r):
+        """
+        Moves the army to the new location (new_q, new_r) if valid.
+        """
+        if not self.can_move_army(army, new_q, new_r):
+            raise ValueError(f"Army cannot move to ({new_q}, {new_r}) from {army.hex_location}.")
+        
+        self.remove_army(army)
+        army.q = new_q
+        army.r = new_r
+        self.add_army(army)
+
+    def can_move_champion(self, champion, target_q, target_r):
+        """
+        Checks if the champion can move to the target coordinates.
+        The target hex must have an existing tile, and must be adjacent to the champion's current location.
+        """
+        if not self.get_tile(target_q, target_r):
+            return False
+        
+        current_loc = champion.hex_location
+        neighbors = self.get_neighbors(current_loc[0], current_loc[1])
+        return (target_q, target_r) in neighbors
+
+    def move_champion(self, champion, new_q, new_r):
+        """
+        Moves the champion to the new location (new_q, new_r) if valid.
+        """
+        if not self.can_move_champion(champion, new_q, new_r):
+            raise ValueError(f"Champion cannot move to ({new_q}, {new_r}) from {champion.hex_location}.")
+        
+        self.remove_champion(champion)
+        champion.q = new_q
+        champion.r = new_r
+        self.add_champion(champion)
+
+    def get_champion_count(self, faction):
+        """
+        Returns the number of active champions with the given faction on the grid.
         """
         count = 0
         for loc, c_list in self.champions.items():
             for c in c_list:
-                if c.alignment.lower() == alignment.lower():
+                if c.faction == faction:
                     count += 1
         return count
 
-    def get_next_champion_index(self, alignment):
+    def get_next_champion_index(self, faction):
         """
-        Returns the first unused index (1 to 4) for a given alignment.
+        Returns the first unused index (always 1 since only one is allowed) or None if already in play.
         """
-        used_indices = set()
         for loc, c_list in self.champions.items():
             for c in c_list:
-                if c.alignment.lower() == alignment.lower():
-                    used_indices.add(c.index)
-        for idx in range(1, 5):
-            if idx not in used_indices:
-                return idx
-        return None
+                if c.faction == faction:
+                    return None
+        return 1
 
-    def get_army_count(self, alignment):
+    def get_army_count(self, faction):
         """
-        Returns the number of active armies with the given alignment on the grid.
+        Returns the number of active armies with the given faction on the grid.
         """
         count = 0
         for loc, a_list in self.armies.items():
             for a in a_list:
-                if a.alignment.lower() == alignment.lower():
+                if a.faction == faction:
                     count += 1
         return count
 
-    def get_next_army_index(self, alignment):
+    def get_controlled_hex_count(self, faction):
         """
-        Returns the first unused index (1 to 4) for a given army alignment.
+        Returns the number of hexes controlled by the given faction.
+        """
+        return sum(1 for tile in self.tiles.values() if tile.owner == faction)
+
+    def calculate_faction_income(self, faction):
+        """
+        Calculates the gold income for a faction:
+        1 gold for each 3 hexes controlled, rounded down, minimum 1 gold.
+        """
+        controlled_count = self.get_controlled_hex_count(faction)
+        return max(1, controlled_count // 3)
+
+    def get_next_army_index(self, faction):
+        """
+        Returns the first unused index for a given faction.
         """
         used_indices = set()
         for loc, a_list in self.armies.items():
             for a in a_list:
-                if a.alignment.lower() == alignment.lower():
+                if a.faction == faction:
                     used_indices.add(a.index)
-        for idx in range(1, 5):
-            if idx not in used_indices:
-                return idx
-        return None
+        # Search sequentially without a maximum cap
+        idx = 1
+        while idx in used_indices:
+            idx += 1
+        return idx
 
     def is_hex_muster_available(self, q, r):
         """
-        Returns True if no currently alive army on the board was mustered from the hex at (q, r).
+        Returns True always since there is no limit/hex tracking on armies.
         """
-        for loc, a_list in self.armies.items():
-            for a in a_list:
-                if getattr(a, "source_hex_coords", None) == (q, r):
-                    return False
         return True
 
-    def get_power_at_screen_pos(self, mouse_x, mouse_y, viewport_rect):
-        """
-        Checks if a left-click occurred on any Power unit nested in the map grid.
-        Returns the Power object if hit, otherwise None.
-        """
-        view_cx = viewport_rect.x + viewport_rect.width / 2.0
-        view_cy = viewport_rect.y + viewport_rect.height / 2.0
-        
-        # Identify axial coordinates under the mouse
-        q, r = self.screen_to_axial(mouse_x, mouse_y, viewport_rect)
-        
-        powers_list = self.powers.get((q, r), [])
-        if not powers_list:
-            return None
-            
-        lx, ly = self.get_hex_center(q, r)
-        cx = view_cx + self.camera_x + lx
-        cy = view_cy + self.camera_y + ly
-        
-        num_powers = len(powers_list)
-        
-        # Dynamic layout scaling based on current hex width (baseline 293)
-        scale = self.hex_width / 293.0
-        size_val = max(12, int(36 * scale))
-        unit_size = (size_val, size_val)
-        spacing = max(2, int(6 * scale))
-        oy = int(-35 * scale)  # Top row for Powers
-        
-        for idx, power in enumerate(powers_list):
-            ox = int((idx - (num_powers - 1) / 2.0) * (unit_size[0] + spacing))
-            px = int(cx + ox - unit_size[0] / 2)
-            py = int(cy + oy - unit_size[1] / 2)
-            
-            power_rect = pygame.Rect(px, py, unit_size[0], unit_size[1])
-            if power_rect.collidepoint(mouse_x, mouse_y):
-                return power
-        return None
 
     def get_champion_at_screen_pos(self, mouse_x, mouse_y, viewport_rect):
         """
@@ -357,15 +468,6 @@ class MapGrid:
             (q - 1, r + 1)
         ]
 
-    def get_valid_movement_destinations(self, power):
-        """
-        Returns a list of axial coordinate tuples (q, r) that are adjacent to the power
-        and have a tile placed on the map grid.
-        """
-        q, r = power.hex_location
-        neighbors = self.get_neighbors(q, r)
-        valid_destinations = [n for n in neighbors if n in self.tiles]
-        return valid_destinations
 
 
     def is_valid_placement(self, q, r, terrain_type=None):
@@ -373,32 +475,15 @@ class MapGrid:
         Validates if a tile can be placed at (q, r).
         1. Coordinate must be empty.
         2. Must have at least one adjacent tile in the current map grid.
-        3. Restricted tiles (Limbo, PitofDespair, etc.) cannot be adjacent to each other.
-        4. Restricted tiles cannot be placed next to the starting hex (0, 0).
         """
         if (q, r) in self.tiles:
             return False
             
-        # Lowercase restricted tiles list for robust comparison
-        restricted_lower = [t.lower() for t in settings.RESTRICTED_TILES]
-        is_restricted_dragging = False
-        if terrain_type is not None:
-            is_restricted_dragging = terrain_type.replace(" ", "").lower() in restricted_lower
-
-        # Enforce rule: RESTRICTED_TILES may not be placed next to the starting hex (0, 0)
-        if is_restricted_dragging and (q, r) in self.get_neighbors(0, 0):
-            return False
-
         has_neighbor = False
         for n_q, n_r in self.get_neighbors(q, r):
-            neighbor_tile = self.tiles.get((n_q, n_r))
-            if neighbor_tile is not None:
+            if (n_q, n_r) in self.tiles:
                 has_neighbor = True
-                
-                # Check restricted placement constraint
-                if is_restricted_dragging:
-                    if neighbor_tile.terrain_type.replace(" ", "").lower() in restricted_lower:
-                        return False
+                break
                 
         return has_neighbor
 
@@ -422,15 +507,23 @@ class MapGrid:
         self.camera_x += dx
         self.camera_y += dy
 
-    def center_on_power(self, power):
+    def find_stronghold_coord(self, faction):
         """
-        Adjusts the camera scroll offsets so that the hex containing the specified power
-        is centered in the map viewport.
+        Finds the axial coordinates (q, r) of the stronghold owned by the faction.
         """
-        if power is not None:
-            lx, ly = self.get_hex_center(power.q, power.r)
-            self.camera_x = -lx
-            self.camera_y = -ly
+        for coord, tile in self.tiles.items():
+            if tile.is_stronghold and tile.owner == faction:
+                return coord
+        return None
+
+    def center_on_hex(self, q, r):
+        """
+        Centers the map camera viewport on the given hex coordinate (q, r).
+        """
+        lx, ly = self.get_hex_center(q, r)
+        self.camera_x = -lx
+        self.camera_y = -ly
+
 
     def draw_hex_polygon(self, surface, cx, cy, w, h, color, width=0):
         """
@@ -521,8 +614,35 @@ class MapGrid:
                 blit_y = int(cy - tile_surf.get_height() / 2)
                 screen.blit(tile_surf, (blit_x, blit_y))
                 
-                # Draw solid black boundary lines around all placed hexes
-                self.draw_hex_polygon(screen, cx, cy, w - 2, h - 2, (0, 0, 0), width=3)
+                # Draw solid black boundary lines around all placed hexes (commented out per feedback)
+                # self.draw_hex_polygon(screen, cx, cy, w - 2, h - 2, (0, 0, 0), width=3)
+                
+
+                
+                from factions import Faction
+                if isinstance(tile.owner, Faction):
+                    try:
+                        font_owner = pygame.font.SysFont("Courier", 10, bold=True)
+                        txt_owner = font_owner.render(tile.owner.race.upper(), True, settings.COLOR_NEON_CYAN)
+                        screen.blit(txt_owner, txt_owner.get_rect(center=(cx, cy + h / 4)))
+                    except:
+                        pass
+
+                # Render Stronghold and Artifact visual markers
+                if getattr(tile, 'is_stronghold', False):
+                    try:
+                        font_sh = pygame.font.SysFont("Courier", 11, bold=True)
+                        txt_sh = font_sh.render("🏰 STRONGHOLD", True, (255, 215, 0))
+                        screen.blit(txt_sh, txt_sh.get_rect(center=(cx, cy)))
+                    except:
+                        pass
+                elif getattr(tile, 'has_artifact', False):
+                    try:
+                        font_art = pygame.font.SysFont("Courier", 10, bold=True)
+                        txt_art = font_art.render("🔮 ARTIFACT", True, settings.COLOR_NEON_PINK)
+                        screen.blit(txt_art, txt_art.get_rect(center=(cx, cy)))
+                    except:
+                        pass
                 
                 # Dynamic layout scaling based on current hex width (baseline 293)
                 scale = self.hex_width / 293.0
@@ -531,30 +651,6 @@ class MapGrid:
                 spacing = max(2, int(6 * scale))
                 border_w = max(1, int(1.2 * scale))
 
-                # 1. Render Powers in the top row
-                powers_list = self.powers.get((q, r), [])
-                if powers_list:
-                    num_powers = len(powers_list)
-                    oy_power = int(-35 * scale)
-                    for idx, power in enumerate(powers_list):
-                        ox = int((idx - (num_powers - 1) / 2.0) * (unit_size[0] + spacing))
-                        px = int(cx + ox - unit_size[0] / 2)
-                        py = int(cy + oy_power - unit_size[1] / 2)
-                        
-                        power_surf = power.get_surface(size=unit_size, mask_type="square")
-                        screen.blit(power_surf, (px, py))
-                        
-                        glow_color = (189, 0, 255)
-                        parts = power.get_alignment_parts()
-                        if parts:
-                            moral = parts[1]
-                            if "good" in moral:
-                                glow_color = settings.COLOR_NEON_CYAN
-                            elif "evil" in moral:
-                                glow_color = settings.COLOR_NEON_PINK
-                            elif "neutral" in moral:
-                                glow_color = settings.COLOR_NEON_GREEN
-                        pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), border_w)
 
                 # 2. Render Champions in the middle row
                 champions_list = self.champions.get((q, r), [])
@@ -569,17 +665,7 @@ class MapGrid:
                         champ_surf = champ.get_surface(size=unit_size, mask_type="square")
                         screen.blit(champ_surf, (px, py))
                         
-                        glow_color = (189, 0, 255)
-                        if champ.alignment == "good":
-                            glow_color = settings.COLOR_NEON_CYAN
-                        elif champ.alignment == "evil":
-                            glow_color = settings.COLOR_NEON_PINK
-                        elif champ.alignment == "neutral":
-                            glow_color = settings.COLOR_NEON_GREEN
-                        elif champ.alignment == "lawful":
-                            glow_color = (0, 100, 255)
-                        elif champ.alignment == "chaotic":
-                            glow_color = (255, 128, 0)
+                        glow_color = settings.COLOR_NEON_CYAN
                         pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), border_w)
 
                 # 3. Render Armies in the bottom row
@@ -595,17 +681,7 @@ class MapGrid:
                         army_surf = army.get_surface(size=unit_size, mask_type="square")
                         screen.blit(army_surf, (px, py))
                         
-                        glow_color = (189, 0, 255)
-                        if army.alignment == "good":
-                            glow_color = settings.COLOR_NEON_CYAN
-                        elif army.alignment == "evil":
-                            glow_color = settings.COLOR_NEON_PINK
-                        elif army.alignment == "neutral":
-                            glow_color = settings.COLOR_NEON_GREEN
-                        elif army.alignment == "lawful":
-                            glow_color = (0, 100, 255)
-                        elif army.alignment == "chaotic":
-                            glow_color = (255, 128, 0)
+                        glow_color = settings.COLOR_NEON_CYAN
                         pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), border_w)
 
         # Draw ghost preview (snapping guideline) under drag and drop

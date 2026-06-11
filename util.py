@@ -16,31 +16,21 @@ _sound_cache = {}
 # Directories
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HEXES_DIR = os.path.join(BASE_DIR, "hexes")
-POWERS_DIR = os.path.join(BASE_DIR, "powers")
 CHAMPIONS_DIR = os.path.join(BASE_DIR, "champions")
 ARMIES_DIR = os.path.join(BASE_DIR, "armies")
-
-# Dictionary mapping lowercase power keys to exact capitalized filenames on disk
-POWER_DISK_CASING = {
-    "angel": "Angel",
-    "couatl": "Couatl",
-    "demon": "Demon",
-    "dragon": "Dragon",
-    "kirin": "Kirin",
-    "rakshasa": "Rakshasa",
-    "void": "Void",
-    "shoggoth": "Shoggoth",
-    "pegasus": "Pegasus"
-}
 
 # Dictionary mapping lowercase keys to exact capitalized filenames on disk to ensure cross-platform case-sensitivity
 DISK_CASING = {
     "woods": "Woods",
-    "swamp": "Swamp",
+    "swamp": "Swamps",
     "mountains": "Mountains",
     "plains": "Plains",
     "desert": "Desert",
     "hills": "Hills",
+    "coastal": "Coastal",
+    "subterranean": "Subterranean",
+    "barrens": "Barrens",
+    "jungle": "Jungles",
     "echoingcaverns": "EchoingCaverns",
     "elmany": "Elmany",
     "fungaljungle": "FungalJungle",
@@ -146,111 +136,27 @@ def load_terrain_image(terrain_name, alpha=True, color_fallback=(0, 243, 255), s
     _image_cache[cache_key] = fallback_surf
     return fallback_surf
 
-def load_power_image(power_name, alpha=True, color_fallback=(189, 0, 255), size=(100, 100), mask_type="circle"):
+def load_champion_image(faction_race, alpha=True, color_fallback=(189, 0, 255), size=(100, 100), mask_type="circle"):
     """
-    Loads a power unit artwork image (e.g. 'Angel.jpg') from the 'powers' folder with caching.
+    Loads a champion unit artwork image based on faction race (e.g. 'elfchampion.jpg') from the 'champions' folder with caching.
     Supports 'circle', 'hex', or 'square' mask types.
     """
-    # Convert input to lowercase to look up in POWER_DISK_CASING
-    lookup_key = power_name.replace(".png", "").replace(".jpg", "").lower()
-    clean_name = POWER_DISK_CASING.get(lookup_key, power_name)
-    
-    cache_key = ("power_" + clean_name, alpha, size, mask_type)
-    if cache_key in _image_cache:
-        return _image_cache[cache_key]
-
-    # Resolve full file path using .jpg extension and exact casing
-    file_path = os.path.join(POWERS_DIR, f"{clean_name}.jpg")
-    
-    # Check if file exists and load
-    if os.path.exists(file_path):
-        try:
-            # 1. Load the original rectangular JPG image
-            original_surf = pygame.image.load(file_path)
-            # Resize image to requested size
-            original_surf = pygame.transform.smoothscale(original_surf, size)
-            original_surf = original_surf.convert_alpha() if alpha else original_surf.convert()
-            
-            # 2. Create a fully transparent destination surface with alpha channel
-            W, H = size
-            masked_surf = pygame.Surface(size, pygame.SRCALPHA)
-            
-            # 3. Draw solid mask shape onto the transparent surface
-            if mask_type == "hex":
-                vertices = [
-                    (W, H / 2.0),
-                    (3.0 * W / 4.0, H),
-                    (W / 4.0, H),
-                    (0.0, H / 2.0),
-                    (W / 4.0, 0.0),
-                    (3.0 * W / 4.0, 0.0)
-                ]
-                pygame.draw.polygon(masked_surf, (255, 255, 255, 255), vertices)
-            elif mask_type == "square":
-                pygame.draw.rect(masked_surf, (255, 255, 255, 255), (0, 0, W, H))
-            else:
-                pygame.draw.circle(masked_surf, (255, 255, 255, 255), (W // 2, H // 2), min(W, H) // 2)
-            
-            # 4. Blit the original image onto the shape using BLEND_RGBA_MIN
-            masked_surf.blit(original_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
-            
-            # Cache and return
-            _image_cache[cache_key] = masked_surf
-            return masked_surf
-        except pygame.error as e:
-            print(f"[Util Warning] Failed to load power image {clean_name}.jpg: {e}. Creating placeholder.")
+    race = faction_race.lower()
+    if race == "dwarves":
+        race_singular = "dwarf"
+    elif race == "elves":
+        race_singular = "elf"
+    elif race == "giants":
+        race_singular = "giant"
+    elif race == "nomads":
+        race_singular = "nomad"
+    elif race == "barbarians":
+        race_singular = "barbarian"
+    elif race == "pirates":
+        race_singular = "pirate"
     else:
-        print(f"[Util Warning] Power image path not found: {file_path}. Creating placeholder.")
-
-    # Create dynamic aesthetic placeholder
-    fallback_surf = pygame.Surface(size, pygame.SRCALPHA)
-    W, H = size
-    
-    # Draw glowing border shape
-    if mask_type == "hex":
-        vertices = [
-            (W, H // 2),
-            (3 * W // 4, H),
-            (W // 4, H),
-            (0, H // 2),
-            (W // 4, 0),
-            (3 * W // 4, 0)
-        ]
-        pygame.draw.polygon(fallback_surf, (*color_fallback, 40), vertices, 0) # Fill glow
-        pygame.draw.polygon(fallback_surf, color_fallback, vertices, 2)       # Border outline
-    elif mask_type == "square":
-        pygame.draw.rect(fallback_surf, (*color_fallback, 40), (0, 0, W, H), 0) # Fill glow
-        pygame.draw.rect(fallback_surf, color_fallback, (0, 0, W, H), 2)       # Border outline
-    else:
-        pygame.draw.circle(fallback_surf, (*color_fallback, 40), (W // 2, H // 2), min(W, H) // 2, 0) # Fill glow
-        pygame.draw.circle(fallback_surf, color_fallback, (W // 2, H // 2), min(W, H) // 2, 2)       # Border outline
-    
-    # Draw simple text label of the file name on the placeholder
-    try:
-        font_size = max(6, min(10, W // 4))
-        font = pygame.font.SysFont("Courier", font_size, bold=True)
-        abbr_len = max(3, W // 10)
-        label_text = clean_name[:abbr_len].upper()
-        
-        text_surf = font.render(label_text, True, (255, 255, 255))
-        text_rect = text_surf.get_rect(center=(W // 2, H // 2))
-        
-        # Draw background shadow for readability
-        shadow_surf = font.render(label_text, True, (11, 14, 20))
-        fallback_surf.blit(shadow_surf, text_rect.move(1, 1))
-        fallback_surf.blit(text_surf, text_rect)
-    except:
-        pass
-        
-    _image_cache[cache_key] = fallback_surf
-    return fallback_surf
-
-def load_champion_image(alignment, index, alpha=True, color_fallback=(189, 0, 255), size=(100, 100), mask_type="circle"):
-    """
-    Loads a champion unit artwork image (e.g. 'Neutral3.jpg') from the 'champions' folder with caching.
-    Supports 'circle', 'hex', or 'square' mask types.
-    """
-    clean_name = f"{alignment.capitalize()}{index}"
+        race_singular = race
+    clean_name = f"{race_singular}champion"
     
     cache_key = ("champion_" + clean_name, alpha, size, mask_type)
     if cache_key in _image_cache:
@@ -430,12 +336,33 @@ def format_location_name(terrain_type):
     return " ".join(parts)
 
 
-def load_army_image(alignment, index=1, alpha=True, color_fallback=(189, 0, 255), size=(100, 100), mask_type="circle"):
+def load_army_image(faction_race, alpha=True, color_fallback=(189, 0, 255), size=(100, 100), mask_type="circle"):
     """
-    Loads an army unit artwork image (e.g. 'Good1.jpg') from the 'armies' folder with caching.
+    Loads an army unit artwork image based on faction race (e.g. 'elf.jpg') from the 'armies' folder with caching.
     Supports 'circle', 'hex', or 'square' mask types.
     """
-    clean_name = f"{alignment.capitalize()}{index}"
+    race = faction_race.lower()
+    if race == "dwarves":
+        race_singular = "dwarf"
+    elif race == "elves":
+        race_singular = "elf"
+    elif race == "giants":
+        race_singular = "giant"
+    elif race == "nomads":
+        race_singular = "nomad"
+    elif race == "barbarians":
+        race_singular = "barbarian"
+    elif race == "pirates":
+        race_singular = "pirate"
+    elif race == "kuotoa":
+        race_singular = "kuotoa"
+    elif race == "humans":
+        race_singular = "human"
+    elif race == "lizardfolk":
+        race_singular = "lizard"
+    else:
+        race_singular = race
+    clean_name = race_singular
     
     cache_key = ("army_" + clean_name, alpha, size, mask_type)
     if cache_key in _image_cache:
@@ -500,7 +427,7 @@ def load_army_image(alignment, index=1, alpha=True, color_fallback=(189, 0, 255)
     # Draw label letter
     try:
         font = pygame.font.SysFont("Courier", int(14 * (W / 36.0)), bold=True)
-        lbl = f"A:{clean_name[0]}"
+        lbl = f"A:{clean_name[0].upper()}"
         text_surf = font.render(lbl, True, (255, 255, 255))
         text_rect = text_surf.get_rect(center=(W // 2, H // 2))
         fallback_surf.blit(text_surf, text_rect)

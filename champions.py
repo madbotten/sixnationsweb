@@ -6,69 +6,45 @@ Defines the Champion class representing game units on the hex grid.
 import util
 
 class Champion:
-    def __init__(self, alignment, index, q, r, strength):
+    def __init__(self, faction, q, r):
         """
         Initializes a Champion game unit.
         
         Args:
-            alignment (str): The single alignment part ('good', 'evil', 'lawful', 'chaotic', 'neutral').
-            index (int): The champion number (1 to 4) representing which champion of that alignment this is.
+            faction (Faction): The faction object this champion belongs to.
             q (int): Axial coordinate q.
             r (int): Axial coordinate r.
-            strength (int): Nonnegative integer strength of the champion.
         """
-        alignment_lower = alignment.lower()
-        if alignment_lower not in {"good", "evil", "lawful", "chaotic", "neutral"}:
-            raise ValueError("Alignment must be one of: 'good', 'evil', 'lawful', 'chaotic', 'neutral'")
-        self._alignment = alignment_lower
-
-        if not isinstance(index, int) or not (1 <= index <= 4):
-            raise ValueError("Champion index must be an integer between 1 and 4 inclusive.")
-        self._index = index
-
+        from factions import Faction
+        if not isinstance(faction, Faction):
+            raise ValueError("faction must be a Faction instance")
+        self._faction = faction
+        self._index = 1
         self.q = q
         self.r = r
 
-        if not isinstance(strength, int) or strength < 0:
-            raise ValueError("Strength must be a nonnegative integer.")
-        self._strength = strength
-
     @property
-    def alignment(self):
-        """Returns the alignment of the champion."""
-        return self._alignment
+    def faction(self):
+        """Returns the faction of the champion."""
+        return self._faction
 
-    @alignment.setter
-    def alignment(self, val):
-        """Sets the alignment of the champion, validating the input."""
-        val_lower = val.lower()
-        if val_lower not in {"good", "evil", "lawful", "chaotic", "neutral"}:
-            raise ValueError("Alignment must be one of: 'good', 'evil', 'lawful', 'chaotic', 'neutral'")
-        self._alignment = val_lower
+    @faction.setter
+    def faction(self, val):
+        """Sets the faction of the champion."""
+        from factions import Faction
+        if not isinstance(val, Faction):
+            raise ValueError("faction must be a Faction instance")
+        self._faction = val
 
     @property
     def index(self):
-        """Returns the index of the champion (1-4)."""
-        return self._index
-
-    @index.setter
-    def index(self, val):
-        """Sets the index of the champion, validating that it is an integer 1-4."""
-        if not isinstance(val, int) or not (1 <= val <= 4):
-            raise ValueError("Champion index must be an integer between 1 and 4 inclusive.")
-        self._index = val
+        """Returns the index of the champion (always 1)."""
+        return 1
 
     @property
     def strength(self):
-        """Returns the strength of the champion."""
-        return self._strength
-
-    @strength.setter
-    def strength(self, val):
-        """Sets the strength of the champion, validating that it is a nonnegative integer."""
-        if not isinstance(val, int) or val < 0:
-            raise ValueError("Strength must be a nonnegative integer.")
-        self._strength = val
+        """Returns the strength of the champion (always 3)."""
+        return 3
 
     @property
     def hex_location(self):
@@ -82,40 +58,36 @@ class Champion:
 
     @property
     def name(self):
-        """Returns the specific name of the champion including its index."""
-        base_name = {
-            "good": "Good Champion",
-            "evil": "Evil Champion",
-            "neutral": "Neutral Champion",
-            "lawful": "Champion of Law",
-            "chaotic": "Champion of Chaos"
-        }.get(self._alignment, self._alignment.capitalize() + " Champion")
-        return f"{base_name} {self._index}"
+        """Returns the specific name of the champion."""
+        return f"{self._faction.race} Champion"
 
     @property
     def image_filename(self):
-        """Returns the image filename for this champion (e.g. 'Neutral3.jpg')."""
-        return f"{self._alignment.capitalize()}{self._index}.jpg"
+        """Returns the image filename for this champion (e.g. 'elfchampion.jpg')."""
+        race = self._faction.race.lower()
+        if race == "dwarves":
+            race_singular = "dwarf"
+        elif race == "elves":
+            race_singular = "elf"
+        elif race == "giants":
+            race_singular = "giant"
+        elif race == "nomads":
+            race_singular = "nomad"
+        elif race == "barbarians":
+            race_singular = "barbarian"
+        elif race == "pirates":
+            race_singular = "pirate"
+        else:
+            race_singular = race
+        return f"{race_singular}champion.jpg"
 
     def get_surface(self, size=(100, 100), mask_type="circle"):
         """
         Loads and returns the cached, masked Pygame surface representing this champion's image.
         """
-        # Pick fallback color based on alignment
-        glow_color = (189, 0, 255) # default purple
-        
-        if self._alignment == "good":
-            glow_color = (0, 243, 255) # Cyan
-        elif self._alignment == "evil":
-            glow_color = (255, 0, 127) # Pink
-        elif self._alignment == "neutral":
-            glow_color = (50, 255, 120) # Green
-        elif self._alignment == "lawful":
-            glow_color = (0, 100, 255) # Blue
-        elif self._alignment == "chaotic":
-            glow_color = (255, 128, 0) # Orange
-            
-        return util.load_champion_image(self._alignment, self._index, alpha=True, color_fallback=glow_color, size=size, mask_type=mask_type)
+        # Fallback cyan color
+        glow_color = (0, 243, 255)
+        return util.load_champion_image(self._faction.race, alpha=True, color_fallback=glow_color, size=size, mask_type=mask_type)
 
     def __repr__(self):
-        return f"Champion(alignment='{self._alignment}', index={self._index}, loc=({self.q}, {self.r}), strength={self._strength})"
+        return f"Champion(faction={self._faction.race}, loc=({self.q}, {self.r}), strength=3)"

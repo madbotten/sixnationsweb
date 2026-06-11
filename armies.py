@@ -6,23 +6,21 @@ Defines the Army class representing game units on the hex grid.
 import util
 
 class Army:
-    def __init__(self, alignment, q, r, strength=1, index=1, source_hex_name="Unknown", source_hex_coords=(0, 0)):
+    def __init__(self, faction, q, r, strength=1, index=1):
         """
         Initializes an Army game unit.
         
         Args:
-            alignment (str): The single alignment part ('good', 'evil', 'lawful', 'chaotic', 'neutral').
+            faction (Faction): The faction object this army belongs to.
             q (int): Axial coordinate q.
             r (int): Axial coordinate r.
             strength (int): Nonnegative integer strength of the army.
-            index (int): The army number (1 to 4) representing which army of that alignment this is.
-            source_hex_name (str): The name of the hex from which the army was mustered.
-            source_hex_coords (tuple): The (q, r) coordinate of the source hex.
+            index (int): The army index on the tile.
         """
-        alignment_lower = alignment.lower()
-        if alignment_lower not in {"good", "evil", "lawful", "chaotic", "neutral"}:
-            raise ValueError("Alignment must be one of: 'good', 'evil', 'lawful', 'chaotic', 'neutral'")
-        self._alignment = alignment_lower
+        from factions import Faction
+        if not isinstance(faction, Faction):
+            raise ValueError("faction must be a Faction instance")
+        self._faction = faction
 
         self.q = q
         self.r = r
@@ -31,25 +29,20 @@ class Army:
             raise ValueError("Strength must be a nonnegative integer.")
         self._strength = strength
 
-        if not isinstance(index, int) or not (1 <= index <= 4):
-            raise ValueError("Army index must be an integer between 1 and 4 inclusive.")
         self._index = index
 
-        self.source_hex_name = source_hex_name
-        self.source_hex_coords = source_hex_coords
-
     @property
-    def alignment(self):
-        """Returns the alignment of the army."""
-        return self._alignment
+    def faction(self):
+        """Returns the faction of the army."""
+        return self._faction
 
-    @alignment.setter
-    def alignment(self, val):
-        """Sets the alignment of the army, validating the input."""
-        val_lower = val.lower()
-        if val_lower not in {"good", "evil", "lawful", "chaotic", "neutral"}:
-            raise ValueError("Alignment must be one of: 'good', 'evil', 'lawful', 'chaotic', 'neutral'")
-        self._alignment = val_lower
+    @faction.setter
+    def faction(self, val):
+        """Sets the faction of the army, validating the input."""
+        from factions import Faction
+        if not isinstance(val, Faction):
+            raise ValueError("faction must be a Faction instance")
+        self._faction = val
 
     @property
     def strength(self):
@@ -65,14 +58,12 @@ class Army:
 
     @property
     def index(self):
-        """Returns the index of the army (1-4)."""
+        """Returns the index of the army."""
         return self._index
 
     @index.setter
     def index(self, val):
-        """Sets the index of the army, validating that it is an integer 1-4."""
-        if not isinstance(val, int) or not (1 <= val <= 4):
-            raise ValueError("Army index must be an integer between 1 and 4 inclusive.")
+        """Sets the index of the army."""
         self._index = val
 
     @property
@@ -88,39 +79,40 @@ class Army:
     @property
     def name(self):
         """Returns the specific name of the army."""
-        base_name = {
-            "good": "Good Army",
-            "evil": "Evil Army",
-            "neutral": "Neutral Army",
-            "lawful": "Army of Law",
-            "chaotic": "Army of Chaos"
-        }.get(self._alignment, self._alignment.capitalize() + " Army")
-        return base_name
+        return f"{self._faction.race} Army"
 
     @property
     def image_filename(self):
-        """Returns the image filename for this army (e.g. 'Neutral1.jpg')."""
-        return f"{self._alignment.capitalize()}{self._index}.jpg"
+        """Returns the image filename for this army (e.g. 'elf.jpg')."""
+        race = self._faction.race.lower()
+        if race == "dwarves":
+            race_singular = "dwarf"
+        elif race == "elves":
+            race_singular = "elf"
+        elif race == "giants":
+            race_singular = "giant"
+        elif race == "nomads":
+            race_singular = "nomad"
+        elif race == "barbarians":
+            race_singular = "barbarian"
+        elif race == "pirates":
+            race_singular = "pirate"
+        elif race == "kuotoa":
+            race_singular = "kuotoa"
+        elif race == "humans":
+            race_singular = "human"
+        elif race == "lizardfolk":
+            race_singular = "lizard"
+        else:
+            race_singular = race
+        return f"{race_singular}.jpg"
 
     def get_surface(self, size=(100, 100), mask_type="circle"):
         """
         Loads and returns the cached, masked Pygame surface representing this army's image.
         """
-        # Pick fallback color based on alignment
-        glow_color = (189, 0, 255) # default purple
-        
-        if self._alignment == "good":
-            glow_color = (0, 243, 255) # Cyan
-        elif self._alignment == "evil":
-            glow_color = (255, 0, 127) # Pink
-        elif self._alignment == "neutral":
-            glow_color = (50, 255, 120) # Green
-        elif self._alignment == "lawful":
-            glow_color = (0, 100, 255) # Blue
-        elif self._alignment == "chaotic":
-            glow_color = (255, 128, 0) # Orange
-            
-        return util.load_army_image(self._alignment, self._index, alpha=True, color_fallback=glow_color, size=size, mask_type=mask_type)
+        glow_color = (0, 243, 255) # Cyan
+        return util.load_army_image(self._faction.race, alpha=True, color_fallback=glow_color, size=size, mask_type=mask_type)
 
     def __repr__(self):
-        return f"Army(alignment='{self._alignment}', loc=({self.q}, {self.r}), strength={self._strength}, index={self._index}, source_hex='{self.source_hex_name}')"
+        return f"Army(faction={self._faction.race}, loc=({self.q}, {self.r}), strength={self._strength}, index={self._index})"

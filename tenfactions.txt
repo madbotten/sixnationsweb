@@ -1,0 +1,149 @@
+THE TEN FACTIONS
+
+Each Faction has 1. A diplomatic ring number 2. A race 3. A home terrain type
+
+0 Humans on Plains tiles
+1 Elves in Woods tiles
+2 Dwarves in Mountains tiles
+3 Giants in Hills tiles
+4 Lizardfolk in Jungle tiles
+5 Kuotoa in Swamps tiles
+6 Drow in Subterranean tiles
+7 Pirates on the Coastal tiles
+8 Barbarians in Barrens tiles
+9 Nomads in Desert tiles
+
+THE DIPLOMATIC RING
+The Factions are arranged in a ring from 0 to 9. The diplomatic distance between any two Factions x and y is defined as the shortest path along the ring, calculated as: distance(x, y) = min(|x - y|, 10 - |x - y|). A distance of 0 is called Fully Aligned, a distance of 1 is called Strongly Aligned, while a distance of 2-3 represents Loosely Aligned, and a distance of 4-5 is called Opposed. Thus each Faction on the ring is Fully Aligned with itself, Strongly Aligned with 2 adjacent Factions, Loosely Aligned with 4 Factions, and Opposed to 3 distant Factions.
+
+
+
+THE MAP
+
+The board is composed of a hex map of 37 hexes (1 center hex + 3 surrounding rings). Each of the 10 factions start with control of 3 adjacent hexes in the outer 2 rings, one hex of which is that faction’s Stronghold.
+
+GAME SETUP
+
+Each player in the game secretly gets assigned a different random Faction 0-9.
+
+Each Faction gets 3 contiguous hexes of their environ type in the outer 2 hex rings of the board, at least one of which must be an outer ring hex.
+
+Each Faction gets a Stronghold on the outside ring (randomly determined if they have 2 outside ring hexes).
+
+Place one undiscovered Artifact in each of the center 7 hexes.
+
+Each faction starts with Control of their three initial hexes.
+
+Factions will have two neighbors each on the map. Factions are placed randomly around the outside of the map, their 3 hexes together, but Factions will never start next to any Opposed Faction.
+
+
+SUMMARY
+
+Players seek to push a randomly assigned Faction (and its close allies) to power. The goal is to conquer 2 of their 3 Opposed Factions by destroying their Strongholds.
+Each turn, a player will control a random non-Opposed Faction to take an action that directly or indirectly serves their secret goals.
+
+BACKGROUND INFO
+
+There are three types of units on the map: Champions, Artifacts, Strongholds, and Armies.
+
+Champions embody one Faction and are the tools of their Factions.
+Champions have strength 3.
+A Champion without an Artifact that moves into a hex with an unclaimed Artifact reveals the Artifact and the champion claims that artifact.
+
+Armies have power level 1.
+Armies are mustered belonging to one Faction at the cost of 1 gold and can only be raised in a hex under Control of that Faction.
+Armies serve to lend 1 strength to any allied group in a battle in the same hex.
+Conflicted armies (sharing loose alignment with multiple combatants) do not lend their strength unless bribed by the moving Faction.
+
+Artifacts are only wielded by Champions impart a random power of 1-3 in each combat.
+One artifact starts in each of the center 7 map hexes and is only revealed once any Champion with no artifact moves into the hex.
+Once claimed, artifacts are never separated from their Champion unless taken as battle losses, in which case the Champion may claim a different Artifact.
+
+Strongholds are the center of a Faction’s power and do not move. Once destroyed that Faction and all its Fully Aligned units are removed from the game.
+
+
+Term Definitions
+
+Fully Aligned - a unit is Fully Aligned with another unit if it is of the exact same Faction.
+Strongly Aligned - A Faction is strongly aligned with another Faction if they are adjacent on the Diplomatic Ring (1 step away on the ring).
+Loosely Aligned - A Faction is loosely aligned with another Faction if it is 2 or 3 steps away on the Diplomatic Ring via the closest path.
+Opposed - A Faction is Opposed with another Faction if it is 4 or 5 steps away on the Diplomatic Ring via the closest path.
+Conflicted - a unit that is loosely aligned with two parties in a combat is conflicted, it does not participate in the fight unless the current moving faction pays 1 gold per army to bring in.
+Stronghold - One hex of each faction that is their center of power. Control of a hex is always given to the Faction owning the Stronghold. Conquering a Stronghold eliminates one Faction and its Fully Aligned units from the game.
+Control - A Faction may control one or more hexes. Control of a hex is sticky. Control is lost if both: 1. No Faction unit is in the hex at the end of a Faction’s turn and 2. an Unaligned or Loosely Aligned unit (army or champion) is in the hex at the end of a Faction’s move.
+Control is gained if a Faction unit occupies a hex and no Unaligned or Loosely Aligned units are present in that hex.
+Unit - An Army, Champion, or Stronghold.
+
+
+GAMEPLAY
+
+Each turn, a player will be assigned to control a random Faction as if it were their own. Then if no victory condition has been met, play proceeds to the next player.
+
+Ex: chaotic evil player may be assigned to control Demon, Couatl, Dragon, Rakshasha, Shoggoth, or Void.
+Players with one neutral alignment may be assigned to move any piece except the diametric alignment of their other quality.
+Ex: lawful neutral player can be assigned to control any non-chaotic Power (includes Void).
+
+
+FACTION TURN
+
+When moving a Faction, the controlling player does 3 phases for that Faction.
+
+Phase 1 - Muster
+The Faction receives 1 gold for each 3 hexes they control rounded down, but at minimum always gets at least 1 gold.
+The player MAY spend 1 gold per army to muster any number of armies in any controlled hexes.
+If the Faction has no Champion on the board, a Champion may be mustered in that faction’s Stronghold for 1 gold.
+
+Phase 2 - Move
+Each army and champion on the board MAY move one hex. A champion that has no Artifact moving onto a hex with an undiscovered Artifact reveals that Artifact and owns it. A champion may only own 1 artifact. If a champion already has an Artifact, they can reveal no artifacts.
+
+Phase 3 - Combat
+Once per hex, any Faction units may combat any Opposed Faction present in the same hex.
+
+The moving player declares the Opposed Faction they wish to attack. This becomes the target Faction.
+
+Then, the forces in the hex are divided into Allied, Enemy, and Conflicted forces as follows.
+
+Any Fully Aligned units in the hex of moving Faction join the Allied group.
+Any Strongly Aligned units in the hex of moving Faction join the Allied group.
+Any units in the hex Fully Aligned with the target Faction join the Enemy group.
+Any units in the hex of Strongly Aligned Factions to the target Faction join the Enemy group.
+
+Those units left over are Conflicted and will not join the battle. However, the moving Faction player may now spend 1 gold to move a Conflicted army into the Allied group. Conflicted Champions may not be moved into the Allied group.
+
+Phase 4 - Control
+Faction gains or loses control of hexes.
+
+Control of a hex is sticky, so a Faction retains control of any hex it controlled before unless lost by these rules.
+
+Control is lost if both: 1. No Faction unit is in the hex at the end of a Faction’s turn and 2. at least one Unaligned or Loosely Aligned unit (army or champion) is in the hex at the end of a Faction’s move.
+
+Control is gained if a Faction unit occupies a hex and no Unaligned or Loosely Aligned units are present in that hex.
+
+Phase 5. Victory Condition Check
+If any Stronghold fell this turn, then check to see if ANY Factions(s) have won.
+
+
+COMBAT RULES
+
+Armies have 1 strength. Champions have 3 strength. Artifacts lend random 1-3 strength to their Champion each battle. Hex control lends 1 strength as long as Faction units are present. Hex control of Strongly Aligned Factions does not help a Faction.
+
+In combat, each side rolls 1d6 and adds their total allied strength.
+
+The higher total is the winner.
+
+The winner destroys (their raw die roll) number of enemy strength points.
+The loser destroys half the enemy armies the winner destroyed, rounded down.
+
+Each side chooses their losses and has to pay at least their losses or more. Artifacts can be lost to pay 2 (regardless of what strength it lended for that battle). Champions can be lost to pay 3.
+
+In a tie, each side loses strength equal to the highest raw die roll.
+
+If the Allied or Enemy group has a Stronghold in their group, the Stronghold counts as 3 armies for calculating strength points. The Stronghold may be chosen as losses only as a last resort (no other combination can pay the total losses).
+
+
+VICTORY CONDITIONS
+
+A player wins for their secret Faction by destroying the Strongholds of 2 of their 3 Opposed Factions. Two players may both win at the same time.
+
+A player loses immediately if their secret Faction loses its Stronghold.
+
