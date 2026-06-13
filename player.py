@@ -1,20 +1,30 @@
 """
 Player System - Alignments
-Defines the Player class representing game players with alignment attributes.
+Defines the Player class representing game players with alignment attributes,
+as well as the bot player decision-making and phase handlers.
 """
 
 import random
+import pygame
+import settings
 
 class Player:
-    def __init__(self, faction=None):
+    def __init__(self, faction=None, is_bot=False):
         """
         Initializes a Player. If no faction is provided, selects a random Faction.
         """
+        self.is_bot = is_bot
         if faction is None:
             from factions import FACTIONS
             self.faction = random.choice(FACTIONS)
         else:
             self.faction = faction
+
+    def is_robot(self):
+        """
+        Returns True if this player is controlled by a robot/AI, False otherwise.
+        """
+        return self.is_bot
 
     def choose_next_faction(self, previous_faction=None):
         """
@@ -50,4 +60,46 @@ class Player:
         return random.choice(chosen_group)
 
     def __repr__(self):
-        return f"Player(faction={self.faction})"
+        return f"Player(faction={self.faction}, is_bot={self.is_bot})"
+
+
+class BotPlayer:
+    def __init__(self, hand=None):
+        # A list of tile strings in the bot's hand (exactly 16)
+        self.hand = list(hand) if hand else []
+
+
+def run_bot_muster_phase(faction, map_grid, advance_phase_callback):
+    """
+    Simulates the Bot player's Muster/Income phase.
+    """
+    print(f"[Bot Debug] Starting Muster Phase for {faction.race}...")
+    pygame.time.delay(500)
+    advance_phase_callback()
+
+
+def run_bot_move_phase(faction, map_grid, advance_phase_callback):
+    """
+    Simulates the Bot player's Movement phase.
+    """
+    print(f"[Bot Debug] Starting Movement Phase for {faction.race}...")
+    pygame.time.delay(500)
+    advance_phase_callback()
+
+
+def run_bot_combat_phase(faction, map_grid, advance_phase_callback):
+    """
+    Simulates the Bot player's Combat phase.
+    """
+    print(f"[Bot Debug] Starting Combat Phase for {faction.race}...")
+    pygame.time.delay(500)
+    advance_phase_callback()
+
+
+def run_bot_control_phase(faction, map_grid, advance_phase_callback):
+    """
+    Simulates the Bot player's Control phase.
+    """
+    print(f"[Bot Debug] Starting Control Phase for {faction.race}...")
+    pygame.time.delay(500)
+    advance_phase_callback()

@@ -7,10 +7,10 @@ with an automated bot player) and Phase 2 (Full-screen scrollable map visualizat
 import sys
 import pygame
 import random
-# Import configurations, map model, bot system, and helper utilities
+# Import configurations, map model, player system, and helper utilities
 import settings
 import util
-import bot
+import player
 from map import MapGrid
 from player import Player
 from champions import Champion
@@ -645,8 +645,8 @@ def main():
     shuffled_factions = list(FACTIONS)
     random.shuffle(shuffled_factions)
     
-    human_player_obj = Player(faction=shuffled_factions[0])
-    bot_player_obj = Player(faction=shuffled_factions[1])
+    human_player_obj = Player(faction=shuffled_factions[0], is_bot=False)
+    bot_player_obj = Player(faction=shuffled_factions[1], is_bot=True)
     
     # 5. Play startup chime (rising synthesizer sound)
     util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100) # C5
@@ -659,9 +659,11 @@ def main():
     # Two-player game: Index 0 is Human player, Index 1 is Bot player.
     players = [human_player_obj, bot_player_obj]
     current_player_idx = 0
+    current_player = human_player_obj
     current_faction = None
     current_turn_phase = None
     previous_faction_by_player = [None, None]
+    bot_just_started_turn = False
 
     def process_control_phase(faction):
         # Consolidate armies of the moving faction in each hex
@@ -767,7 +769,7 @@ def main():
 
     # Helper function to start a player's turn
     def start_player_turn(player_index):
-        nonlocal current_player_idx, current_faction, current_turn_phase, is_mustering
+        nonlocal current_player_idx, current_player, current_faction, current_turn_phase, is_mustering, bot_just_started_turn
         is_mustering = False
         
         # Reset has_moved state for all armies and champions at start of a player turn
@@ -779,7 +781,8 @@ def main():
                 champ.has_moved = False
                 
         current_player_idx = player_index
-        player = players[player_index]
+        current_player = players[player_index]
+        player = current_player
         
         # Choose the next faction, preventing picking the same faction consecutively
         prev_f = previous_faction_by_player[player_index]
@@ -800,12 +803,14 @@ def main():
         
         player_name = "Player 1" if player_index == 0 else "Bot Player 2"
         print(f"[Turn Start] {player_name} controls {chosen_f.race}. Phase: Muster. Added {income} gold (Total: {chosen_f.gold}).")
+        
+        if player_index == 1:
+            bot_just_started_turn = True
             
-        # If human player, center camera on their Stronghold
-        if player_index == 0:
-            sh_coord = map_grid.find_stronghold_coord(chosen_f)
-            if sh_coord:
-                map_grid.center_on_hex(sh_coord[0], sh_coord[1])
+        # Center camera on the active faction's Stronghold
+        sh_coord = map_grid.find_stronghold_coord(chosen_f)
+        if sh_coord:
+            map_grid.center_on_hex(sh_coord[0], sh_coord[1])
 
     # Helper function to check units left to move
     def check_movement_left():
@@ -821,7 +826,7 @@ def main():
         selected_army = None
         if current_turn_phase == settings.TURN_PHASE_INCOME:
             current_turn_phase = settings.TURN_PHASE_MOVE
-            if current_player_idx == 0 and check_movement_left() == 0:
+            if not current_player.is_robot() and check_movement_left() == 0:
                 if map_grid.has_combat_for_faction(current_faction):
                     current_turn_phase = settings.TURN_PHASE_COMBAT
                 else:
@@ -830,12 +835,14 @@ def main():
                     process_control_phase(current_faction)
         elif current_turn_phase == settings.TURN_PHASE_MOVE:
             # Check if there is any hex containing our faction's units and an opposed faction's units
-            if map_grid.has_combat_for_faction(current_faction):
-                current_turn_phase = settings.TURN_PHASE_COMBAT
-            else:
+            # For human players, skip combat if no opposed units are present.
+            # For bot players, do not skip combat phase (run all phases sequentially as a skeleton).
+            if not current_player.is_robot() and not map_grid.has_combat_for_faction(current_faction):
                 print(f"[Combat Phase] Automatically skipped Combat Phase for {current_faction.race} (no opposed units).")
                 current_turn_phase = settings.TURN_PHASE_CONTROL
                 process_control_phase(current_faction)
+            else:
+                current_turn_phase = settings.TURN_PHASE_COMBAT
         elif current_turn_phase == settings.TURN_PHASE_COMBAT:
             current_turn_phase = settings.TURN_PHASE_CONTROL
             process_control_phase(current_faction)
@@ -890,17 +897,20 @@ def main():
         dt = clock.tick(settings.FPS) / 1000.0
         
         # --- Bot Player Turn Automation ---
-        if current_player_idx == 1:
-            if current_turn_phase == settings.TURN_PHASE_INCOME:
-                bot.run_bot_muster_phase(current_faction, map_grid, advance_turn_phase)
-            elif current_turn_phase == settings.TURN_PHASE_MOVE:
-                bot.run_bot_move_phase(current_faction, map_grid, advance_turn_phase)
-            elif current_turn_phase == settings.TURN_PHASE_COMBAT:
-                bot.run_bot_combat_phase(current_faction, map_grid, advance_turn_phase)
-            elif current_turn_phase == settings.TURN_PHASE_CONTROL:
-                bot.run_bot_control_phase(current_faction, map_grid, advance_turn_phase)
+        if current_player.is_robot():
+            if bot_just_started_turn:
+                bot_just_started_turn = False
             else:
-                advance_turn_phase()
+                if current_turn_phase == settings.TURN_PHASE_INCOME:
+                    player.run_bot_muster_phase(current_faction, map_grid, advance_turn_phase)
+                elif current_turn_phase == settings.TURN_PHASE_MOVE:
+                    player.run_bot_move_phase(current_faction, map_grid, advance_turn_phase)
+                elif current_turn_phase == settings.TURN_PHASE_COMBAT:
+                    player.run_bot_combat_phase(current_faction, map_grid, advance_turn_phase)
+                elif current_turn_phase == settings.TURN_PHASE_CONTROL:
+                    player.run_bot_control_phase(current_faction, map_grid, advance_turn_phase)
+                else:
+                    advance_turn_phase()
                 
         # --- A. Keyboard Camera Scrolling (WASD / Arrows) ---
         if not show_ring_window and active_faction_profile is None:
@@ -933,7 +943,7 @@ def main():
             show_full_left_panel = True
         elif selected_army is not None and current_turn_phase != settings.TURN_PHASE_MOVE:
             show_full_left_panel = True
-        elif current_player_idx == 0 and not left_panel_collapsed:
+        elif not current_player.is_robot() and not left_panel_collapsed:
             show_full_left_panel = True
 
         if show_full_left_panel:
@@ -972,7 +982,7 @@ def main():
                     else:
                         running = False
                 elif event.key == pygame.K_SPACE:
-                    if current_player_idx == 0:
+                    if not current_player.is_robot():
                         advance_turn_phase()
                         util.play_sound(filename=None, volume=0.3, pitch_hz=440.0, duration_ms=100)
                         
@@ -1015,7 +1025,7 @@ def main():
                     is_currently_collapsed = (left_panel_collapsed and 
                                              (selected_champion is None or is_own_champ_in_move) and 
                                              (selected_army is None or current_turn_phase == settings.TURN_PHASE_MOVE))
-                    if is_currently_collapsed and current_player_idx == 0:
+                    if is_currently_collapsed and not current_player.is_robot():
                         tab_rect = pygame.Rect(20, 20, 260, 85)
                         if tab_rect.collidepoint(mouse_x, mouse_y):
                             done_btn_rect = pygame.Rect(210, 27, 60, 70)
@@ -1042,7 +1052,7 @@ def main():
                                 selected_army = None
                                 clicked_close = True
                                 util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
-                        elif current_player_idx == 0 and left_panel_rect.collidepoint(mouse_x, mouse_y):
+                        elif not current_player.is_robot() and left_panel_rect.collidepoint(mouse_x, mouse_y):
                             collapse_btn_rect = pygame.Rect(250, 25, 30, 30)
                             if collapse_btn_rect.collidepoint(mouse_x, mouse_y):
                                 left_panel_collapsed = True
@@ -1279,12 +1289,12 @@ def main():
             draw_left_army_statistics_panel(screen, selected_army, left_panel_rect, map_grid, mouse_x, mouse_y)
 
         # 2.2 Render Left Faction Turn Phase Panel / tab for active turn
-        elif current_player_idx == 0:
+        elif not current_player.is_robot():
             if left_panel_collapsed:
                 draw_collapsed_tab(screen, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y)
             else:
                 draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y, is_mustering, secret_faction=human_player_obj.faction)
-        elif current_player_idx == 1:
+        elif current_player.is_robot():
             draw_bot_collapsed_tab(screen, current_faction, current_turn_phase)
 
         # 3. Render HUD status card (Phase 2 version)
