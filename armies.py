@@ -30,6 +30,7 @@ class Army:
         self._strength = strength
 
         self._index = index
+        self.has_moved = False
 
     @property
     def faction(self):

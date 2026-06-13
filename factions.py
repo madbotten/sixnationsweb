@@ -16,7 +16,7 @@ class Faction:
         self.ring_number = ring_number
         self.race = race
         self.home_terrain = home_terrain
-        self._gold = 1
+        self._gold = 0
 
     @property
     def gold(self):

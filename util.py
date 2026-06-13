@@ -19,6 +19,20 @@ HEXES_DIR = os.path.join(BASE_DIR, "hexes")
 CHAMPIONS_DIR = os.path.join(BASE_DIR, "champions")
 ARMIES_DIR = os.path.join(BASE_DIR, "armies")
 
+def get_font(size, bold=False):
+    """
+    Returns a pygame.font.Font object using Orbitron from fonts/ directory.
+    Falls back to SysFont Courier if the font file does not exist.
+    """
+    try:
+        font_name = "Orbitron-Bold.ttf" if bold else "orbitron.ttf"
+        font_path = os.path.join(BASE_DIR, "fonts", font_name)
+        if os.path.exists(font_path):
+            return pygame.font.Font(font_path, size)
+    except Exception as e:
+        print(f"[Util Warning] Failed to load Orbitron font: {e}")
+    return pygame.font.SysFont("Courier", size, bold=bold)
+
 # Dictionary mapping lowercase keys to exact capitalized filenames on disk to ensure cross-platform case-sensitivity
 DISK_CASING = {
     "woods": "Woods",
@@ -122,7 +136,7 @@ def load_terrain_image(terrain_name, alpha=True, color_fallback=(0, 243, 255), s
     
     # Draw simple text label of the file name on the placeholder
     try:
-        font = pygame.font.SysFont("Courier", 12, bold=True)
+        font = get_font(12, bold=True)
         text_surf = font.render(clean_name.upper(), True, (255, 255, 255))
         text_rect = text_surf.get_rect(center=(W // 2, H // 2))
         
@@ -220,7 +234,7 @@ def load_champion_image(faction_race, alpha=True, color_fallback=(189, 0, 255), 
     
     try:
         font_size = max(6, min(10, W // 4))
-        font = pygame.font.SysFont("Courier", font_size, bold=True)
+        font = get_font(font_size, bold=True)
         abbr_len = max(3, W // 10)
         label_text = clean_name[:abbr_len].upper()
         
@@ -426,7 +440,7 @@ def load_army_image(faction_race, alpha=True, color_fallback=(189, 0, 255), size
         
     # Draw label letter
     try:
-        font = pygame.font.SysFont("Courier", int(14 * (W / 36.0)), bold=True)
+        font = get_font(int(14 * (W / 36.0)), bold=True)
         lbl = f"A:{clean_name[0].upper()}"
         text_surf = font.render(lbl, True, (255, 255, 255))
         text_rect = text_surf.get_rect(center=(W // 2, H // 2))

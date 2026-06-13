@@ -18,7 +18,7 @@ from armies import Army
 
 
 
-def draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn_phase, mouse_x, mouse_y):
+def draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y, is_mustering=False, secret_faction=None):
     """
     Renders the Faction Turn Phase control panel on the left during human player's turn.
     """
@@ -27,60 +27,224 @@ def draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn
     pygame.draw.rect(screen, settings.COLOR_NEON_CYAN, left_panel_rect, width=1)
     
     try:
-        font_title = pygame.font.SysFont("Courier", 24, bold=True)
-        font_label = pygame.font.SysFont("Courier", 14, bold=True)
-        font_value = pygame.font.SysFont("Courier", 18)
+        font_title = util.get_font(24, bold=True)
+        font_label = util.get_font(14, bold=True)
+        font_value = util.get_font(18)
         
-        # Phase Title
-        phase_str = "INCOME PHASE" if current_turn_phase == settings.TURN_PHASE_INCOME else "ACTIVE PHASE"
-        title_surf = font_title.render(phase_str, True, settings.COLOR_NEON_CYAN)
-        screen.blit(title_surf, (30, 40))
-        
-        # Divider
-        pygame.draw.line(screen, settings.COLOR_TEXT_MUTED, (30, 80), (370, 80), 1)
-        
-        # Faction name info
+        # Faction name info (placed at the top)
         lbl_faction = font_label.render("ACTIVE FACTION", True, settings.COLOR_TEXT_MUTED)
-        screen.blit(lbl_faction, (30, 110))
+        screen.blit(lbl_faction, (20, 30))
         
         val_faction = font_title.render(current_faction.race.upper(), True, settings.COLOR_TEXT_PRIMARY)
-        screen.blit(val_faction, (30, 135))
+        screen.blit(val_faction, (20, 50))
+        
+        # Collapse Button "<<"
+        collapse_btn_rect = pygame.Rect(250, 25, 30, 30)
+        is_hover_collapse = collapse_btn_rect.collidepoint(mouse_x, mouse_y)
+        collapse_fill = (40, 45, 55) if is_hover_collapse else (25, 29, 38)
+        collapse_border = settings.COLOR_NEON_CYAN if is_hover_collapse else settings.COLOR_TEXT_MUTED
+        
+        pygame.draw.rect(screen, collapse_fill, collapse_btn_rect, border_radius=6)
+        pygame.draw.rect(screen, collapse_border, collapse_btn_rect, width=1, border_radius=6)
+        
+        font_collapse = util.get_font(14, bold=True)
+        txt_collapse = font_collapse.render("<<", True, settings.COLOR_TEXT_PRIMARY if is_hover_collapse else settings.COLOR_TEXT_MUTED)
+        txt_collapse_rect = txt_collapse.get_rect(center=collapse_btn_rect.center)
+        screen.blit(txt_collapse, txt_collapse_rect)
+        
+        # Divider (shifted down slightly)
+        pygame.draw.line(screen, settings.COLOR_TEXT_MUTED, (20, 90), (280, 90), 1)
+        
+        # Phase Title (placed below the divider)
+        lbl_phase = font_label.render("CURRENT PHASE", True, settings.COLOR_TEXT_MUTED)
+        screen.blit(lbl_phase, (20, 110))
+        
+        if current_turn_phase == settings.TURN_PHASE_INCOME:
+            phase_str = "MUSTER PHASE"
+        elif current_turn_phase == settings.TURN_PHASE_MOVE:
+            phase_str = "MOVEMENT PHASE"
+        elif current_turn_phase == settings.TURN_PHASE_COMBAT:
+            phase_str = "COMBAT PHASE"
+        elif current_turn_phase == settings.TURN_PHASE_CONTROL:
+            phase_str = "CONTROL PHASE"
+        elif current_turn_phase == settings.TURN_PHASE_VICTORY:
+            phase_str = "VICTORY CHECK"
+        else:
+            phase_str = "ACTIVE PHASE"
+        val_phase = font_title.render(phase_str, True, settings.COLOR_NEON_CYAN)
+        screen.blit(val_phase, (20, 130))
         
         # Treasury gold info
-        lbl_gold = font_label.render("FACTION TREASURY", True, settings.COLOR_TEXT_MUTED)
-        screen.blit(lbl_gold, (30, 200))
+        if current_turn_phase != settings.TURN_PHASE_VICTORY:
+            lbl_gold = font_label.render("FACTION TREASURY", True, settings.COLOR_TEXT_MUTED)
+            screen.blit(lbl_gold, (20, 200))
+            
+            val_gold = font_value.render(f"🪙 {current_faction.gold} Gold", True, settings.COLOR_NEON_GREEN)
+            screen.blit(val_gold, (20, 225))
         
-        val_gold = font_value.render(f"🪙 {current_faction.gold} Gold", True, settings.COLOR_NEON_GREEN)
-        screen.blit(val_gold, (30, 225))
+        if current_turn_phase == settings.TURN_PHASE_CONTROL:
+            # Controlled Hexes count
+            lbl_hexes = font_label.render("CONTROLLED HEXES", True, settings.COLOR_TEXT_MUTED)
+            screen.blit(lbl_hexes, (20, 270))
+            
+            controlled_count = map_grid.get_controlled_hex_count(current_faction)
+            val_hexes = font_value.render(f"⬢ {controlled_count} Hexes", True, (255, 215, 0))
+            screen.blit(val_hexes, (20, 295))
+        elif current_turn_phase == settings.TURN_PHASE_VICTORY:
+            # Victory Points
+            lbl_vp = font_label.render("VICTORY POINTS", True, settings.COLOR_TEXT_MUTED)
+            screen.blit(lbl_vp, (20, 200))
+            
+            # Find opposed factions and count destroyed strongholds
+            vp = 0
+            opposed_statuses = []
+            if secret_faction is not None:
+                from factions import FACTIONS
+                opposed_factions = [f for f in FACTIONS if secret_faction.isOpposed(f)]
+                for f in opposed_factions:
+                    sh_coord = map_grid.find_stronghold_coord(f)
+                    if sh_coord is None:
+                        vp += 1
+                        opposed_statuses.append(f"{f.race}: DESTROYED")
+                    else:
+                        opposed_statuses.append(f"{f.race}: Active")
+            
+            val_vp = font_value.render(f"🏆 {vp} / 3 Opposed", True, (255, 215, 0))
+            screen.blit(val_vp, (20, 225))
+            
+            # Opposed Strongholds list
+            lbl_opposed = font_label.render("OPPOSED STRONGHOLDS", True, settings.COLOR_TEXT_MUTED)
+            screen.blit(lbl_opposed, (20, 270))
+            
+            y_offset = 295
+            for status_str in opposed_statuses:
+                color = settings.COLOR_NEON_PINK if "DESTROYED" in status_str else settings.COLOR_TEXT_PRIMARY
+                txt_status = font_value.render(status_str, True, color)
+                screen.blit(txt_status, (20, y_offset))
+                y_offset += 25
         
-        # "Muster Army" Button (Visual only for now)
-        muster_btn_rect = pygame.Rect(30, 400, 340, 50)
-        is_hover_muster = muster_btn_rect.collidepoint(mouse_x, mouse_y)
-        muster_fill = (40, 45, 55) if is_hover_muster else (25, 29, 38)
-        muster_border = settings.COLOR_NEON_CYAN if is_hover_muster else settings.COLOR_TEXT_MUTED
-        
-        pygame.draw.rect(screen, muster_fill, muster_btn_rect, border_radius=10)
-        pygame.draw.rect(screen, muster_border, muster_btn_rect, width=2, border_radius=10)
-        
-        txt_muster = font_label.render("MUSTER ARMY (COST: 1G)", True, settings.COLOR_TEXT_PRIMARY if is_hover_muster else settings.COLOR_TEXT_MUTED)
-        txt_muster_rect = txt_muster.get_rect(center=muster_btn_rect.center)
-        screen.blit(txt_muster, txt_muster_rect)
-        
-        # "Done" Button
-        done_btn_rect = pygame.Rect(30, 470, 340, 50)
-        is_hover_done = done_btn_rect.collidepoint(mouse_x, mouse_y)
-        done_fill = (40, 45, 55) if is_hover_done else (25, 29, 38)
-        done_border = settings.COLOR_NEON_CYAN if is_hover_done else settings.COLOR_TEXT_MUTED
-        
-        pygame.draw.rect(screen, done_fill, done_btn_rect, border_radius=10)
-        pygame.draw.rect(screen, done_border, done_btn_rect, width=2, border_radius=10)
-        
-        txt_done = font_label.render("DONE", True, settings.COLOR_TEXT_PRIMARY if is_hover_done else settings.COLOR_TEXT_MUTED)
-        txt_done_rect = txt_done.get_rect(center=done_btn_rect.center)
-        screen.blit(txt_done, txt_done_rect)
+        if current_turn_phase == settings.TURN_PHASE_INCOME:
+            # "Muster Army" Button
+            muster_btn_rect = pygame.Rect(20, 400, 260, 50)
+            is_hover_muster = muster_btn_rect.collidepoint(mouse_x, mouse_y)
+            
+            if is_mustering:
+                muster_fill = (50, 45, 25) if is_hover_muster else (35, 30, 15)
+                muster_border = (255, 215, 0)
+            else:
+                muster_fill = (40, 45, 55) if is_hover_muster else (25, 29, 38)
+                muster_border = settings.COLOR_NEON_CYAN if is_hover_muster else settings.COLOR_TEXT_MUTED
+                
+            pygame.draw.rect(screen, muster_fill, muster_btn_rect, border_radius=10)
+            pygame.draw.rect(screen, muster_border, muster_btn_rect, width=2, border_radius=10)
+            
+            text_color = (255, 215, 0) if is_mustering else (settings.COLOR_TEXT_PRIMARY if is_hover_muster else settings.COLOR_TEXT_MUTED)
+            txt_muster = font_label.render("MUSTER ARMY (COST: 1G)", True, text_color)
+            txt_muster_rect = txt_muster.get_rect(center=muster_btn_rect.center)
+            screen.blit(txt_muster, txt_muster_rect)
+            
+            # "Done" Button
+            done_btn_rect = pygame.Rect(20, 470, 260, 50)
+            is_hover_done = done_btn_rect.collidepoint(mouse_x, mouse_y)
+            done_fill = (40, 45, 55) if is_hover_done else (25, 29, 38)
+            done_border = settings.COLOR_NEON_CYAN if is_hover_done else settings.COLOR_TEXT_MUTED
+            
+            pygame.draw.rect(screen, done_fill, done_btn_rect, border_radius=10)
+            pygame.draw.rect(screen, done_border, done_btn_rect, width=2, border_radius=10)
+            
+            txt_done = font_label.render("DONE", True, settings.COLOR_TEXT_PRIMARY if is_hover_done else settings.COLOR_TEXT_MUTED)
+            txt_done_rect = txt_done.get_rect(center=done_btn_rect.center)
+            screen.blit(txt_done, txt_done_rect)
+        elif current_turn_phase in (settings.TURN_PHASE_MOVE, settings.TURN_PHASE_COMBAT, settings.TURN_PHASE_CONTROL, settings.TURN_PHASE_VICTORY):
+            # "Done" Button at y = 400
+            done_btn_rect = pygame.Rect(20, 400, 260, 50)
+            is_hover_done = done_btn_rect.collidepoint(mouse_x, mouse_y)
+            done_fill = (40, 45, 55) if is_hover_done else (25, 29, 38)
+            done_border = settings.COLOR_NEON_CYAN if is_hover_done else settings.COLOR_TEXT_MUTED
+            
+            pygame.draw.rect(screen, done_fill, done_btn_rect, border_radius=10)
+            pygame.draw.rect(screen, done_border, done_btn_rect, width=2, border_radius=10)
+            
+            txt_done = font_label.render("DONE", True, settings.COLOR_TEXT_PRIMARY if is_hover_done else settings.COLOR_TEXT_MUTED)
+            txt_done_rect = txt_done.get_rect(center=done_btn_rect.center)
+            screen.blit(txt_done, txt_done_rect)
         
     except Exception as e:
         print(f"[Render Error] Failed to draw phase panel: {e}")
+
+
+def draw_collapsed_tab(screen, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y):
+    """
+    Renders the small collapsed tab in the upper left.
+    """
+    tab_rect = pygame.Rect(20, 20, 260, 85)
+    # Draw solid black background for max contrast
+    pygame.draw.rect(screen, (0, 0, 0), tab_rect, border_radius=10)
+    pygame.draw.rect(screen, settings.COLOR_NEON_CYAN, tab_rect, width=2, border_radius=10)
+    
+    try:
+        font_tab_faction = util.get_font(16, bold=True)
+        font_tab_phase = util.get_font(12, bold=True)
+        font_tab_stats = util.get_font(12, bold=True)
+        font_arrow = util.get_font(22, bold=True)
+        
+        # Faction name text
+        txt_faction = font_tab_faction.render(current_faction.race.upper(), True, settings.COLOR_TEXT_PRIMARY)
+        screen.blit(txt_faction, (35, 30))
+        
+        # Phase name text
+        if current_turn_phase == settings.TURN_PHASE_INCOME:
+            phase_str = "MUSTER"
+        elif current_turn_phase == settings.TURN_PHASE_MOVE:
+            phase_str = "MOVEMENT"
+        elif current_turn_phase == settings.TURN_PHASE_COMBAT:
+            phase_str = "COMBAT"
+        elif current_turn_phase == settings.TURN_PHASE_CONTROL:
+            phase_str = "CONTROL"
+        elif current_turn_phase == settings.TURN_PHASE_VICTORY:
+            phase_str = "VICTORY"
+        else:
+            phase_str = "ACTIVE"
+            
+        txt_phase = font_tab_phase.render(f"{phase_str} PHASE", True, settings.COLOR_NEON_CYAN)
+        screen.blit(txt_phase, (35, 52))
+        
+        # Third line text depending on current phase
+        third_line_str = ""
+        if current_turn_phase == settings.TURN_PHASE_INCOME:
+            third_line_str = f"Gold: {current_faction.gold}"
+        elif current_turn_phase == settings.TURN_PHASE_MOVE:
+            unmoved_armies = sum(1 for loc, armies in map_grid.armies.items() for army in armies if army.faction == current_faction and not army.has_moved)
+            unmoved_champions = sum(1 for loc, champs in map_grid.champions.items() for champ in champs if champ.faction == current_faction and not getattr(champ, 'has_moved', False))
+            units_left = unmoved_armies + unmoved_champions
+            third_line_str = f"Left to Move: {units_left}"
+        elif current_turn_phase == settings.TURN_PHASE_CONTROL:
+            controlled_count = map_grid.get_controlled_hex_count(current_faction)
+            third_line_str = f"Hexes Controlled: {controlled_count}"
+
+        if third_line_str:
+            txt_stats = font_tab_stats.render(third_line_str, True, settings.COLOR_TEXT_MUTED)
+            screen.blit(txt_stats, (35, 74))
+        
+        # Vertical divider line
+        pygame.draw.line(screen, settings.COLOR_TEXT_MUTED, (195, 25), (195, 100), 1)
+        
+        # ">>" Button
+        done_btn_rect = pygame.Rect(210, 27, 60, 70)
+        is_hover_done = done_btn_rect.collidepoint(mouse_x, mouse_y)
+        
+        done_fill = (40, 45, 55) if is_hover_done else (25, 29, 38)
+        done_border = settings.COLOR_NEON_CYAN if is_hover_done else settings.COLOR_TEXT_MUTED
+        
+        pygame.draw.rect(screen, done_fill, done_btn_rect, border_radius=8)
+        pygame.draw.rect(screen, done_border, done_btn_rect, width=1, border_radius=8)
+        
+        txt_arrow = font_arrow.render(">>", True, settings.COLOR_TEXT_PRIMARY if is_hover_done else settings.COLOR_TEXT_MUTED)
+        txt_arrow_rect = txt_arrow.get_rect(center=done_btn_rect.center)
+        screen.blit(txt_arrow, txt_arrow_rect)
+        
+    except Exception as e:
+        print(f"[Render Error] Failed to draw collapsed tab: {e}")
 
 
 def draw_left_champion_statistics_panel(screen, selected_champion, left_panel_rect, map_grid, mouse_x, mouse_y):
@@ -96,24 +260,24 @@ def draw_left_champion_statistics_panel(screen, selected_champion, left_panel_re
     
     try:
         # Fonts
-        font_hud = pygame.font.SysFont("Courier", 22, bold=True)
-        font_label = pygame.font.SysFont("Courier", 14, bold=True)
-        font_value = pygame.font.SysFont("Courier", 16)
-        font_title_bold = pygame.font.SysFont("Courier", 22, bold=True)
+        font_hud = util.get_font(22, bold=True)
+        font_label = util.get_font(14, bold=True)
+        font_value = util.get_font(16)
+        font_title_bold = util.get_font(22, bold=True)
         
         # Champion Image Card Container
-        img_rect = pygame.Rect(110, 50, 180, 180)
+        img_rect = pygame.Rect(60, 50, 180, 180)
         pygame.draw.rect(screen, settings.COLOR_BACKGROUND, img_rect, border_radius=15)
         pygame.draw.rect(screen, glow_color, img_rect, width=3, border_radius=15)
         
         # Champion square surface scaling
         champ_surf = selected_champion.get_surface(size=(174, 174), mask_type="square")
-        screen.blit(champ_surf, (113, 53))
+        screen.blit(champ_surf, (63, 53))
         
         # Champion Title
-        name_text = selected_champion.name.upper()
+        name_text = "CHAMPION"
         name_surf = font_title_bold.render(name_text, True, settings.COLOR_TEXT_PRIMARY)
-        name_rect = name_surf.get_rect(center=(200, 270))
+        name_rect = name_surf.get_rect(center=(150, 270))
         screen.blit(name_surf, name_rect)
         
         # Statistics rows
@@ -121,52 +285,52 @@ def draw_left_champion_statistics_panel(screen, selected_champion, left_panel_re
         row_h = 75
         
         # Location Row
-        loc_rect = pygame.Rect(30, start_y, 340, 60)
+        loc_rect = pygame.Rect(20, start_y, 260, 60)
         pygame.draw.rect(screen, (20, 24, 33), loc_rect, border_radius=8)
         pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, loc_rect, width=1, border_radius=8)
         
         lbl_loc = font_label.render("LOCATION", True, settings.COLOR_NEON_CYAN)
-        screen.blit(lbl_loc, (45, start_y + 10))
+        screen.blit(lbl_loc, (35, start_y + 10))
         
         tile = map_grid.get_tile(selected_champion.q, selected_champion.r)
         formatted_loc = util.format_location_name(tile.terrain_type) if tile else "Empty Space"
         val_loc = font_value.render(formatted_loc, True, settings.COLOR_TEXT_PRIMARY)
-        screen.blit(val_loc, (45, start_y + 30))
+        screen.blit(val_loc, (35, start_y + 30))
         
         # Strength Row
-        str_rect = pygame.Rect(30, start_y + row_h, 340, 60)
+        str_rect = pygame.Rect(20, start_y + row_h, 260, 60)
         pygame.draw.rect(screen, (20, 24, 33), str_rect, border_radius=8)
         pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, str_rect, width=1, border_radius=8)
         
         lbl_str = font_label.render("STRENGTH", True, settings.COLOR_NEON_CYAN)
-        screen.blit(lbl_str, (45, start_y + row_h + 10))
+        screen.blit(lbl_str, (35, start_y + row_h + 10))
         
         val_str = font_value.render(str(selected_champion.strength), True, settings.COLOR_TEXT_PRIMARY)
-        screen.blit(val_str, (45, start_y + row_h + 30))
+        screen.blit(val_str, (35, start_y + row_h + 30))
         
         # Horizontal progress bar for strength
         max_str = 15
-        bar_w = 200
+        bar_w = 120
         bar_h = 10
-        bx = 150
+        bx = 140
         by = start_y + row_h + 33
         pygame.draw.rect(screen, (40, 45, 55), (bx, by, bar_w, bar_h), border_radius=5)
         fill_w = int(bar_w * min(1.0, selected_champion.strength / max_str))
         pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, (bx, by, fill_w, bar_h), border_radius=5)
         
         # Faction Row
-        align_rect = pygame.Rect(30, start_y + 2 * row_h, 340, 60)
+        align_rect = pygame.Rect(20, start_y + 2 * row_h, 260, 60)
         pygame.draw.rect(screen, (20, 24, 33), align_rect, border_radius=8)
         pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, align_rect, width=1, border_radius=8)
         
         lbl_align = font_label.render("FACTION", True, settings.COLOR_NEON_CYAN)
-        screen.blit(lbl_align, (45, start_y + 2 * row_h + 10))
+        screen.blit(lbl_align, (35, start_y + 2 * row_h + 10))
         
         val_align = font_value.render(selected_champion.faction.race.upper(), True, glow_color)
-        screen.blit(val_align, (45, start_y + 2 * row_h + 30))
+        screen.blit(val_align, (35, start_y + 2 * row_h + 30))
         
         # Close Button at bottom (y = 800 since there are no moves/summon options)
-        close_btn_rect = pygame.Rect(30, 800, 340, 45)
+        close_btn_rect = pygame.Rect(20, 800, 260, 45)
         is_hover_close = close_btn_rect.collidepoint(mouse_x, mouse_y)
         btn_fill = (40, 45, 55) if is_hover_close else (25, 29, 38)
         btn_border = settings.COLOR_NEON_CYAN if is_hover_close else settings.COLOR_TEXT_MUTED
@@ -195,24 +359,24 @@ def draw_left_army_statistics_panel(screen, selected_army, left_panel_rect, map_
     
     try:
         # Fonts
-        font_hud = pygame.font.SysFont("Courier", 22, bold=True)
-        font_label = pygame.font.SysFont("Courier", 14, bold=True)
-        font_value = pygame.font.SysFont("Courier", 16)
-        font_title_bold = pygame.font.SysFont("Courier", 22, bold=True)
+        font_hud = util.get_font(22, bold=True)
+        font_label = util.get_font(14, bold=True)
+        font_value = util.get_font(16)
+        font_title_bold = util.get_font(22, bold=True)
         
         # Army Image Card Container
-        img_rect = pygame.Rect(110, 50, 180, 180)
+        img_rect = pygame.Rect(60, 50, 180, 180)
         pygame.draw.rect(screen, settings.COLOR_BACKGROUND, img_rect, border_radius=15)
         pygame.draw.rect(screen, glow_color, img_rect, width=3, border_radius=15)
         
         # Army square surface scaling
         army_surf = selected_army.get_surface(size=(174, 174), mask_type="square")
-        screen.blit(army_surf, (113, 53))
+        screen.blit(army_surf, (63, 53))
         
         # Army Title
         name_text = selected_army.name.upper()
         name_surf = font_title_bold.render(name_text, True, settings.COLOR_TEXT_PRIMARY)
-        name_rect = name_surf.get_rect(center=(200, 270))
+        name_rect = name_surf.get_rect(center=(150, 270))
         screen.blit(name_surf, name_rect)
         
         # Statistics rows
@@ -220,52 +384,52 @@ def draw_left_army_statistics_panel(screen, selected_army, left_panel_rect, map_
         row_h = 70
         
         # Location Row
-        loc_rect = pygame.Rect(30, start_y, 340, 56)
+        loc_rect = pygame.Rect(20, start_y, 260, 56)
         pygame.draw.rect(screen, (20, 24, 33), loc_rect, border_radius=8)
         pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, loc_rect, width=1, border_radius=8)
         
         lbl_loc = font_label.render("LOCATION", True, settings.COLOR_NEON_CYAN)
-        screen.blit(lbl_loc, (45, start_y + 8))
+        screen.blit(lbl_loc, (35, start_y + 8))
         
         tile = map_grid.get_tile(selected_army.q, selected_army.r)
         formatted_loc = util.format_location_name(tile.terrain_type) if tile else "Empty Space"
         val_loc = font_value.render(formatted_loc, True, settings.COLOR_TEXT_PRIMARY)
-        screen.blit(val_loc, (45, start_y + 26))
+        screen.blit(val_loc, (35, start_y + 26))
         
         # Strength Row
-        str_rect = pygame.Rect(30, start_y + row_h, 340, 56)
+        str_rect = pygame.Rect(20, start_y + row_h, 260, 56)
         pygame.draw.rect(screen, (20, 24, 33), str_rect, border_radius=8)
         pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, str_rect, width=1, border_radius=8)
         
         lbl_str = font_label.render("STRENGTH", True, settings.COLOR_NEON_CYAN)
-        screen.blit(lbl_str, (45, start_y + row_h + 8))
+        screen.blit(lbl_str, (35, start_y + row_h + 8))
         
         val_str = font_value.render(str(selected_army.strength), True, settings.COLOR_TEXT_PRIMARY)
-        screen.blit(val_str, (45, start_y + row_h + 26))
+        screen.blit(val_str, (35, start_y + row_h + 26))
         
         # Horizontal progress bar for strength
         max_str = 15
-        bar_w = 200
+        bar_w = 120
         bar_h = 10
-        bx = 150
+        bx = 140
         by = start_y + row_h + 29
         pygame.draw.rect(screen, (40, 45, 55), (bx, by, bar_w, bar_h), border_radius=5)
         fill_w = int(bar_w * min(1.0, selected_army.strength / max_str))
         pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, (bx, by, fill_w, bar_h), border_radius=5)
         
         # Owning Faction Row
-        align_rect = pygame.Rect(30, start_y + 2 * row_h, 340, 56)
+        align_rect = pygame.Rect(20, start_y + 2 * row_h, 260, 56)
         pygame.draw.rect(screen, (20, 24, 33), align_rect, border_radius=8)
         pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, align_rect, width=1, border_radius=8)
         
         lbl_align = font_label.render("OWNING FACTION", True, settings.COLOR_NEON_CYAN)
-        screen.blit(lbl_align, (45, start_y + 2 * row_h + 8))
+        screen.blit(lbl_align, (35, start_y + 2 * row_h + 8))
         
         val_align = font_value.render(selected_army.faction.race.upper(), True, glow_color)
-        screen.blit(val_align, (45, start_y + 2 * row_h + 26))
+        screen.blit(val_align, (35, start_y + 2 * row_h + 26))
         
         # Close Button at bottom (y = 800 since there are no moves/summon options)
-        close_btn_rect = pygame.Rect(30, 800, 340, 45)
+        close_btn_rect = pygame.Rect(20, 800, 260, 45)
         is_hover_close = close_btn_rect.collidepoint(mouse_x, mouse_y)
         btn_fill = (40, 45, 55) if is_hover_close else (25, 29, 38)
         btn_border = settings.COLOR_NEON_CYAN if is_hover_close else settings.COLOR_TEXT_MUTED
@@ -290,7 +454,7 @@ def draw_mouseover_tooltip(screen, tooltip_to_draw, mouse_x, mouse_y):
         
     hover_text, glow_color = tooltip_to_draw
     try:
-        font_tooltip = pygame.font.SysFont("Courier", 12, bold=True)
+        font_tooltip = util.get_font(12, bold=True)
         txt_surf = font_tooltip.render(hover_text.upper(), True, settings.COLOR_TEXT_PRIMARY)
         
         tw = txt_surf.get_width() + 16
@@ -318,48 +482,56 @@ def draw_mouseover_tooltip(screen, tooltip_to_draw, mouse_x, mouse_y):
         print(f"[Render Warning] Failed to draw tooltip: {e}")
 
 
-
-def draw_hud_status_card(screen, human_player_obj, mouse_x, mouse_y):
+def draw_hud_status_card(screen, human_player_obj, map_grid, mouse_x, mouse_y):
     """
-    Renders the gameplay HUD status card at the top right, including Zoom buttons.
+    Renders the gameplay HUD status card at the top right, including Zoom buttons and the View Ring button.
     """
     try:
-        font_title = pygame.font.SysFont("Courier", 18, bold=True)
-        font_body = pygame.font.SysFont("Courier", 12)
+        font_secret = util.get_font(16, bold=True)
+        font_body = util.get_font(12)
+        font_zoom_label = util.get_font(14, bold=True)
+        font_zoom = util.get_font(18, bold=True)
         
-        hud_card = pygame.Surface((450, 80), pygame.SRCALPHA)
-        pygame.draw.rect(hud_card, settings.COLOR_HUD_BG, (0, 0, 450, 80), border_radius=10)
+        hud_card = pygame.Surface((450, 120), pygame.SRCALPHA)
+        pygame.draw.rect(hud_card, settings.COLOR_HUD_BG, (0, 0, 450, 120), border_radius=10)
+        pygame.draw.rect(hud_card, settings.COLOR_NEON_GREEN, (0, 0, 450, 120), width=2, border_radius=10)
         
-        pygame.draw.rect(hud_card, settings.COLOR_NEON_GREEN, (0, 0, 450, 80), width=2, border_radius=10)
-        status_text = "MAP VIEW MODE"
-        color_status = settings.COLOR_NEON_GREEN
+        # Secret faction at the top, increased font size
         tip_text = f"Secret Faction: {human_player_obj.faction.race} (Ring {human_player_obj.faction.ring_number})"
-        txt_scroll = font_body.render("WASD or Arrows: Camera Scroll  |  ESC: Deselect", True, settings.COLOR_TEXT_MUTED)
-            
-        txt_status = font_title.render(status_text, True, color_status)
-        txt_tip = font_body.render(tip_text, True, settings.COLOR_TEXT_PRIMARY)
-        
-        hud_card.blit(txt_status, (20, 12))
-        hud_card.blit(txt_tip, (20, 36))
-        hud_card.blit(txt_scroll, (20, 54))
-
-        # Zoom Out Button
-        zoom_out_rect = pygame.Rect(355, 10, 28, 28)
-        zoom_out_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 355, 20 + 10, 28, 28)
+        txt_tip = font_secret.render(tip_text, True, settings.COLOR_TEXT_PRIMARY)
+        hud_card.blit(txt_tip, (20, 14))
+ 
+        # Calculate victory points
+        vp = 0
+        from factions import FACTIONS
+        opposed_factions = [f for f in FACTIONS if human_player_obj.faction.isOpposed(f)]
+        for f in opposed_factions:
+            sh_coord = map_grid.find_stronghold_coord(f)
+            if sh_coord is None:
+                vp += 1
+        txt_vp = font_body.render(f"Victory Points: {vp} / 3", True, settings.COLOR_NEON_CYAN)
+        hud_card.blit(txt_vp, (20, 36))
+ 
+        # "Zoom" text to the left of the + and - buttons (moved down to the View Ring row)
+        txt_zoom = font_zoom_label.render("Zoom", True, settings.COLOR_TEXT_MUTED)
+        hud_card.blit(txt_zoom, (305, 66))
+ 
+        # Zoom Out Button (moved down to the View Ring row)
+        zoom_out_rect = pygame.Rect(355, 60, 28, 28)
+        zoom_out_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 355, 20 + 60, 28, 28)
         is_hover_out = zoom_out_global_rect.collidepoint(mouse_x, mouse_y)
         out_fill = (40, 45, 55) if is_hover_out else (25, 29, 38)
         out_border = settings.COLOR_NEON_CYAN if is_hover_out else settings.COLOR_TEXT_MUTED
         pygame.draw.rect(hud_card, out_fill, zoom_out_rect, border_radius=6)
         pygame.draw.rect(hud_card, out_border, zoom_out_rect, width=1, border_radius=6)
         
-        font_zoom = pygame.font.SysFont("Courier", 18, bold=True)
         txt_out = font_zoom.render("-", True, settings.COLOR_TEXT_PRIMARY if is_hover_out else settings.COLOR_TEXT_MUTED)
         txt_out_rect = txt_out.get_rect(center=zoom_out_rect.center)
         hud_card.blit(txt_out, txt_out_rect)
-
-        # Zoom In Button
-        zoom_in_rect = pygame.Rect(395, 10, 28, 28)
-        zoom_in_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 395, 20 + 10, 28, 28)
+ 
+        # Zoom In Button (moved down to the View Ring row)
+        zoom_in_rect = pygame.Rect(395, 60, 28, 28)
+        zoom_in_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 395, 20 + 60, 28, 28)
         is_hover_in = zoom_in_global_rect.collidepoint(mouse_x, mouse_y)
         in_fill = (40, 45, 55) if is_hover_in else (25, 29, 38)
         in_border = settings.COLOR_NEON_CYAN if is_hover_in else settings.COLOR_TEXT_MUTED
@@ -369,7 +541,25 @@ def draw_hud_status_card(screen, human_player_obj, mouse_x, mouse_y):
         txt_in = font_zoom.render("+", True, settings.COLOR_TEXT_PRIMARY if is_hover_in else settings.COLOR_TEXT_MUTED)
         txt_in_rect = txt_in.get_rect(center=zoom_in_rect.center)
         hud_card.blit(txt_in, txt_in_rect)
-
+ 
+        # View Ring Button
+        view_ring_rect = pygame.Rect(20, 59, 120, 30)
+        view_ring_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 20, 20 + 59, 120, 30)
+        is_hover_ring = view_ring_global_rect.collidepoint(mouse_x, mouse_y)
+        ring_fill = (40, 45, 55) if is_hover_ring else (25, 29, 38)
+        ring_border = settings.COLOR_NEON_CYAN if is_hover_ring else settings.COLOR_TEXT_MUTED
+        pygame.draw.rect(hud_card, ring_fill, view_ring_rect, border_radius=6)
+        pygame.draw.rect(hud_card, ring_border, view_ring_rect, width=1, border_radius=6)
+        
+        font_ring = util.get_font(14, bold=True)
+        txt_ring = font_ring.render("VIEW RING", True, settings.COLOR_TEXT_PRIMARY if is_hover_ring else settings.COLOR_TEXT_MUTED)
+        txt_ring_rect = txt_ring.get_rect(center=view_ring_rect.center)
+        hud_card.blit(txt_ring, txt_ring_rect)
+ 
+        # Map movement instructions at the bottom
+        txt_scroll = font_body.render("WASD or Arrows: Camera Scroll  |  ESC: Deselect", True, settings.COLOR_TEXT_MUTED)
+        hud_card.blit(txt_scroll, (20, 98))
+ 
         screen.blit(hud_card, (settings.SCREEN_WIDTH - 480, 20))
     except Exception as e:
         print(f"[Render Warning] Failed to draw gameplay HUD: {e}")
@@ -418,9 +608,121 @@ def main():
     current_turn_phase = None
     previous_faction_by_player = [None, None]
 
+    def process_control_phase(faction):
+        # Consolidate armies of the moving faction in each hex
+        for loc in list(map_grid.armies.keys()):
+            q, r = loc
+            faction_armies = [a for a in map_grid.armies[loc] if a.faction == faction]
+            if len(faction_armies) > 1:
+                total_strength = sum(a.strength for a in faction_armies)
+                remaining_army = faction_armies[0]
+                remaining_army.strength = total_strength
+                
+                # Remove the rest of the armies of this faction on this hex
+                for other_army in faction_armies[1:]:
+                    map_grid.remove_army(other_army)
+
+        # We only examine hexes that either have a unit for the active faction (whose turn we are on),
+        # or are currently owned by the active faction.
+        from factions import Faction
+        for (q, r), tile in map_grid.tiles.items():
+            # Strongholds are immune to normal control phase changes
+            if tile.is_stronghold:
+                continue
+
+            if tile.owner is not None and not isinstance(tile.owner, Faction):
+                tile.owner = None
+
+            # Check if active faction has any units in this hex
+            has_active_unit = False
+            if any(army.faction == faction for army in map_grid.armies.get((q, r), [])):
+                has_active_unit = True
+            if any(champ.faction == faction for champ in map_grid.champions.get((q, r), [])):
+                has_active_unit = True
+
+            is_active_owner = (tile.owner == faction)
+
+            # Skip hexes that neither have a unit for the active Faction nor are owned by the active Faction
+            if not has_active_unit and not is_active_owner:
+                continue
+
+            # Determine if there are any adversaries (Unaligned or Loosely Aligned relative to active faction)
+            # Adversary/Unaligned/Loosely Aligned means: NOT Fully Aligned and NOT Strongly Aligned with active faction.
+            active_adversary_present = False
+            for army in map_grid.armies.get((q, r), []):
+                if not (faction.isFullyAligned(army.faction) or faction.isStronglyAligned(army.faction)):
+                    active_adversary_present = True
+                    break
+            if not active_adversary_present:
+                for champ in map_grid.champions.get((q, r), []):
+                    if not (faction.isFullyAligned(champ.faction) or faction.isStronglyAligned(champ.faction)):
+                        active_adversary_present = True
+                        break
+
+            # Check rules
+            if is_active_owner:
+                # --- LOSS CHECK ---
+                # Control is lost if:
+                # 1. No Faction unit (of the owner) is in the hex (since we are active_owner, this is has_active_unit = False)
+                # 2. At least one adversary unit is in the hex
+                # Since we are already active_owner, if has_active_unit is False, we check active_adversary_present.
+                if not has_active_unit and active_adversary_present:
+                    tile.owner = None
+                    print(f"[Control Phase] Faction {faction.race} lost control of hex ({q}, {r})")
+            else:
+                # --- GAIN CHECK ---
+                # We know has_active_unit is True (otherwise we would have skipped the hex).
+                # Current owner is not active faction.
+                # First, check if current owner (if any, let's call it prev_owner) loses control.
+                owner_loses = False
+                prev_owner = tile.owner
+                if prev_owner is not None:
+                    # Current owner B loses control if B has no units present,
+                    # and there is an adversary unit relative to B present (A is present and A is adversary to B).
+                    has_owner_unit = False
+                    if any(army.faction == prev_owner for army in map_grid.armies.get((q, r), [])):
+                        has_owner_unit = True
+                    if any(champ.faction == prev_owner for champ in map_grid.champions.get((q, r), [])):
+                        has_owner_unit = True
+
+                    owner_adversary_present = False
+                    for army in map_grid.armies.get((q, r), []):
+                        if not (prev_owner.isFullyAligned(army.faction) or prev_owner.isStronglyAligned(army.faction)):
+                            owner_adversary_present = True
+                            break
+                    if not owner_adversary_present:
+                        for champ in map_grid.champions.get((q, r), []):
+                            if not (prev_owner.isFullyAligned(champ.faction) or prev_owner.isStronglyAligned(champ.faction)):
+                                owner_adversary_present = True
+                                break
+
+                    owner_loses = (not has_owner_unit) and owner_adversary_present
+
+                if prev_owner is not None and owner_loses:
+                    tile.owner = None
+                    print(f"[Control Phase] Faction {prev_owner.race} lost control of hex ({q}, {r})")
+
+                if tile.owner is None:
+                    # Hex is uncontrolled (or owner just lost it).
+                    # Active faction gains control if no adversaries relative to active faction are present.
+                    if not active_adversary_present:
+                        tile.owner = faction
+                        print(f"[Control Phase] Faction {faction.race} gained control of hex ({q}, {r})")
+
+
     # Helper function to start a player's turn
     def start_player_turn(player_index):
-        nonlocal current_player_idx, current_faction, current_turn_phase
+        nonlocal current_player_idx, current_faction, current_turn_phase, is_mustering
+        is_mustering = False
+        
+        # Reset has_moved state for all armies and champions at start of a player turn
+        for loc, armies_list in map_grid.armies.items():
+            for army in armies_list:
+                army.has_moved = False
+        for loc, champs_list in map_grid.champions.items():
+            for champ in champs_list:
+                champ.has_moved = False
+                
         current_player_idx = player_index
         player = players[player_index]
         
@@ -436,7 +738,7 @@ def main():
         # Calculate and credit income
         income = map_grid.calculate_faction_income(chosen_f)
         chosen_f.gold += income
-        print(f"[Turn Start] Player {player_index} controls {chosen_f.race}. Phase: Income. Added {income} gold (Total: {chosen_f.gold}).")
+        print(f"[Turn Start] Player {player_index} controls {chosen_f.race}. Phase: Muster. Added {income} gold (Total: {chosen_f.gold}).")
         
         # If human player, center camera on their Stronghold
         if player_index == 0:
@@ -446,19 +748,35 @@ def main():
 
     # Helper function to advance phase
     def advance_turn_phase():
-        nonlocal current_turn_phase
+        nonlocal current_turn_phase, is_mustering, selected_champion, selected_army
+        is_mustering = False
+        selected_champion = None
+        selected_army = None
         if current_turn_phase == settings.TURN_PHASE_INCOME:
             current_turn_phase = settings.TURN_PHASE_MOVE
         elif current_turn_phase == settings.TURN_PHASE_MOVE:
             current_turn_phase = settings.TURN_PHASE_COMBAT
         elif current_turn_phase == settings.TURN_PHASE_COMBAT:
             current_turn_phase = settings.TURN_PHASE_CONTROL
+            process_control_phase(current_faction)
         elif current_turn_phase == settings.TURN_PHASE_CONTROL:
-            current_turn_phase = settings.TURN_PHASE_VICTORY
-        elif current_turn_phase == settings.TURN_PHASE_VICTORY:
-            # End of faction turn, proceed to next player
+            # Check for victory/loss at the end of the turn
+            for p_idx, p_obj in enumerate(players):
+                if map_grid.find_stronghold_coord(p_obj.faction) is None:
+                    print(f"[GAME OVER] Player {p_idx} ({p_obj.faction.race}) has lost their stronghold!")
+                vp_count = 0
+                from factions import FACTIONS
+                opposed_facs = [f for f in FACTIONS if p_obj.faction.isOpposed(f)]
+                for f in opposed_facs:
+                    if map_grid.find_stronghold_coord(f) is None:
+                        vp_count += 1
+                if vp_count >= 2:
+                    print(f"[VICTORY] Player {p_idx} ({p_obj.faction.race}) WINS by destroying opposed strongholds!")
+            
+            # Immediately end faction turn and proceed to next player (bypassing Victory Phase)
             next_player_idx = 1 - current_player_idx
             start_player_turn(next_player_idx)
+
 
     # Initialize the first turn!
     start_player_turn(0)
@@ -466,6 +784,8 @@ def main():
     # --- PHASE 2: MAIN GAMEPLAY LOOP (MAP VIEWING) ---
     selected_champion = None
     selected_army = None
+    is_mustering = False
+    left_panel_collapsed = False
     
     # Load and scale TenFactions.jpg to fit the screen overlay
     try:
@@ -481,7 +801,7 @@ def main():
 
     show_ring_window = False
     active_faction_profile = None
-    ring_btn_rect = pygame.Rect(20, 20, 100, 36)
+    ring_btn_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 20, 20 + 59, 120, 30)
     
 
     
@@ -515,7 +835,19 @@ def main():
         mouse_x, mouse_y = pygame.mouse.get_pos()
 
         # Define layout viewport boundaries dynamically based on selection and human turn status
-        if selected_champion is not None or selected_army is not None or current_player_idx == 0:
+        show_full_left_panel = False
+        is_own_champ_in_move = (selected_champion is not None and 
+                                current_turn_phase == settings.TURN_PHASE_MOVE and 
+                                selected_champion.faction == current_faction)
+                                
+        if selected_champion is not None and not is_own_champ_in_move:
+            show_full_left_panel = True
+        elif selected_army is not None and current_turn_phase != settings.TURN_PHASE_MOVE:
+            show_full_left_panel = True
+        elif current_player_idx == 0 and not left_panel_collapsed:
+            show_full_left_panel = True
+
+        if show_full_left_panel:
             left_panel_rect = pygame.Rect(0, 0, settings.PANEL_WIDTH, settings.SCREEN_HEIGHT)
             map_viewport_rect = pygame.Rect(settings.PANEL_WIDTH, 0, settings.SCREEN_WIDTH - settings.PANEL_WIDTH, settings.SCREEN_HEIGHT)
         else:
@@ -550,6 +882,10 @@ def main():
                         util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
                     else:
                         running = False
+                elif event.key == pygame.K_SPACE:
+                    if current_player_idx == 0:
+                        advance_turn_phase()
+                        util.play_sound(filename=None, volume=0.3, pitch_hz=440.0, duration_ms=100)
                         
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1: # Left click
@@ -560,8 +896,8 @@ def main():
                         continue
 
                     # Check HUD Zoom buttons first
-                    zoom_out_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 355, 20 + 10, 28, 28)
-                    zoom_in_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 395, 20 + 10, 28, 28)
+                    zoom_out_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 355, 20 + 49, 28, 28)
+                    zoom_in_global_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 395, 20 + 49, 28, 28)
                     
                     if zoom_out_global_rect.collidepoint(mouse_x, mouse_y):
                         # Zoom out
@@ -582,61 +918,230 @@ def main():
 
                     clicked_close = False
                     
+                    # Check collapsed tab click first
+                    is_own_champ_in_move = (selected_champion is not None and 
+                                            current_turn_phase == settings.TURN_PHASE_MOVE and 
+                                            selected_champion.faction == current_faction)
+                                            
+                    is_currently_collapsed = (left_panel_collapsed and 
+                                             (selected_champion is None or is_own_champ_in_move) and 
+                                             (selected_army is None or current_turn_phase == settings.TURN_PHASE_MOVE))
+                    if is_currently_collapsed and current_player_idx == 0:
+                        tab_rect = pygame.Rect(20, 20, 260, 85)
+                        if tab_rect.collidepoint(mouse_x, mouse_y):
+                            done_btn_rect = pygame.Rect(210, 27, 60, 70)
+                            if done_btn_rect.collidepoint(mouse_x, mouse_y):
+                                advance_turn_phase()
+                                clicked_close = True
+                                util.play_sound(filename=None, volume=0.3, pitch_hz=440.0, duration_ms=100)
+                            else:
+                                left_panel_collapsed = False
+                                clicked_close = True
+                                util.play_sound(filename=None, volume=0.3, pitch_hz=440.0, duration_ms=100)
+                    
                     # Check panel buttons if selection is active
-                    if selected_champion is not None and left_panel_rect.collidepoint(mouse_x, mouse_y):
-                        close_btn_rect = pygame.Rect(30, 800, 340, 45)
-                        if close_btn_rect.collidepoint(mouse_x, mouse_y):
-                            selected_champion = None
-                            clicked_close = True
-                            util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
-                    elif selected_army is not None and left_panel_rect.collidepoint(mouse_x, mouse_y):
-                        close_btn_rect = pygame.Rect(30, 800, 340, 45)
-                        if close_btn_rect.collidepoint(mouse_x, mouse_y):
-                            selected_army = None
-                            clicked_close = True
-                            util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
-                    elif current_player_idx == 0 and left_panel_rect.collidepoint(mouse_x, mouse_y):
-                        # Done button click handling on the Faction Turn Phase panel
-                        done_btn_rect = pygame.Rect(30, 470, 340, 50)
-                        if done_btn_rect.collidepoint(mouse_x, mouse_y):
-                            advance_turn_phase()
-                            clicked_close = True
-                            util.play_sound(filename=None, volume=0.3, pitch_hz=440.0, duration_ms=100)
+                    if not clicked_close:
+                        if selected_champion is not None and left_panel_rect.collidepoint(mouse_x, mouse_y):
+                            close_btn_rect = pygame.Rect(20, 800, 260, 45)
+                            if close_btn_rect.collidepoint(mouse_x, mouse_y):
+                                selected_champion = None
+                                clicked_close = True
+                                util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
+                        elif selected_army is not None and left_panel_rect.collidepoint(mouse_x, mouse_y):
+                            close_btn_rect = pygame.Rect(20, 800, 260, 45)
+                            if close_btn_rect.collidepoint(mouse_x, mouse_y):
+                                selected_army = None
+                                clicked_close = True
+                                util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
+                        elif current_player_idx == 0 and left_panel_rect.collidepoint(mouse_x, mouse_y):
+                            collapse_btn_rect = pygame.Rect(250, 25, 30, 30)
+                            if collapse_btn_rect.collidepoint(mouse_x, mouse_y):
+                                left_panel_collapsed = True
+                                is_mustering = False
+                                clicked_close = True
+                                util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
+                            else:
+                                # Define bounds dynamically based on current phase
+                                if current_turn_phase == settings.TURN_PHASE_INCOME:
+                                    done_btn_rect = pygame.Rect(20, 470, 260, 50)
+                                    muster_btn_rect = pygame.Rect(20, 400, 260, 50)
+                                elif current_turn_phase in (settings.TURN_PHASE_MOVE, settings.TURN_PHASE_COMBAT, settings.TURN_PHASE_CONTROL, settings.TURN_PHASE_VICTORY):
+                                    done_btn_rect = pygame.Rect(20, 400, 260, 50)
+                                    muster_btn_rect = pygame.Rect(0, 0, 0, 0)
+                                else:
+                                    done_btn_rect = pygame.Rect(0, 0, 0, 0)
+                                    muster_btn_rect = pygame.Rect(0, 0, 0, 0)
+
+                                if done_btn_rect.collidepoint(mouse_x, mouse_y):
+                                    advance_turn_phase()
+                                    clicked_close = True
+                                    util.play_sound(filename=None, volume=0.3, pitch_hz=440.0, duration_ms=100)
+                                elif muster_btn_rect.collidepoint(mouse_x, mouse_y):
+                                    if current_turn_phase == settings.TURN_PHASE_INCOME and current_faction.gold > 0:
+                                        is_mustering = not is_mustering
+                                        util.play_sound(filename=None, volume=0.4, pitch_hz=587.33, duration_ms=100)
+                                    clicked_close = True
                                 
                     if not clicked_close:
                         if map_viewport_rect.collidepoint(mouse_x, mouse_y):
-                            clicked_champ = map_grid.get_champion_at_screen_pos(mouse_x, mouse_y, map_viewport_rect)
-                            if clicked_champ is not None:
-                                selected_champion = clicked_champ
-                                selected_army = None
-                                util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
-                            else:
-                                clicked_army = map_grid.get_army_at_screen_pos(mouse_x, mouse_y, map_viewport_rect)
-                                if clicked_army is not None:
-                                    selected_army = clicked_army
-                                    selected_champion = None
-                                    util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
-                                else:
-                                    # Check if stronghold was clicked
-                                    from factions import Faction
-                                    q, r = map_grid.screen_to_axial(mouse_x, mouse_y, map_viewport_rect)
-                                    tile = map_grid.get_tile(q, r)
-                                    if tile and getattr(tile, 'is_stronghold', False) and isinstance(tile.owner, Faction):
-                                        active_faction_profile = tile.owner
-                                        util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=120)
+                            # Direct mustering check when collapsed
+                            did_muster_action = False
+                            if (left_panel_collapsed and selected_champion is None and selected_army is None and
+                                current_turn_phase == settings.TURN_PHASE_INCOME):
+                                q, r = map_grid.screen_to_axial(mouse_x, mouse_y, map_viewport_rect)
+                                if map_grid.can_muster_army(current_faction, q, r):
+                                    did_muster_action = True
+                                    if current_faction.gold >= 1:
+                                        map_grid.muster_army(current_faction, q, r, strength=1)
+                                        current_faction.gold -= 1
+                                        util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=100)
                                     else:
-                                        if selected_champion is not None:
+                                        util.play_sound(filename=None, volume=0.2, pitch_hz=220.0, duration_ms=150)
+
+                            if did_muster_action:
+                                pass
+                            elif is_mustering:
+                                q, r = map_grid.screen_to_axial(mouse_x, mouse_y, map_viewport_rect)
+                                if map_grid.can_muster_army(current_faction, q, r) and current_faction.gold >= 1:
+                                    map_grid.muster_army(current_faction, q, r, strength=1)
+                                    current_faction.gold -= 1
+                                    util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=100)
+                                    if current_faction.gold <= 0:
+                                        is_mustering = False
+                                else:
+                                    util.play_sound(filename=None, volume=0.2, pitch_hz=220.0, duration_ms=150)
+                            elif current_turn_phase == settings.TURN_PHASE_MOVE:
+                                clicked_army = map_grid.get_army_at_screen_pos(mouse_x, mouse_y, map_viewport_rect)
+                                clicked_champ = map_grid.get_champion_at_screen_pos(mouse_x, mouse_y, map_viewport_rect)
+                                
+                                # 1. If clicked own army
+                                if clicked_army is not None and clicked_army.faction == current_faction:
+                                    if clicked_army == selected_army:
+                                        # Clicked a second time! Check if strength > 1
+                                        if clicked_army.strength > 1:
+                                            clicked_army.strength -= 1
+                                            
+                                            from armies import Army
+                                            next_idx = map_grid.get_next_army_index(current_faction)
+                                            new_army = Army(
+                                                faction=current_faction,
+                                                q=clicked_army.q,
+                                                r=clicked_army.r,
+                                                strength=1,
+                                                index=next_idx
+                                            )
+                                            map_grid.add_army(new_army)
+                                            
+                                            selected_army = new_army
                                             selected_champion = None
-                                            util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
-                                        elif selected_army is not None:
+                                            util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=100)
+                                        else:
+                                            util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
+                                    else:
+                                        if not clicked_army.has_moved:
+                                            selected_army = clicked_army
+                                            selected_champion = None
+                                            util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
+                                        else:
+                                            util.play_sound(filename=None, volume=0.2, pitch_hz=220.0, duration_ms=150)
+                                        
+                                # 2. If clicked own champion
+                                elif clicked_champ is not None and clicked_champ.faction == current_faction:
+                                    if not getattr(clicked_champ, 'has_moved', False):
+                                        selected_champion = clicked_champ
+                                        selected_army = None
+                                        util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
+                                    else:
+                                        util.play_sound(filename=None, volume=0.2, pitch_hz=220.0, duration_ms=150)
+                                        
+                                # 3. Clicked somewhere else (possible movement destination or select other units)
+                                else:
+                                    if selected_army is not None:
+                                        q, r = map_grid.screen_to_axial(mouse_x, mouse_y, map_viewport_rect)
+                                        if map_grid.can_move_army(selected_army, q, r):
+                                            map_grid.move_army(selected_army, q, r)
+                                            selected_army.has_moved = True # Mark as moved this turn
+                                            selected_army = None
+                                            util.play_sound(filename=None, volume=0.4, pitch_hz=587.33, duration_ms=100)
+                                        else:
                                             selected_army = None
                                             util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
+                                            
+                                    elif selected_champion is not None and selected_champion.faction == current_faction:
+                                        q, r = map_grid.screen_to_axial(mouse_x, mouse_y, map_viewport_rect)
+                                        if map_grid.can_move_champion(selected_champion, q, r):
+                                            map_grid.move_champion(selected_champion, q, r)
+                                            selected_champion.has_moved = True # Mark as moved this turn
+                                            selected_champion = None
+                                            util.play_sound(filename=None, volume=0.4, pitch_hz=587.33, duration_ms=100)
+                                        else:
+                                            selected_champion = None
+                                            util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
+                                            
+                                    else:
+                                        if clicked_champ is not None:
+                                            selected_champion = clicked_champ
+                                            selected_army = None
+                                            util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
+                                        elif clicked_army is not None:
+                                            selected_army = clicked_army
+                                            selected_champion = None
+                                            util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
+                                        else:
+                                            from factions import Faction
+                                            q, r = map_grid.screen_to_axial(mouse_x, mouse_y, map_viewport_rect)
+                                            tile = map_grid.get_tile(q, r)
+                                            if tile and getattr(tile, 'is_stronghold', False) and isinstance(tile.owner, Faction):
+                                                active_faction_profile = tile.owner
+                                                util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=120)
+                                            else:
+                                                if selected_champion is not None:
+                                                    selected_champion = None
+                                                    util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
+                                                elif selected_army is not None:
+                                                    selected_army = None
+                                                    util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
+                            else:
+                                clicked_champ = map_grid.get_champion_at_screen_pos(mouse_x, mouse_y, map_viewport_rect)
+                                if clicked_champ is not None:
+                                    selected_champion = clicked_champ
+                                    selected_army = None
+                                    util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
+                                else:
+                                    clicked_army = map_grid.get_army_at_screen_pos(mouse_x, mouse_y, map_viewport_rect)
+                                    if clicked_army is not None:
+                                        selected_army = clicked_army
+                                        selected_champion = None
+                                        util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
+                                    else:
+                                        from factions import Faction
+                                        q, r = map_grid.screen_to_axial(mouse_x, mouse_y, map_viewport_rect)
+                                        tile = map_grid.get_tile(q, r)
+                                        if tile and getattr(tile, 'is_stronghold', False) and isinstance(tile.owner, Faction):
+                                            active_faction_profile = tile.owner
+                                            util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=120)
+                                        else:
+                                            if selected_champion is not None:
+                                                selected_champion = None
+                                                util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
+                                            elif selected_army is not None:
+                                                selected_army = None
+                                                util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
 
         # --- C. Rendering ---
         screen.fill(settings.COLOR_BACKGROUND)
         
         # 1. Render Hex Map inside viewport
-        map_grid.draw(screen, map_viewport_rect)
+        controlled_coords = [coord for coord, tile in map_grid.tiles.items() if tile.owner == current_faction]
+        highlight_coords = list(controlled_coords)
+        if current_turn_phase == settings.TURN_PHASE_MOVE:
+            if selected_army is not None:
+                if selected_army.hex_location not in highlight_coords:
+                    highlight_coords.append(selected_army.hex_location)
+            elif selected_champion is not None and selected_champion.faction == current_faction and not getattr(selected_champion, 'has_moved', False):
+                if selected_champion.hex_location not in highlight_coords:
+                    highlight_coords.append(selected_champion.hex_location)
+        map_grid.draw(screen, map_viewport_rect, highlight_coords=highlight_coords, highlight_color=(255, 215, 0))
         
         # 1.5 Check Mouseover Tooltip for Champions or Armies
         tooltip_to_draw = None
@@ -664,33 +1169,28 @@ def main():
                 
                 tooltip_to_draw = (hover_text, glow_color)
 
-        # 2. Render Left Statistics Panel for selected Champion
+        # 2. Render Left Statistics Panel for selected Champion (only if not moving own champion in movement phase)
+        show_champ_profile = False
         if selected_champion is not None:
+            if current_turn_phase != settings.TURN_PHASE_MOVE or selected_champion.faction != current_faction:
+                show_champ_profile = True
+                
+        if show_champ_profile:
             draw_left_champion_statistics_panel(screen, selected_champion, left_panel_rect, map_grid, mouse_x, mouse_y)
             
-        # 2.1 Render Left Statistics Panel for selected Army
-        elif selected_army is not None:
+        # 2.1 Render Left Statistics Panel for selected Army (only if not in movement phase)
+        elif selected_army is not None and current_turn_phase != settings.TURN_PHASE_MOVE:
             draw_left_army_statistics_panel(screen, selected_army, left_panel_rect, map_grid, mouse_x, mouse_y)
 
-        # 2.2 Render Left Faction Turn Phase Panel for active turn
+        # 2.2 Render Left Faction Turn Phase Panel / tab for active turn
         elif current_player_idx == 0:
-            draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn_phase, mouse_x, mouse_y)
+            if left_panel_collapsed:
+                draw_collapsed_tab(screen, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y)
+            else:
+                draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y, is_mustering, secret_faction=human_player_obj.faction)
 
         # 3. Render HUD status card (Phase 2 version)
-        draw_hud_status_card(screen, human_player_obj, mouse_x, mouse_y)
-
-        # Draw "Ring" button in the upper left corner of the game screen
-        is_hover_ring = ring_btn_rect.collidepoint(mouse_x, mouse_y)
-        ring_btn_fill = (40, 45, 55) if is_hover_ring else (25, 29, 38)
-        ring_btn_border = settings.COLOR_NEON_CYAN if is_hover_ring else settings.COLOR_TEXT_MUTED
-        
-        pygame.draw.rect(screen, ring_btn_fill, ring_btn_rect, border_radius=8)
-        pygame.draw.rect(screen, ring_btn_border, ring_btn_rect, width=2, border_radius=8)
-        
-        font_ring_btn = pygame.font.SysFont("Courier", 16, bold=True)
-        txt_ring = font_ring_btn.render("RING", True, settings.COLOR_TEXT_PRIMARY if is_hover_ring else settings.COLOR_TEXT_MUTED)
-        txt_ring_rect = txt_ring.get_rect(center=ring_btn_rect.center)
-        screen.blit(txt_ring, txt_ring_rect)
+        draw_hud_status_card(screen, human_player_obj, map_grid, mouse_x, mouse_y)
 
         # 4. Draw Mouseover Tooltip on top of all UI overlays
         draw_mouseover_tooltip(screen, tooltip_to_draw, mouse_x, mouse_y)
@@ -714,7 +1214,7 @@ def main():
             
             screen.blit(ten_factions_img, (win_x + 10, win_y + 10))
             
-            font_tip = pygame.font.SysFont("Courier", 14, bold=True)
+            font_tip = util.get_font(14, bold=True)
             tip_surf = font_tip.render("Click anywhere or press any key to close", True, settings.COLOR_TEXT_MUTED)
             tip_rect = tip_surf.get_rect(center=(settings.SCREEN_WIDTH // 2, win_y + win_h + 25))
             screen.blit(tip_surf, tip_rect)
@@ -736,13 +1236,13 @@ def main():
             pygame.draw.rect(screen, settings.COLOR_NEON_CYAN, (win_x, win_y, win_w, win_h), width=3, border_radius=15)
             
             # Title
-            font_title = pygame.font.SysFont("Courier", 22, bold=True)
+            font_title = util.get_font(22, bold=True)
             txt_title = font_title.render("FACTION PROFILE", True, settings.COLOR_TEXT_MUTED)
             txt_title_rect = txt_title.get_rect(center=(settings.SCREEN_WIDTH // 2, win_y + 40))
             screen.blit(txt_title, txt_title_rect)
             
             # Race Header
-            font_race = pygame.font.SysFont("Courier", 32, bold=True)
+            font_race = util.get_font(32, bold=True)
             txt_race = font_race.render(active_faction_profile.race.upper(), True, settings.COLOR_NEON_CYAN)
             txt_race_rect = txt_race.get_rect(center=(settings.SCREEN_WIDTH // 2, win_y + 80))
             screen.blit(txt_race, txt_race_rect)
@@ -773,8 +1273,8 @@ def main():
             info_x = win_x + 230
             info_y = win_y + 140
             
-            font_label = pygame.font.SysFont("Courier", 14, bold=True)
-            font_val = pygame.font.SysFont("Courier", 18)
+            font_label = util.get_font(14, bold=True)
+            font_val = util.get_font(18)
             
             # 1. Home Terrain
             lbl_terrain = font_label.render("HOME TERRAIN", True, settings.COLOR_TEXT_MUTED)
@@ -817,7 +1317,7 @@ def main():
             screen.blit(val_align, (info_x, info_y + 185))
             
             # Close Tip
-            font_tip = pygame.font.SysFont("Courier", 14, bold=True)
+            font_tip = util.get_font(14, bold=True)
             tip_surf = font_tip.render("Click anywhere or press any key to close", True, settings.COLOR_TEXT_MUTED)
             tip_rect = tip_surf.get_rect(center=(settings.SCREEN_WIDTH // 2, win_y + win_h - 30))
             screen.blit(tip_surf, tip_rect)

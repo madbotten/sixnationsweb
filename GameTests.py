@@ -55,14 +55,14 @@ class TestFactionDiplomacy(unittest.TestCase):
             self.assertEqual(loosely_aligned_count, 4)
     def test_faction_gold(self):
         for f in FACTIONS:
-            self.assertEqual(f.gold, 1)
+            self.assertEqual(f.gold, 0)
             f.gold = 5
             self.assertEqual(f.gold, 5)
             with self.assertRaises(ValueError):
                 f.gold = -1
             with self.assertRaises(ValueError):
                 f.gold = "many"
-            f.gold = 1
+            f.gold = 0
 
 from map import MapGrid
 import settings
@@ -369,5 +369,69 @@ class TestTurnFlowAndIncome(unittest.TestCase):
         self.assertEqual(grid.camera_x, -lx)
         self.assertEqual(grid.camera_y, -ly)
 
+class TestControlPhase(unittest.TestCase):
+    def test_destroy_stronghold(self):
+        from map import MapGrid
+        from factions import FACTIONS_BY_RING
+        from armies import Army
+        from champions import Champion
+        
+        grid = MapGrid()
+        faction_0 = FACTIONS_BY_RING[0]
+        faction_1 = FACTIONS_BY_RING[1]
+        
+        # Setup stronghold tile for faction_0
+        grid.place_tile(2, 2, "Plains", faction_0)
+        grid.tiles[(2, 2)].is_stronghold = True
+        
+        # Setup normal tile owned by faction_0
+        grid.place_tile(1, 1, "Plains", faction_0)
+        
+        # Setup tile owned by faction_1
+        grid.place_tile(0, 0, "Woods", faction_1)
+        
+        # Place armies and champions
+        grid.muster_army(faction_0, 2, 2)
+        grid.muster_army(faction_0, 1, 1)
+        grid.muster_army(faction_1, 0, 0)
+        
+        champ_0 = Champion(faction=faction_0, q=2, r=2)
+        champ_1 = Champion(faction=faction_1, q=0, r=0)
+        grid.champions[(2, 2)] = [champ_0]
+        grid.champions[(0, 0)] = [champ_1]
+        
+        # Verify initial state
+        self.assertEqual(grid.find_stronghold_coord(faction_0), (2, 2))
+        self.assertTrue(grid.tiles[(2, 2)].is_stronghold)
+        self.assertEqual(grid.tiles[(2, 2)].owner, faction_0)
+        self.assertEqual(grid.tiles[(1, 1)].owner, faction_0)
+        self.assertEqual(grid.tiles[(0, 0)].owner, faction_1)
+        
+        self.assertEqual(len(grid.armies.get((2, 2), [])), 1)
+        self.assertEqual(len(grid.armies.get((1, 1), [])), 1)
+        self.assertEqual(len(grid.armies.get((0, 0), [])), 1)
+        self.assertEqual(len(grid.champions.get((2, 2), [])), 1)
+        self.assertEqual(len(grid.champions.get((0, 0), [])), 1)
+        
+        # Destroy faction_0's stronghold
+        grid.destroy_stronghold(faction_0)
+        
+        # Verify faction_0 elements are cleaned up
+        self.assertIsNone(grid.find_stronghold_coord(faction_0))
+        self.assertFalse(grid.tiles[(2, 2)].is_stronghold)
+        self.assertIsNone(grid.tiles[(2, 2)].owner)
+        self.assertIsNone(grid.tiles[(1, 1)].owner)
+        
+        # Faction 1 should be unaffected
+        self.assertEqual(grid.tiles[(0, 0)].owner, faction_1)
+        self.assertEqual(len(grid.armies.get((0, 0), [])), 1)
+        self.assertEqual(len(grid.champions.get((0, 0), [])), 1)
+        
+        # Faction 0 units should be completely gone
+        self.assertNotIn((2, 2), grid.armies)
+        self.assertNotIn((1, 1), grid.armies)
+        self.assertNotIn((2, 2), grid.champions)
+
 if __name__ == "__main__":
     unittest.main()
+

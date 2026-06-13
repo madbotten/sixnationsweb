@@ -142,6 +142,14 @@ class MapGrid:
             
             stronghold_coord = random.choice(ring3_candidates) if ring3_candidates else random.choice(sector_coords)
             self.tiles[stronghold_coord].is_stronghold = True
+            
+            # Give each faction an army in their stronghold hex at setup
+            self.muster_army(faction, stronghold_coord[0], stronghold_coord[1], strength=1)
+            
+            # Give each faction a champion in their stronghold hex at setup
+            from champions import Champion
+            champion = Champion(faction, stronghold_coord[0], stronghold_coord[1])
+            self.add_champion(champion)
 
     def place_tile(self, q, r, terrain_type, owner):
         """
@@ -351,9 +359,11 @@ class MapGrid:
         # Dynamic layout scaling based on current hex width (baseline 293)
         scale = self.hex_width / 293.0
         size_val = max(12, int(36 * scale))
-        unit_size = (size_val, size_val)
+        size_val_champ = int(size_val * 1.2)
+        unit_size = (size_val_champ, size_val_champ)
         spacing = max(2, int(6 * scale))
-        oy = 0  # Middle row for Champions
+        row_padding = max(1, int(3 * scale))
+        oy = int(-unit_size[1] / 2.0 - row_padding)  # Top row for Champions (bottoms just above center)
         
         for idx, champ in enumerate(champions_list):
             ox = int((idx - (num_champs - 1) / 2.0) * (unit_size[0] + spacing))
@@ -391,7 +401,8 @@ class MapGrid:
         size_val = max(12, int(36 * scale))
         unit_size = (size_val, size_val)
         spacing = max(2, int(6 * scale))
-        oy = int(35 * scale)  # Bottom row for Armies
+        row_padding = max(1, int(3 * scale))
+        oy = int(unit_size[1] / 2.0 + row_padding)  # Bottom row for Armies (tops just below center)
         
         for idx, army in enumerate(armies_list):
             ox = int((idx - (num_armies - 1) / 2.0) * (unit_size[0] + spacing))
@@ -516,6 +527,36 @@ class MapGrid:
                 return coord
         return None
 
+    def destroy_stronghold(self, faction):
+        """
+        When a Stronghold of a faction is destroyed, all units of that Faction
+        will also be removed and any hexes in control of that Faction will be
+        moved back to owned by none.
+        """
+        # 1. Remove stronghold status and owner from the stronghold tile
+        sh_coord = self.find_stronghold_coord(faction)
+        if sh_coord:
+            self.tiles[sh_coord].is_stronghold = False
+            self.tiles[sh_coord].owner = None
+            
+        # 2. Move any hexes in control of that Faction back to owned by None
+        for coord, tile in self.tiles.items():
+            if tile.owner == faction:
+                tile.owner = None
+                
+        # 3. Remove all armies of that Faction
+        for coord in list(self.armies.keys()):
+            self.armies[coord] = [army for army in self.armies[coord] if army.faction != faction]
+            if not self.armies[coord]:
+                del self.armies[coord]
+                
+        # 4. Remove all champions of that Faction
+        for coord in list(self.champions.keys()):
+            self.champions[coord] = [champ for champ in self.champions[coord] if champ.faction != faction]
+            if not self.champions[coord]:
+                del self.champions[coord]
+
+
     def center_on_hex(self, q, r):
         """
         Centers the map camera viewport on the given hex coordinate (q, r).
@@ -622,67 +663,81 @@ class MapGrid:
                 from factions import Faction
                 if isinstance(tile.owner, Faction):
                     try:
-                        font_owner = pygame.font.SysFont("Courier", 10, bold=True)
+                        font_owner = util.get_font(10, bold=True)
                         txt_owner = font_owner.render(tile.owner.race.upper(), True, settings.COLOR_NEON_CYAN)
-                        screen.blit(txt_owner, txt_owner.get_rect(center=(cx, cy + h / 4)))
+                        screen.blit(txt_owner, txt_owner.get_rect(center=(cx, cy + h / 4.0 + 3.0)))
                     except:
                         pass
 
                 # Render Stronghold and Artifact visual markers
                 if getattr(tile, 'is_stronghold', False):
                     try:
-                        font_sh = pygame.font.SysFont("Courier", 11, bold=True)
-                        txt_sh = font_sh.render("🏰 STRONGHOLD", True, (255, 215, 0))
-                        screen.blit(txt_sh, txt_sh.get_rect(center=(cx, cy)))
+                        font_sh = util.get_font(11, bold=True)
+                        txt_sh = font_sh.render("STRONGHOLD", True, (255, 215, 0))
+                        screen.blit(txt_sh, txt_sh.get_rect(center=(cx, cy - h / 3.0 - 3.0)))
                     except:
                         pass
                 elif getattr(tile, 'has_artifact', False):
                     try:
-                        font_art = pygame.font.SysFont("Courier", 10, bold=True)
-                        txt_art = font_art.render("🔮 ARTIFACT", True, settings.COLOR_NEON_PINK)
-                        screen.blit(txt_art, txt_art.get_rect(center=(cx, cy)))
+                        font_art = util.get_font(10, bold=True)
+                        txt_art = font_art.render("ARTIFACT", True, settings.COLOR_NEON_PINK)
+                        screen.blit(txt_art, txt_art.get_rect(center=(cx, cy - h / 3.0 - 3.0)))
                     except:
                         pass
                 
                 # Dynamic layout scaling based on current hex width (baseline 293)
                 scale = self.hex_width / 293.0
                 size_val = max(12, int(36 * scale))
-                unit_size = (size_val, size_val)
+                unit_size_army = (size_val, size_val)
+                unit_size_champ = (int(size_val * 1.2), int(size_val * 1.2))
                 spacing = max(2, int(6 * scale))
                 border_w = max(1, int(1.2 * scale))
+                row_padding = max(1, int(3 * scale))
 
 
-                # 2. Render Champions in the middle row
+                # 2. Render Champions in the top row (bottoms just above center)
                 champions_list = self.champions.get((q, r), [])
                 if champions_list:
                     num_champs = len(champions_list)
-                    oy_champ = 0
+                    oy_champ = int(-unit_size_champ[1] / 2.0 - row_padding)
                     for idx, champ in enumerate(champions_list):
-                        ox = int((idx - (num_champs - 1) / 2.0) * (unit_size[0] + spacing))
-                        px = int(cx + ox - unit_size[0] / 2)
-                        py = int(cy + oy_champ - unit_size[1] / 2)
+                        ox = int((idx - (num_champs - 1) / 2.0) * (unit_size_champ[0] + spacing))
+                        px = int(cx + ox - unit_size_champ[0] / 2)
+                        py = int(cy + oy_champ - unit_size_champ[1] / 2)
                         
-                        champ_surf = champ.get_surface(size=unit_size, mask_type="square")
+                        champ_surf = champ.get_surface(size=unit_size_champ, mask_type="square")
                         screen.blit(champ_surf, (px, py))
                         
                         glow_color = settings.COLOR_NEON_CYAN
-                        pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), border_w)
+                        pygame.draw.rect(screen, glow_color, (px, py, unit_size_champ[0], unit_size_champ[1]), border_w)
 
-                # 3. Render Armies in the bottom row
+                # 3. Render Armies in the bottom row (tops just below center)
                 armies_list = self.armies.get((q, r), [])
                 if armies_list:
                     num_armies = len(armies_list)
-                    oy_army = int(35 * scale)
+                    oy_army = int(unit_size_army[1] / 2.0 + row_padding)
                     for idx, army in enumerate(armies_list):
-                        ox = int((idx - (num_armies - 1) / 2.0) * (unit_size[0] + spacing))
-                        px = int(cx + ox - unit_size[0] / 2)
-                        py = int(cy + oy_army - unit_size[1] / 2)
+                        ox = int((idx - (num_armies - 1) / 2.0) * (unit_size_army[0] + spacing))
+                        px = int(cx + ox - unit_size_army[0] / 2)
+                        py = int(cy + oy_army - unit_size_army[1] / 2)
                         
-                        army_surf = army.get_surface(size=unit_size, mask_type="square")
+                        army_surf = army.get_surface(size=unit_size_army, mask_type="square")
                         screen.blit(army_surf, (px, py))
                         
                         glow_color = settings.COLOR_NEON_CYAN
-                        pygame.draw.rect(screen, glow_color, (px, py, unit_size[0], unit_size[1]), border_w)
+                        pygame.draw.rect(screen, glow_color, (px, py, unit_size_army[0], unit_size_army[1]), border_w)
+
+                        # Draw strength number if strength > 1
+                        if getattr(army, 'strength', 1) > 1:
+                            try:
+                                font_num = util.get_font(12, bold=True)
+                                txt_num = font_num.render(str(army.strength), True, (255, 255, 255))
+                                txt_rect = txt_num.get_rect(center=(px + unit_size_army[0] / 2, py + unit_size_army[1] / 2))
+                                # Draw small black circle behind text for maximum contrast
+                                pygame.draw.circle(screen, (0, 0, 0), txt_rect.center, max(8, int(txt_num.get_width() / 2.0 + 3)))
+                                screen.blit(txt_num, txt_rect)
+                            except:
+                                pass
 
         # Draw ghost preview (snapping guideline) under drag and drop
         if ghost_info:
@@ -710,7 +765,7 @@ class MapGrid:
                 
                 # Try drawing the name of the ghost terrain
                 try:
-                    font = pygame.font.SysFont("Courier", 10, bold=True)
+                    font = util.get_font(10, bold=True)
                     text = font.render(g_terrain.upper(), True, (255, 255, 255))
                     text_rect = text.get_rect(center=(w / 2.0, h / 2.0))
                     ghost_surface.blit(text, text_rect)

@@ -22,6 +22,7 @@ class Champion:
         self._index = 1
         self.q = q
         self.r = r
+        self.has_moved = False
 
     @property
     def faction(self):

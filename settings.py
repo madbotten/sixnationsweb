@@ -23,7 +23,7 @@ TURN_PHASE_VICTORY = 4
 # Hex Grid Layout Constants
 HEX_WIDTH = 293           # Width of the squashed hex artwork on screen (33% larger)
 HEX_HEIGHT = 160          # Height of the squashed hex artwork on screen (33% larger)
-PANEL_WIDTH = 400         # Width of the left side panel (25% of 1600)
+PANEL_WIDTH = 300         # Width of the left side panel (reduced by 25%)
 SCROLL_SPEED = 500        # Camera scroll speed in pixels per second
 
 # Tile Pool Specifications

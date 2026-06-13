@@ -77,18 +77,14 @@ Unit - An Army, Champion, or Stronghold.
 
 GAMEPLAY
 
-Each turn, a player will be assigned to control a random Faction as if it were their own. Then if no victory condition has been met, play proceeds to the next player.
-
-Ex: chaotic evil player may be assigned to control Demon, Couatl, Dragon, Rakshasha, Shoggoth, or Void.
-Players with one neutral alignment may be assigned to move any piece except the diametric alignment of their other quality.
-Ex: lawful neutral player can be assigned to control any non-chaotic Power (includes Void).
+Each turn, a player will be assigned to control a random Faction for its turn as if it were their own. Then if no victory condition has been met, play proceeds to the next player.
 
 
 FACTION TURN
 
-When moving a Faction, the controlling player does 3 phases for that Faction.
+A Faction turn has 5 phases.
 
-Phase 1 - Muster
+Phase 1 - Income
 The Faction receives 1 gold for each 3 hexes they control rounded down, but at minimum always gets at least 1 gold.
 The player MAY spend 1 gold per army to muster any number of armies in any controlled hexes.
 If the Faction has no Champion on the board, a Champion may be mustered in that faction’s Stronghold for 1 gold.
@@ -134,7 +130,7 @@ The higher total is the winner.
 The winner destroys (their raw die roll) number of enemy strength points.
 The loser destroys half the enemy armies the winner destroyed, rounded down.
 
-Each side chooses their losses and has to pay at least their losses or more. Artifacts can be lost to pay 2 (regardless of what strength it lended for that battle). Champions can be lost to pay 3.
+Each side chooses their losses and has to pay at least their losses or more. Artifacts can be lost to pay 2 (regardless of what strength it lended for that battle). Champions can pay strength for losses, for example if a Champion has strength 3 and that side takes 2 losses, the Champion can absorb the 2 losses leaving it at strength 1.
 
 In a tie, each side loses strength equal to the highest raw die roll.
 
