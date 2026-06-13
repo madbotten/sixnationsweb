@@ -23,6 +23,7 @@ class Champion:
         self.q = q
         self.r = r
         self.has_moved = False
+        self.artifact = None
 
     @property
     def faction(self):

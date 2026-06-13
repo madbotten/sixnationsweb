@@ -10,6 +10,7 @@ import random
 # Import configurations, map model, bot system, and helper utilities
 import settings
 import util
+import bot
 from map import MapGrid
 from player import Player
 from champions import Champion
@@ -173,15 +174,49 @@ def draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn
         print(f"[Render Error] Failed to draw phase panel: {e}")
 
 
+def draw_bot_collapsed_tab(screen, current_faction, current_turn_phase):
+    """
+    Renders the small collapsed tab in the upper left during Bot Player 2's turn.
+    """
+    tab_rect = pygame.Rect(20, 20, 260, 85)
+    # Draw solid black background for max contrast
+    pygame.draw.rect(screen, (0, 0, 0), tab_rect, border_radius=10)
+    pygame.draw.rect(screen, settings.COLOR_NEON_PINK, tab_rect, width=2, border_radius=10)
+    try:
+        font_tab_faction = util.get_font(16, bold=True)
+        font_tab_phase = util.get_font(12, bold=True)
+        
+        # Line 1: BOT PLAYER 2
+        txt_bot = font_tab_faction.render("BOT PLAYER 2", True, settings.COLOR_NEON_PINK)
+        screen.blit(txt_bot, (35, 30))
+        
+        # Map current turn phase to name
+        if current_turn_phase == settings.TURN_PHASE_INCOME:
+            phase_str = "MUSTER"
+        elif current_turn_phase == settings.TURN_PHASE_MOVE:
+            phase_str = "MOVEMENT"
+        elif current_turn_phase == settings.TURN_PHASE_COMBAT:
+            phase_str = "COMBAT"
+        elif current_turn_phase == settings.TURN_PHASE_CONTROL:
+            phase_str = "CONTROL"
+        else:
+            phase_str = "ACTIVE"
+            
+        # Line 2: <FACTION> - <PHASE>
+        txt_turn = font_tab_phase.render(f"{current_faction.race.upper()} - {phase_str}", True, settings.COLOR_TEXT_PRIMARY)
+        screen.blit(txt_turn, (35, 55))
+    except Exception as e:
+        print(f"[Render Error] Failed to draw collapsed bot tab: {e}")
+
+
 def draw_collapsed_tab(screen, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y):
     """
-    Renders the small collapsed tab in the upper left.
+    Renders the small collapsed tab in the upper left during Player 1's turn.
     """
     tab_rect = pygame.Rect(20, 20, 260, 85)
     # Draw solid black background for max contrast
     pygame.draw.rect(screen, (0, 0, 0), tab_rect, border_radius=10)
     pygame.draw.rect(screen, settings.COLOR_NEON_CYAN, tab_rect, width=2, border_radius=10)
-    
     try:
         font_tab_faction = util.get_font(16, bold=True)
         font_tab_phase = util.get_font(12, bold=True)
@@ -328,6 +363,26 @@ def draw_left_champion_statistics_panel(screen, selected_champion, left_panel_re
         
         val_align = font_value.render(selected_champion.faction.race.upper(), True, glow_color)
         screen.blit(val_align, (35, start_y + 2 * row_h + 30))
+        
+        # Artifact Row
+        art_rect = pygame.Rect(20, start_y + 3 * row_h, 260, 60)
+        pygame.draw.rect(screen, (20, 24, 33), art_rect, border_radius=8)
+        pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, art_rect, width=1, border_radius=8)
+        
+        lbl_art = font_label.render("ARTIFACT", True, settings.COLOR_NEON_CYAN)
+        screen.blit(lbl_art, (35, start_y + 3 * row_h + 10))
+        
+        if getattr(selected_champion, 'artifact', None) is not None:
+            art_name = selected_champion.artifact.name.upper()
+            val_art = font_value.render(art_name, True, settings.COLOR_NEON_PINK)
+            try:
+                art_img = selected_champion.artifact.get_image(size=(40, 40))
+                screen.blit(art_img, (220, start_y + 3 * row_h + 10))
+            except Exception as e:
+                print(f"[UI Warning] Failed to render artifact image: {e}")
+        else:
+            val_art = font_value.render("NONE", True, settings.COLOR_TEXT_MUTED)
+        screen.blit(val_art, (35, start_y + 3 * row_h + 30))
         
         # Close Button at bottom (y = 800 since there are no moves/summon options)
         close_btn_rect = pygame.Rect(20, 800, 260, 45)
@@ -736,15 +791,27 @@ def main():
         current_turn_phase = settings.TURN_PHASE_INCOME
         
         # Calculate and credit income
+        from factions import FACTIONS
+        gold_before = ", ".join([f"{f.race}={f.gold}" for f in FACTIONS])
         income = map_grid.calculate_faction_income(chosen_f)
         chosen_f.gold += income
-        print(f"[Turn Start] Player {player_index} controls {chosen_f.race}. Phase: Muster. Added {income} gold (Total: {chosen_f.gold}).")
+        gold_after = ", ".join([f"{f.race}={f.gold}" for f in FACTIONS])
+        print(f"[Gold Debug] Before: {gold_before} | Added {income} to {chosen_f.race} | After: {gold_after}")
         
+        player_name = "Player 1" if player_index == 0 else "Bot Player 2"
+        print(f"[Turn Start] {player_name} controls {chosen_f.race}. Phase: Muster. Added {income} gold (Total: {chosen_f.gold}).")
+            
         # If human player, center camera on their Stronghold
         if player_index == 0:
             sh_coord = map_grid.find_stronghold_coord(chosen_f)
             if sh_coord:
                 map_grid.center_on_hex(sh_coord[0], sh_coord[1])
+
+    # Helper function to check units left to move
+    def check_movement_left():
+        unmoved_armies = sum(1 for loc, armies in map_grid.armies.items() for army in armies if army.faction == current_faction and not army.has_moved)
+        unmoved_champions = sum(1 for loc, champs in map_grid.champions.items() for champ in champs if champ.faction == current_faction and not getattr(champ, 'has_moved', False))
+        return unmoved_armies + unmoved_champions
 
     # Helper function to advance phase
     def advance_turn_phase():
@@ -754,16 +821,30 @@ def main():
         selected_army = None
         if current_turn_phase == settings.TURN_PHASE_INCOME:
             current_turn_phase = settings.TURN_PHASE_MOVE
+            if current_player_idx == 0 and check_movement_left() == 0:
+                if map_grid.has_combat_for_faction(current_faction):
+                    current_turn_phase = settings.TURN_PHASE_COMBAT
+                else:
+                    print(f"[Combat Phase] Automatically skipped Combat Phase for {current_faction.race} (no opposed units).")
+                    current_turn_phase = settings.TURN_PHASE_CONTROL
+                    process_control_phase(current_faction)
         elif current_turn_phase == settings.TURN_PHASE_MOVE:
-            current_turn_phase = settings.TURN_PHASE_COMBAT
+            # Check if there is any hex containing our faction's units and an opposed faction's units
+            if map_grid.has_combat_for_faction(current_faction):
+                current_turn_phase = settings.TURN_PHASE_COMBAT
+            else:
+                print(f"[Combat Phase] Automatically skipped Combat Phase for {current_faction.race} (no opposed units).")
+                current_turn_phase = settings.TURN_PHASE_CONTROL
+                process_control_phase(current_faction)
         elif current_turn_phase == settings.TURN_PHASE_COMBAT:
             current_turn_phase = settings.TURN_PHASE_CONTROL
             process_control_phase(current_faction)
         elif current_turn_phase == settings.TURN_PHASE_CONTROL:
             # Check for victory/loss at the end of the turn
             for p_idx, p_obj in enumerate(players):
+                p_name = "Player 1" if p_idx == 0 else "Bot Player 2"
                 if map_grid.find_stronghold_coord(p_obj.faction) is None:
-                    print(f"[GAME OVER] Player {p_idx} ({p_obj.faction.race}) has lost their stronghold!")
+                    print(f"[GAME OVER] {p_name} ({p_obj.faction.race}) has lost their stronghold!")
                 vp_count = 0
                 from factions import FACTIONS
                 opposed_facs = [f for f in FACTIONS if p_obj.faction.isOpposed(f)]
@@ -771,7 +852,7 @@ def main():
                     if map_grid.find_stronghold_coord(f) is None:
                         vp_count += 1
                 if vp_count >= 2:
-                    print(f"[VICTORY] Player {p_idx} ({p_obj.faction.race}) WINS by destroying opposed strongholds!")
+                    print(f"[VICTORY] {p_name} ({p_obj.faction.race}) WINS by destroying opposed strongholds!")
             
             # Immediately end faction turn and proceed to next player (bypassing Victory Phase)
             next_player_idx = 1 - current_player_idx
@@ -810,7 +891,15 @@ def main():
         
         # --- Bot Player Turn Automation ---
         if current_player_idx == 1:
-            while current_player_idx == 1:
+            if current_turn_phase == settings.TURN_PHASE_INCOME:
+                bot.run_bot_muster_phase(current_faction, map_grid, advance_turn_phase)
+            elif current_turn_phase == settings.TURN_PHASE_MOVE:
+                bot.run_bot_move_phase(current_faction, map_grid, advance_turn_phase)
+            elif current_turn_phase == settings.TURN_PHASE_COMBAT:
+                bot.run_bot_combat_phase(current_faction, map_grid, advance_turn_phase)
+            elif current_turn_phase == settings.TURN_PHASE_CONTROL:
+                bot.run_bot_control_phase(current_faction, map_grid, advance_turn_phase)
+            else:
                 advance_turn_phase()
                 
         # --- A. Keyboard Camera Scrolling (WASD / Arrows) ---
@@ -995,6 +1084,8 @@ def main():
                                         map_grid.muster_army(current_faction, q, r, strength=1)
                                         current_faction.gold -= 1
                                         util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=100)
+                                        if current_faction.gold <= 0:
+                                            advance_turn_phase()
                                     else:
                                         util.play_sound(filename=None, volume=0.2, pitch_hz=220.0, duration_ms=150)
 
@@ -1008,6 +1099,7 @@ def main():
                                     util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=100)
                                     if current_faction.gold <= 0:
                                         is_mustering = False
+                                        advance_turn_phase()
                                 else:
                                     util.play_sound(filename=None, volume=0.2, pitch_hz=220.0, duration_ms=150)
                             elif current_turn_phase == settings.TURN_PHASE_MOVE:
@@ -1063,6 +1155,8 @@ def main():
                                             selected_army.has_moved = True # Mark as moved this turn
                                             selected_army = None
                                             util.play_sound(filename=None, volume=0.4, pitch_hz=587.33, duration_ms=100)
+                                            if check_movement_left() == 0:
+                                                advance_turn_phase()
                                         else:
                                             selected_army = None
                                             util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
@@ -1074,6 +1168,8 @@ def main():
                                             selected_champion.has_moved = True # Mark as moved this turn
                                             selected_champion = None
                                             util.play_sound(filename=None, volume=0.4, pitch_hz=587.33, duration_ms=100)
+                                            if check_movement_left() == 0:
+                                                advance_turn_phase()
                                         else:
                                             selected_champion = None
                                             util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
@@ -1188,6 +1284,8 @@ def main():
                 draw_collapsed_tab(screen, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y)
             else:
                 draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y, is_mustering, secret_faction=human_player_obj.faction)
+        elif current_player_idx == 1:
+            draw_bot_collapsed_tab(screen, current_faction, current_turn_phase)
 
         # 3. Render HUD status card (Phase 2 version)
         draw_hud_status_card(screen, human_player_obj, map_grid, mouse_x, mouse_y)

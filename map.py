@@ -16,6 +16,7 @@ class Tile:
         self.owner = owner  # 'player', 'bot', or a Faction object
         self.is_stronghold = False
         self.has_artifact = False
+        self.artifact = None
         
         # Unique tiles have distinct aesthetic colors when rendering placeholders
         self.glow_color = settings.COLOR_NEON_CYAN
@@ -84,6 +85,8 @@ class MapGrid:
         self.tiles.clear()
         
         # 1. Place the center 7 unique tiles
+        from artifacts import create_artifact_pool
+        artifact_pool = create_artifact_pool()
         center_coords = self.get_ring_coords(0) + self.get_ring_coords(1)
         unique_terrains = random.sample(settings.UNIQUE_TILES, len(center_coords))
         
@@ -91,6 +94,8 @@ class MapGrid:
             q, r = coord
             self.place_tile(q, r, terrain, "system")
             self.tiles[(q, r)].has_artifact = True
+            if artifact_pool:
+                self.tiles[(q, r)].artifact = artifact_pool.pop(0)
             
         # 2. Find a valid faction placement cycle around the outside
         faction_order = None
@@ -266,6 +271,15 @@ class MapGrid:
         champion.q = new_q
         champion.r = new_r
         self.add_champion(champion)
+
+        # Claim artifact if present on the target tile and champion has none
+        tile = self.get_tile(new_q, new_r)
+        if tile and tile.artifact is not None and champion.artifact is None:
+            champion.artifact = tile.artifact
+            champion.artifact.discovered = True
+            tile.artifact = None
+            tile.has_artifact = False
+            print(f"[Artifact Claimed] {champion.name} claimed {champion.artifact.name}!")
 
     def get_champion_count(self, faction):
         """
@@ -556,6 +570,20 @@ class MapGrid:
             if not self.champions[coord]:
                 del self.champions[coord]
 
+    def has_combat_for_faction(self, faction):
+        """
+        Checks if there is any hex containing the given faction's units
+        and an opposed faction's units.
+        """
+        for (q, r) in set(list(self.armies.keys()) + list(self.champions.keys())):
+            has_our_army = any(a.faction == faction for a in self.armies.get((q, r), []))
+            has_our_champ = any(c.faction == faction for c in self.champions.get((q, r), []))
+            if has_our_army or has_our_champ:
+                has_opposed_army = any(faction.isOpposed(a.faction) for a in self.armies.get((q, r), []))
+                has_opposed_champ = any(faction.isOpposed(c.faction) for c in self.champions.get((q, r), []))
+                if has_opposed_army or has_opposed_champ:
+                    return True
+        return False
 
     def center_on_hex(self, q, r):
         """

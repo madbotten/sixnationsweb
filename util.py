@@ -18,6 +18,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 HEXES_DIR = os.path.join(BASE_DIR, "hexes")
 CHAMPIONS_DIR = os.path.join(BASE_DIR, "champions")
 ARMIES_DIR = os.path.join(BASE_DIR, "armies")
+ARTIFACTS_DIR = os.path.join(BASE_DIR, "artifacts")
 
 def get_font(size, bold=False):
     """
@@ -442,6 +443,87 @@ def load_army_image(faction_race, alpha=True, color_fallback=(189, 0, 255), size
     try:
         font = get_font(int(14 * (W / 36.0)), bold=True)
         lbl = f"A:{clean_name[0].upper()}"
+        text_surf = font.render(lbl, True, (255, 255, 255))
+        text_rect = text_surf.get_rect(center=(W // 2, H // 2))
+        fallback_surf.blit(text_surf, text_rect)
+    except:
+        pass
+        
+    _image_cache[cache_key] = fallback_surf
+    return fallback_surf
+
+
+def load_artifact_image(image_filename, alpha=True, color_fallback=(255, 0, 127), size=(100, 100), mask_type="square"):
+    """
+    Loads an artifact image based on its filename (e.g. 'flamesword.jpg') from the 'artifacts' folder with caching.
+    Supports 'circle', 'hex', or 'square' mask types.
+    """
+    clean_name = os.path.splitext(image_filename)[0].lower()
+    
+    cache_key = ("artifact_" + clean_name, alpha, size, mask_type)
+    if cache_key in _image_cache:
+        return _image_cache[cache_key]
+
+    file_path = os.path.join(ARTIFACTS_DIR, image_filename)
+    
+    if os.path.exists(file_path):
+        try:
+            original_surf = pygame.image.load(file_path)
+            original_surf = pygame.transform.smoothscale(original_surf, size)
+            original_surf = original_surf.convert_alpha() if alpha else original_surf.convert()
+            
+            W, H = size
+            masked_surf = pygame.Surface(size, pygame.SRCALPHA)
+            
+            if mask_type == "hex":
+                vertices = [
+                    (W, H / 2.0),
+                    (3.0 * W / 4.0, H),
+                    (W / 4.0, H),
+                    (0.0, H / 2.0),
+                    (W / 4.0, 0.0),
+                    (3.0 * W / 4.0, 0.0)
+                ]
+                pygame.draw.polygon(masked_surf, (255, 255, 255, 255), vertices)
+            elif mask_type == "square":
+                pygame.draw.rect(masked_surf, (255, 255, 255, 255), (0, 0, W, H))
+            else:
+                pygame.draw.circle(masked_surf, (255, 255, 255, 255), (W // 2, H // 2), min(W, H) // 2)
+            
+            masked_surf.blit(original_surf, (0, 0), special_flags=pygame.BLEND_RGBA_MIN)
+            _image_cache[cache_key] = masked_surf
+            return masked_surf
+        except pygame.error as e:
+            print(f"[Util Warning] Failed to load artifact image {image_filename}: {e}. Creating placeholder.")
+    else:
+        print(f"[Util Warning] Artifact image path not found: {file_path}. Creating placeholder.")
+
+    # Create dynamic aesthetic placeholder
+    fallback_surf = pygame.Surface(size, pygame.SRCALPHA)
+    W, H = size
+    
+    if mask_type == "hex":
+        vertices = [
+            (W, H // 2),
+            (3 * W // 4, H),
+            (W // 4, H),
+            (0, H // 2),
+            (W // 4, 0),
+            (3 * W // 4, 0)
+        ]
+        pygame.draw.polygon(fallback_surf, (20, 24, 33, 200), vertices)
+        pygame.draw.polygon(fallback_surf, color_fallback, vertices, 2)
+    elif mask_type == "square":
+        pygame.draw.rect(fallback_surf, (20, 24, 33, 200), (0, 0, W, H))
+        pygame.draw.rect(fallback_surf, color_fallback, (0, 0, W, H), 2)
+    else:
+        pygame.draw.circle(fallback_surf, (20, 24, 33, 200), (W // 2, H // 2), min(W, H) // 2)
+        pygame.draw.circle(fallback_surf, color_fallback, (W // 2, H // 2), min(W, H) // 2, 2)
+        
+    # Draw label letter
+    try:
+        font = get_font(int(12 * (W / 36.0)), bold=True)
+        lbl = f"Art:{clean_name[:4].upper()}"
         text_surf = font.render(lbl, True, (255, 255, 255))
         text_rect = text_surf.get_rect(center=(W // 2, H // 2))
         fallback_surf.blit(text_surf, text_rect)

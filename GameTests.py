@@ -432,6 +432,79 @@ class TestControlPhase(unittest.TestCase):
         self.assertNotIn((1, 1), grid.armies)
         self.assertNotIn((2, 2), grid.champions)
 
+class TestCombatPhase(unittest.TestCase):
+    def test_combat_phase_skipping(self):
+        from map import MapGrid
+        from factions import FACTIONS_BY_RING
+        from armies import Army
+        from champions import Champion
+
+        grid = MapGrid()
+        faction_0 = FACTIONS_BY_RING[0]
+        faction_1 = FACTIONS_BY_RING[1]
+        faction_5 = FACTIONS_BY_RING[5]
+
+        # Initially, no units -> no combat
+        self.assertFalse(grid.has_combat_for_faction(faction_0))
+
+        # Place faction_0 army at (0, 0) and faction_1 army at (0, 0)
+        grid.add_army(Army(faction_0, 0, 0))
+        grid.add_army(Army(faction_1, 0, 0))
+        # faction_0 and faction_1 are allied/not opposed -> no combat
+        self.assertFalse(grid.has_combat_for_faction(faction_0))
+
+        # Place faction_5 army at (0, 0)
+        # Now we have faction_0 and faction_5 at (0, 0). They are opposed.
+        grid.add_army(Army(faction_5, 0, 0))
+        self.assertTrue(grid.has_combat_for_faction(faction_0))
+        self.assertTrue(grid.has_combat_for_faction(faction_5))
+
+        # Test champions
+        grid_2 = MapGrid()
+        champ_0 = Champion(faction=faction_0, q=1, r=1)
+        champ_5 = Champion(faction=faction_5, q=1, r=1)
+        grid_2.add_champion(champ_0)
+        grid_2.add_champion(champ_5)
+        self.assertTrue(grid_2.has_combat_for_faction(faction_0))
+        self.assertTrue(grid_2.has_combat_for_faction(faction_5))
+
+class TestArtifacts(unittest.TestCase):
+    def test_artifact_claiming(self):
+        from map import MapGrid
+        from factions import FACTIONS_BY_RING
+        from champions import Champion
+        from artifacts import Artifact
+
+        grid = MapGrid()
+        faction_0 = FACTIONS_BY_RING[0]
+        
+        # Setup tile with an artifact
+        grid.place_tile(0, 0, "Plains", faction_0)
+        grid.tiles[(0, 0)].has_artifact = True
+        art = Artifact("Flame Sword", "flamesword.jpg")
+        grid.tiles[(0, 0)].artifact = art
+
+        # Place champion at (0, 1) on an existing tile
+        grid.place_tile(0, 1, "Plains", faction_0)
+        champ = Champion(faction=faction_0, q=0, r=1)
+        grid.add_champion(champ)
+
+        # Champion should have no artifact initially, and artifact is undiscovered
+        self.assertIsNone(champ.artifact)
+        self.assertFalse(art.discovered)
+
+        # Move champion to (0, 0)
+        grid.move_champion(champ, 0, 0)
+
+        # Champion should now possess the artifact, which is discovered
+        self.assertIsNotNone(champ.artifact)
+        self.assertEqual(champ.artifact.name, "Flame Sword")
+        self.assertTrue(champ.artifact.discovered)
+
+        # Tile should no longer have the artifact
+        self.assertFalse(grid.tiles[(0, 0)].has_artifact)
+        self.assertIsNone(grid.tiles[(0, 0)].artifact)
+
 if __name__ == "__main__":
     unittest.main()
 
