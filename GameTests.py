@@ -468,6 +468,188 @@ class TestCombatPhase(unittest.TestCase):
         self.assertTrue(grid_2.has_combat_for_faction(faction_0))
         self.assertTrue(grid_2.has_combat_for_faction(faction_5))
 
+    def test_combat_triggered_by_opposed_stronghold(self):
+        from map import MapGrid, Tile
+        from factions import FACTIONS_BY_RING
+        from armies import Army
+
+        grid = MapGrid()
+        faction_0 = FACTIONS_BY_RING[0]
+        faction_1 = FACTIONS_BY_RING[1]
+        faction_5 = FACTIONS_BY_RING[5]  # Opposed to faction 0
+
+        # Place faction_0 army at (0, 0)
+        grid.add_army(Army(faction_0, 0, 0))
+
+        # Initially no combat since there are no opposed units/strongholds
+        self.assertFalse(grid.has_combat_for_faction(faction_0))
+
+        # Place opposed stronghold of faction_5 at (0, 0)
+        grid.tiles[(0, 0)] = Tile(0, 0, "Plains", owner=faction_5)
+        grid.tiles[(0, 0)].is_stronghold = True
+
+        # Now combat should be detected because faction_0 army is in presence of opposed stronghold
+        self.assertTrue(grid.has_combat_for_faction(faction_0))
+
+        # Get combat hexes
+        combat_hexes = grid.get_combat_hexes(faction_0)
+        self.assertEqual(combat_hexes, [(0, 0)])
+
+        # If the stronghold was owned by faction_1 (allied) instead, no combat
+        grid.tiles[(0, 0)].owner = faction_1
+        self.assertFalse(grid.has_combat_for_faction(faction_0))
+
+    def test_combat_alignment_grouping(self):
+        # Verify the alignment grouping logic.
+        from factions import FACTIONS_BY_RING
+        
+        current_faction = FACTIONS_BY_RING[0] # Humans
+        opp_faction = FACTIONS_BY_RING[5]     # Kuotoa (Opposed to Humans)
+        opposed_factions = {opp_faction}
+        
+        def get_alignment_group(fac):
+            # 1. Closely aligned to current faction (fully or strongly aligned)
+            if current_faction.isFullyAligned(fac) or current_faction.isStronglyAligned(fac):
+                return 'left'
+            # 2. Closely aligned to opposition side (any faction in opposed_factions)
+            for opp_fac in opposed_factions:
+                if opp_fac.isFullyAligned(fac) or opp_fac.isStronglyAligned(fac):
+                    return 'middle'
+            # 3. Otherwise, conflicted
+                    return 'right'
+            return 'right'
+
+        # Faction 0 (Humans) -> Left
+        self.assertEqual(get_alignment_group(FACTIONS_BY_RING[0]), 'left')
+        # Faction 1 (Elves, Strongly aligned to 0) -> Left
+        self.assertEqual(get_alignment_group(FACTIONS_BY_RING[1]), 'left')
+        # Faction 9 (Nomads, Strongly aligned to 0) -> Left
+        self.assertEqual(get_alignment_group(FACTIONS_BY_RING[9]), 'left')
+
+        # Faction 5 (Kuotoa, Opposed) -> Middle
+        self.assertEqual(get_alignment_group(FACTIONS_BY_RING[5]), 'middle')
+        # Faction 4 (Lizardfolk, Strongly aligned to 5) -> Middle
+        self.assertEqual(get_alignment_group(FACTIONS_BY_RING[4]), 'middle')
+        # Faction 6 (Drow, Strongly aligned to 5) -> Middle
+        self.assertEqual(get_alignment_group(FACTIONS_BY_RING[6]), 'middle')
+
+        # Faction 3 (Giants, Loosely aligned to both) -> Right
+        self.assertEqual(get_alignment_group(FACTIONS_BY_RING[3]), 'right')
+        # Faction 7 (Pirates, Loosely aligned to both) -> Right
+        self.assertEqual(get_alignment_group(FACTIONS_BY_RING[7]), 'right')
+
+    def test_combat_bribe_conflicted_unit(self):
+        from map import MapGrid
+        from factions import FACTIONS_BY_RING
+        from armies import Army
+        
+        grid = MapGrid()
+        faction_0 = FACTIONS_BY_RING[0]  # Human
+        faction_5 = FACTIONS_BY_RING[5]  # Opposed (Kuotoa)
+        faction_3 = FACTIONS_BY_RING[3]  # Conflicted (Giants)
+        
+        # Human army at (0, 0)
+        grid.add_army(Army(faction_0, 0, 0))
+        # Opposed Kuotoa army at (0, 0) -> triggers combat
+        grid.add_army(Army(faction_5, 0, 0))
+        # Conflicted Giants army at (0, 0)
+        giants_army = Army(faction_3, 0, 0)
+        grid.add_army(giants_army)
+        
+        # Verify giants_army belongs to faction_3
+        self.assertEqual(giants_army.faction, faction_3)
+        
+        # Set human gold
+        faction_0.gold = 1
+        
+        # Bribe logic:
+        # If human has gold >= 1:
+        success = False
+        if faction_0.gold >= 1:
+            faction_0.gold -= 1
+            giants_army.bribed_by = faction_0
+            success = True
+            
+        self.assertTrue(success)
+        self.assertEqual(giants_army.faction, faction_3)
+        self.assertEqual(giants_army.name, "Giants Army")
+        self.assertEqual(getattr(giants_army, 'bribed_by', None), faction_0)
+        self.assertEqual(faction_0.gold, 0)
+        
+        # Second bribe attempt (now gold is 0)
+        faction_0.gold = 0
+        another_conflicted_army = Army(faction_3, 0, 0)
+        grid.add_army(another_conflicted_army)
+        
+        # Try to bribe:
+        success = False
+        if faction_0.gold >= 1:
+            faction_0.gold -= 1
+            another_conflicted_army.bribed_by = faction_0
+            success = True
+            
+        self.assertFalse(success)
+        self.assertEqual(another_conflicted_army.faction, faction_3)
+        self.assertFalse(hasattr(another_conflicted_army, 'bribed_by'))
+        self.assertEqual(faction_0.gold, 0)
+
+    def test_army_consolidation(self):
+        from map import MapGrid
+        from factions import FACTIONS_BY_RING
+        from armies import Army
+        
+        grid = MapGrid()
+        faction_0 = FACTIONS_BY_RING[0]
+        
+        # Place two faction_0 armies at (0, 0)
+        grid.add_army(Army(faction_0, 0, 0, strength=2))
+        grid.add_army(Army(faction_0, 0, 0, strength=3))
+        
+        # Verify there are 2 armies initially
+        self.assertEqual(len(grid.armies[(0, 0)]), 2)
+        
+        # Consolidate
+        grid.consolidate_armies(faction_0)
+        
+        # Verify there is now exactly 1 army with combined strength of 5
+        self.assertEqual(len(grid.armies[(0, 0)]), 1)
+        self.assertEqual(grid.armies[(0, 0)][0].strength, 5)
+
+    def test_combat_forces_strength_calculation(self):
+        from factions import FACTIONS_BY_RING
+        from armies import Army
+        from champions import Champion
+        from artifacts import Artifact
+        from map import Tile
+        from main import calculate_forces_strength
+        
+        faction_0 = FACTIONS_BY_RING[0]
+        
+        # 1. Army strength test
+        army_1 = Army(faction_0, 0, 0, strength=4)
+        forces = [{'type': 'army', 'obj': army_1}]
+        self.assertEqual(calculate_forces_strength(forces), 4)
+        
+        # 2. Champion base strength test
+        champ = Champion(faction=faction_0, q=0, r=0)
+        forces.append({'type': 'champion', 'obj': champ})
+        # 4 (army) + 3 (champion) = 7
+        self.assertEqual(calculate_forces_strength(forces), 7)
+        
+        # 3. Champion with Artifact strength test (+2 extra)
+        art = Artifact("Flame Sword", "flamesword.jpg")
+        champ.artifact = art
+        # 4 (army) + 3 (champion) + 2 (artifact) = 9
+        self.assertEqual(calculate_forces_strength(forces), 9)
+        
+        # 4. Stronghold strength test (3)
+        stronghold_tile = Tile(0, 0, "Plains")
+        stronghold_tile.is_stronghold = True
+        stronghold_tile.owner = faction_0
+        forces.append({'type': 'stronghold', 'obj': stronghold_tile})
+        # 9 (previous) + 3 (stronghold) = 12
+        self.assertEqual(calculate_forces_strength(forces), 12)
+
 class TestArtifacts(unittest.TestCase):
     def test_artifact_claiming(self):
         from map import MapGrid

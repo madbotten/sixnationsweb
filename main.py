@@ -19,6 +19,21 @@ from armies import Army
 
 
 
+def calculate_forces_strength(forces_list):
+    total = 0
+    for item in forces_list:
+        if item['type'] == 'army':
+            total += getattr(item['obj'], 'strength', 1)
+        elif item['type'] == 'champion':
+            champ = item['obj']
+            total += getattr(champ, 'strength', 3)
+            if getattr(champ, 'artifact', None) is not None:
+                total += 2
+        elif item['type'] == 'stronghold':
+            total += 3
+    return total
+
+
 def draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y, is_mustering=False, secret_faction=None):
     """
     Renders the Faction Turn Phase control panel on the left during human player's turn.
@@ -666,19 +681,6 @@ def main():
     bot_just_started_turn = False
 
     def process_control_phase(faction):
-        # Consolidate armies of the moving faction in each hex
-        for loc in list(map_grid.armies.keys()):
-            q, r = loc
-            faction_armies = [a for a in map_grid.armies[loc] if a.faction == faction]
-            if len(faction_armies) > 1:
-                total_strength = sum(a.strength for a in faction_armies)
-                remaining_army = faction_armies[0]
-                remaining_army.strength = total_strength
-                
-                # Remove the rest of the armies of this faction on this hex
-                for other_army in faction_armies[1:]:
-                    map_grid.remove_army(other_army)
-
         # We only examine hexes that either have a unit for the active faction (whose turn we are on),
         # or are currently owned by the active faction.
         from factions import Faction
@@ -821,14 +823,19 @@ def main():
     # Helper function to advance phase
     def advance_turn_phase():
         nonlocal current_turn_phase, is_mustering, selected_champion, selected_army
+        nonlocal combat_hexes, current_combat_idx, loaded_combat_hex_idx
         is_mustering = False
         selected_champion = None
         selected_army = None
         if current_turn_phase == settings.TURN_PHASE_INCOME:
             current_turn_phase = settings.TURN_PHASE_MOVE
             if not current_player.is_robot() and check_movement_left() == 0:
-                if map_grid.has_combat_for_faction(current_faction):
+                map_grid.consolidate_armies(current_faction)
+                combat_hexes = map_grid.get_combat_hexes(current_faction)
+                if combat_hexes:
                     current_turn_phase = settings.TURN_PHASE_COMBAT
+                    current_combat_idx = 0
+                    loaded_combat_hex_idx = -1
                 else:
                     print(f"[Combat Phase] Automatically skipped Combat Phase for {current_faction.race} (no opposed units).")
                     current_turn_phase = settings.TURN_PHASE_CONTROL
@@ -837,10 +844,17 @@ def main():
             # Check if there is any hex containing our faction's units and an opposed faction's units
             # For human players, skip combat if no opposed units are present.
             # For bot players, do not skip combat phase (run all phases sequentially as a skeleton).
-            if not current_player.is_robot() and not map_grid.has_combat_for_faction(current_faction):
-                print(f"[Combat Phase] Automatically skipped Combat Phase for {current_faction.race} (no opposed units).")
-                current_turn_phase = settings.TURN_PHASE_CONTROL
-                process_control_phase(current_faction)
+            map_grid.consolidate_armies(current_faction)
+            if not current_player.is_robot():
+                combat_hexes = map_grid.get_combat_hexes(current_faction)
+                if not combat_hexes:
+                    print(f"[Combat Phase] Automatically skipped Combat Phase for {current_faction.race} (no opposed units).")
+                    current_turn_phase = settings.TURN_PHASE_CONTROL
+                    process_control_phase(current_faction)
+                else:
+                    current_turn_phase = settings.TURN_PHASE_COMBAT
+                    current_combat_idx = 0
+                    loaded_combat_hex_idx = -1
             else:
                 current_turn_phase = settings.TURN_PHASE_COMBAT
         elif current_turn_phase == settings.TURN_PHASE_COMBAT:
@@ -890,9 +904,14 @@ def main():
     show_ring_window = False
     active_faction_profile = None
     ring_btn_rect = pygame.Rect(settings.SCREEN_WIDTH - 480 + 20, 20 + 59, 120, 30)
-    
+    combat_hexes = []
+    current_combat_idx = 0
+    loaded_combat_hex_idx = -1
+    allied_forces = []
+    opposing_forces = []
+    conflicted_forces = []
 
-    
+
     while running and game_phase == settings.PHASE_MAIN_GAME:
         dt = clock.tick(settings.FPS) / 1000.0
         
@@ -953,6 +972,89 @@ def main():
             left_panel_rect = pygame.Rect(0, 0, 0, 0)
             map_viewport_rect = pygame.Rect(0, 0, settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT)
 
+        # Populate forces lists for the active combat hex if needed
+        if current_turn_phase == settings.TURN_PHASE_COMBAT and not current_player.is_robot():
+            if combat_hexes and current_combat_idx < len(combat_hexes):
+                if loaded_combat_hex_idx != current_combat_idx:
+                    loaded_combat_hex_idx = current_combat_idx
+                    allied_forces = []
+                    opposing_forces = []
+                    conflicted_forces = []
+                    
+                    hex_coord = combat_hexes[current_combat_idx]
+                    tile = map_grid.tiles.get(hex_coord)
+                    if tile:
+                        from factions import Faction
+                        all_armies = map_grid.armies.get(hex_coord, [])
+                        all_champs = map_grid.champions.get(hex_coord, [])
+                        
+                        opposed_factions = set()
+                        for a in all_armies:
+                            if current_faction.isOpposed(a.faction):
+                                opposed_factions.add(a.faction)
+                        for c in all_champs:
+                            if current_faction.isOpposed(c.faction):
+                                opposed_factions.add(c.faction)
+                        if getattr(tile, 'is_stronghold', False) and tile.owner and isinstance(tile.owner, Faction) and current_faction.isOpposed(tile.owner):
+                            opposed_factions.add(tile.owner)
+                            
+                        def get_alignment_group(fac):
+                            if current_faction.isFullyAligned(fac) or current_faction.isStronglyAligned(fac):
+                                return 'left'
+                            for opp_fac in opposed_factions:
+                                if opp_fac.isFullyAligned(fac) or opp_fac.isStronglyAligned(fac):
+                                    return 'middle'
+                            return 'right'
+                            
+                        # Group champions
+                        for c in all_champs:
+                            item = {
+                                'type': 'champion',
+                                'name': c.name,
+                                'strength': c.strength,
+                                'obj': c
+                            }
+                            grp = get_alignment_group(c.faction)
+                            if grp == 'left':
+                                allied_forces.append(item)
+                            elif grp == 'middle':
+                                opposing_forces.append(item)
+                            else:
+                                conflicted_forces.append(item)
+                                
+                        # Group armies
+                        for a in all_armies:
+                            item = {
+                                'type': 'army',
+                                'name': a.name,
+                                'strength': a.strength,
+                                'obj': a
+                            }
+                            grp = get_alignment_group(a.faction)
+                            if grp == 'left':
+                                allied_forces.append(item)
+                            elif grp == 'middle':
+                                opposing_forces.append(item)
+                            else:
+                                conflicted_forces.append(item)
+                                
+                        # Group stronghold if present
+                        if getattr(tile, 'is_stronghold', False) and tile.owner and isinstance(tile.owner, Faction):
+                            item = {
+                                'type': 'stronghold',
+                                'name': f"{tile.owner.race} Stronghold",
+                                'strength': None,
+                                'obj': tile,
+                                'faction': tile.owner
+                            }
+                            grp = get_alignment_group(tile.owner)
+                            if grp == 'left':
+                                allied_forces.append(item)
+                            elif grp == 'middle':
+                                opposing_forces.append(item)
+                            else:
+                                conflicted_forces.append(item)
+
         # --- B. Main Game Event Processing ---
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -971,6 +1073,59 @@ def main():
                     util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
                 continue
                 
+            if current_turn_phase == settings.TURN_PHASE_COMBAT and not current_player.is_robot():
+                engage_btn_rect = pygame.Rect(340, 900, 240, 60)
+                defer_btn_rect = pygame.Rect(620, 900, 240, 60)
+                if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if engage_btn_rect.collidepoint(mouse_x, mouse_y):
+                        util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=100)
+                        print("[Combat Phase] Clicked ENGAGE (Not yet implemented).")
+                    elif defer_btn_rect.collidepoint(mouse_x, mouse_y):
+                        util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
+                        if current_combat_idx < len(combat_hexes) - 1:
+                            current_combat_idx += 1
+                        else:
+                            advance_turn_phase()
+                    else:
+                        # Check if any conflicted unit was clicked to bribe
+                        if combat_hexes and current_combat_idx < len(combat_hexes):
+                            max_items = max(len(allied_forces), len(opposing_forces), len(conflicted_forces))
+                            
+                            spacing = 70
+                            avatar_size = 50
+                            if max_items > 7:
+                                spacing = 50
+                                avatar_size = 35
+                            elif max_items > 5:
+                                spacing = 60
+                                avatar_size = 42
+                                
+                            for idx, item in enumerate(conflicted_forces):
+                                item_y = 200 + idx * spacing
+                                item_rect = pygame.Rect(810, item_y, 340, avatar_size)
+                                if item_rect.collidepoint(mouse_x, mouse_y):
+                                    if current_faction.gold >= 1:
+                                        current_faction.gold -= 1
+                                        bribed_item = conflicted_forces.pop(idx)
+                                        allied_forces.append(bribed_item)
+                                        bribed_item['obj'].bribed_by = current_faction
+                                        util.play_sound(filename=None, volume=0.5, pitch_hz=880.0, duration_ms=150)
+                                        print(f"[Bribe Success] Bribed {bribed_item['name']} to {current_faction.race} side for 1 gold.")
+                                    else:
+                                        util.play_sound(filename=None, volume=0.3, pitch_hz=220.0, duration_ms=150)
+                                        print(f"[Bribe Failure] Not enough gold to bribe {item['name']}.")
+                                    break
+                elif event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_SPACE, pygame.K_RETURN):
+                        util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
+                        if current_combat_idx < len(combat_hexes) - 1:
+                            current_combat_idx += 1
+                        else:
+                            advance_turn_phase()
+                    elif event.key == pygame.K_ESCAPE:
+                        running = False
+                continue
+
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     if selected_champion is not None:
@@ -1236,6 +1391,229 @@ def main():
 
         # --- C. Rendering ---
         screen.fill(settings.COLOR_BACKGROUND)
+
+        if current_turn_phase == settings.TURN_PHASE_COMBAT and not current_player.is_robot():
+            # 1. Render map centered and zoomed in on the right 1/4
+            combat_map_rect = pygame.Rect(1200, 0, 400, 1000)
+            
+            # Retrieve active hex coordinates
+            if combat_hexes and current_combat_idx < len(combat_hexes):
+                hex_coord = combat_hexes[current_combat_idx]
+                tile = map_grid.tiles.get(hex_coord)
+                
+                # Zoom in parameters temporarily
+                zoom_w = 450
+                zoom_h = 246
+                orig_w = map_grid.hex_width
+                orig_h = map_grid.hex_height
+                
+                map_grid.hex_width = zoom_w
+                map_grid.hex_height = zoom_h
+                
+                orig_cx = map_grid.camera_x
+                orig_cy = map_grid.camera_y
+                
+                map_grid.center_on_hex(hex_coord[0], hex_coord[1])
+                
+                # Draw map viewport, highlight combat hex in red
+                map_grid.draw(screen, combat_map_rect, highlight_coords=[hex_coord], highlight_color=(255, 0, 0))
+                
+                # Restore original parameters
+                map_grid.hex_width = orig_w
+                map_grid.hex_height = orig_h
+                map_grid.camera_x = orig_cx
+                map_grid.camera_y = orig_cy
+            else:
+                tile = None
+                hex_coord = (0, 0)
+                
+            # 2. Draw Left 3/4 Opaque Combat Panel
+            opaque_combat_rect = pygame.Rect(0, 0, 1200, 1000)
+            pygame.draw.rect(screen, (15, 18, 25), opaque_combat_rect)
+            pygame.draw.line(screen, settings.COLOR_TEXT_MUTED, (1200, 0), (1200, 1000), 2)
+            
+            if tile:
+                # Format hex name using helper
+                def format_hex_name(name):
+                    import re
+                    # Add space around lowercase 'of' when followed by uppercase
+                    name = re.sub(r'([a-zA-Z])of([A-Z])', r'\1 of \2', name)
+                    # Add space before any uppercase letters
+                    spaced = re.sub(r'(?<!^)(?=[A-Z])', ' ', name)
+                    # Normalize spaces
+                    spaced = re.sub(r'\s+', ' ', spaced)
+                    return spaced.upper()
+                    
+                hex_name = format_hex_name(tile.terrain_type)
+                
+                # Render Hex name at top
+                font_hex = util.get_font(36, bold=True)
+                txt_hex = font_hex.render(hex_name, True, settings.COLOR_TEXT_PRIMARY)
+                screen.blit(txt_hex, txt_hex.get_rect(center=(600, 35)))
+                
+                # Render Faction Treasury
+                font_gold = util.get_font(20, bold=True)
+                txt_gold = font_gold.render(f"{current_faction.race} Treasury: {current_faction.gold} Gold", True, settings.COLOR_NEON_GREEN)
+                screen.blit(txt_gold, (50, 35))
+                
+                # Progress and coordinates
+                font_sub = util.get_font(18)
+                progress_str = f"COMBAT {current_combat_idx + 1} OF {len(combat_hexes)}"
+                txt_progress = font_sub.render(progress_str, True, settings.COLOR_NEON_CYAN)
+                screen.blit(txt_progress, txt_progress.get_rect(center=(600, 80)))
+                
+                # Divider line
+                pygame.draw.line(screen, settings.COLOR_TEXT_MUTED, (100, 120), (1100, 120), 1)
+                
+                left_items = allied_forces
+                middle_items = opposing_forces
+                right_items = conflicted_forces
+                    
+                # Layout spacing calculation
+                max_items = max(len(left_items), len(middle_items), len(right_items))
+                spacing = 70
+                avatar_size = 50
+                if max_items > 7:
+                    spacing = 50
+                    avatar_size = 35
+                elif max_items > 5:
+                    spacing = 60
+                    avatar_size = 42
+                    
+                # Vertical column dividers at x=400 and x=780
+                pygame.draw.line(screen, settings.COLOR_TEXT_MUTED, (400, 155), (400, 880), 1)
+                pygame.draw.line(screen, settings.COLOR_TEXT_MUTED, (780, 155), (780, 880), 1)
+                
+                # Setup fonts
+                font_col_header = util.get_font(20, bold=True)
+                font_item_name = util.get_font(15, bold=True)
+                font_item_detail = util.get_font(13)
+                         # Column 1: Faction Side (x=50)
+                txt_col_left = font_col_header.render(f"{current_faction.race.upper()} SIDE", True, settings.COLOR_NEON_CYAN)
+                screen.blit(txt_col_left, (50, 150))
+                txt_str_left = font_item_name.render(f"Strength: {calculate_forces_strength(left_items)}", True, settings.COLOR_TEXT_PRIMARY)
+                screen.blit(txt_str_left, (50, 175))
+                
+                if not left_items:
+                    txt_empty = font_item_detail.render("No units present", True, settings.COLOR_TEXT_MUTED)
+                    screen.blit(txt_empty, (50, 200))
+                else:
+                    for idx, item in enumerate(left_items):
+                        item_y = 200 + idx * spacing
+                        if item['type'] == 'stronghold':
+                            avatar = pygame.Surface((avatar_size, avatar_size), pygame.SRCALPHA)
+                            pygame.draw.circle(avatar, (255, 215, 0, 45), (avatar_size // 2, avatar_size // 2), avatar_size // 2 - 2, 0)
+                            pygame.draw.circle(avatar, (255, 215, 0), (avatar_size // 2, avatar_size // 2), avatar_size // 2 - 2, 2)
+                            font_sh = util.get_font(int(avatar_size * 0.24), bold=True)
+                            txt_sh = font_sh.render("SH", True, (255, 215, 0))
+                            avatar.blit(txt_sh, txt_sh.get_rect(center=(avatar_size // 2, avatar_size // 2)))
+                        else:
+                            avatar = item['obj'].get_surface(size=(avatar_size, avatar_size))
+                        screen.blit(avatar, (50, item_y))
+                        
+                        txt_name = font_item_name.render(item['name'], True, settings.COLOR_TEXT_PRIMARY)
+                        screen.blit(txt_name, (50 + avatar_size + 15, item_y + int(avatar_size * 0.08)))
+                        if item['strength'] is not None:
+                            txt_strength = font_item_detail.render(f"Strength: {item['strength']}", True, settings.COLOR_TEXT_MUTED)
+                        else:
+                            txt_strength = font_item_detail.render("Structure", True, (255, 215, 0))
+                        screen.blit(txt_strength, (50 + avatar_size + 15, item_y + int(avatar_size * 0.5)))
+                    
+                # Column 2: Opposition Side (x=430)
+                txt_col_mid = font_col_header.render("OPPOSITION SIDE", True, settings.COLOR_NEON_PINK)
+                screen.blit(txt_col_mid, (430, 150))
+                txt_str_mid = font_item_name.render(f"Strength: {calculate_forces_strength(middle_items)}", True, settings.COLOR_TEXT_PRIMARY)
+                screen.blit(txt_str_mid, (430, 175))
+                
+                if not middle_items:
+                    txt_empty = font_item_detail.render("No units present", True, settings.COLOR_TEXT_MUTED)
+                    screen.blit(txt_empty, (430, 200))
+                else:
+                    for idx, item in enumerate(middle_items):
+                        item_y = 200 + idx * spacing
+                        if item['type'] == 'stronghold':
+                            avatar = pygame.Surface((avatar_size, avatar_size), pygame.SRCALPHA)
+                            pygame.draw.circle(avatar, (255, 215, 0, 45), (avatar_size // 2, avatar_size // 2), avatar_size // 2 - 2, 0)
+                            pygame.draw.circle(avatar, (255, 215, 0), (avatar_size // 2, avatar_size // 2), avatar_size // 2 - 2, 2)
+                            font_sh = util.get_font(int(avatar_size * 0.24), bold=True)
+                            txt_sh = font_sh.render("SH", True, (255, 215, 0))
+                            avatar.blit(txt_sh, txt_sh.get_rect(center=(avatar_size // 2, avatar_size // 2)))
+                        else:
+                            avatar = item['obj'].get_surface(size=(avatar_size, avatar_size))
+                        screen.blit(avatar, (430, item_y))
+                        
+                        txt_name = font_item_name.render(item['name'], True, settings.COLOR_TEXT_PRIMARY)
+                        screen.blit(txt_name, (430 + avatar_size + 15, item_y + int(avatar_size * 0.08)))
+                        if item['strength'] is not None:
+                            txt_strength = font_item_detail.render(f"Strength: {item['strength']}", True, settings.COLOR_TEXT_MUTED)
+                        else:
+                            txt_strength = font_item_detail.render("Structure", True, (255, 215, 0))
+                        screen.blit(txt_strength, (430 + avatar_size + 15, item_y + int(avatar_size * 0.5)))
+ 
+                # Column 3: Conflicted Side (x=810)
+                txt_col_right = font_col_header.render("CONFLICTED", True, settings.COLOR_TEXT_MUTED)
+                screen.blit(txt_col_right, (810, 150))
+                txt_str_right = font_item_name.render(f"Strength: {calculate_forces_strength(right_items)}", True, settings.COLOR_TEXT_PRIMARY)
+                screen.blit(txt_str_right, (810, 175))
+                
+                if not right_items:
+                    txt_empty = font_item_detail.render("No units present", True, settings.COLOR_TEXT_MUTED)
+                    screen.blit(txt_empty, (810, 200))
+                else:
+                    for idx, item in enumerate(right_items):
+                        item_y = 200 + idx * spacing
+                        if item['type'] == 'stronghold':
+                            avatar = pygame.Surface((avatar_size, avatar_size), pygame.SRCALPHA)
+                            pygame.draw.circle(avatar, (255, 215, 0, 45), (avatar_size // 2, avatar_size // 2), avatar_size // 2 - 2, 0)
+                            pygame.draw.circle(avatar, (255, 215, 0), (avatar_size // 2, avatar_size // 2), avatar_size // 2 - 2, 2)
+                            font_sh = util.get_font(int(avatar_size * 0.24), bold=True)
+                            txt_sh = font_sh.render("SH", True, (255, 215, 0))
+                            avatar.blit(txt_sh, txt_sh.get_rect(center=(avatar_size // 2, avatar_size // 2)))
+                        else:
+                            avatar = item['obj'].get_surface(size=(avatar_size, avatar_size))
+                        screen.blit(avatar, (810, item_y))
+                        
+                        txt_name = font_item_name.render(item['name'], True, settings.COLOR_TEXT_PRIMARY)
+                        screen.blit(txt_name, (810 + avatar_size + 15, item_y + int(avatar_size * 0.08)))
+                        if item['strength'] is not None:
+                            txt_strength = font_item_detail.render(f"Strength: {item['strength']}", True, settings.COLOR_TEXT_MUTED)
+                        else:
+                            txt_strength = font_item_detail.render("Structure", True, (255, 215, 0))
+                        screen.blit(txt_strength, (810 + avatar_size + 15, item_y + int(avatar_size * 0.5)))
+                    
+            # Draw Engage & Defer buttons
+            engage_btn_rect = pygame.Rect(340, 900, 240, 60)
+            defer_btn_rect = pygame.Rect(620, 900, 240, 60)
+            
+            # Engage Button Hover
+            is_hover_engage = engage_btn_rect.collidepoint(mouse_x, mouse_y)
+            if is_hover_engage:
+                pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, engage_btn_rect, border_radius=10)
+                text_color_engage = (11, 14, 20)
+            else:
+                pygame.draw.rect(screen, (20, 24, 33), engage_btn_rect, border_radius=10)
+                pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, engage_btn_rect, width=2, border_radius=10)
+                text_color_engage = settings.COLOR_NEON_GREEN
+                
+            font_btn = util.get_font(20, bold=True)
+            txt_engage = font_btn.render("ENGAGE", True, text_color_engage)
+            screen.blit(txt_engage, txt_engage.get_rect(center=engage_btn_rect.center))
+            
+            # Defer Button Hover
+            is_hover_defer = defer_btn_rect.collidepoint(mouse_x, mouse_y)
+            if is_hover_defer:
+                pygame.draw.rect(screen, settings.COLOR_NEON_PINK, defer_btn_rect, border_radius=10)
+                text_color_defer = (11, 14, 20)
+            else:
+                pygame.draw.rect(screen, (20, 24, 33), defer_btn_rect, border_radius=10)
+                pygame.draw.rect(screen, settings.COLOR_NEON_PINK, defer_btn_rect, width=2, border_radius=10)
+                text_color_defer = settings.COLOR_NEON_PINK
+                
+            txt_defer = font_btn.render("DEFER", True, text_color_defer)
+            screen.blit(txt_defer, txt_defer.get_rect(center=defer_btn_rect.center))
+            
+            pygame.display.flip()
+            continue
         
         # 1. Render Hex Map inside viewport
         controlled_coords = [coord for coord, tile in map_grid.tiles.items() if tile.owner == current_faction]

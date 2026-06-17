@@ -570,20 +570,56 @@ class MapGrid:
             if not self.champions[coord]:
                 del self.champions[coord]
 
-    def has_combat_for_faction(self, faction):
+    def get_combat_hexes(self, faction):
         """
-        Checks if there is any hex containing the given faction's units
-        and an opposed faction's units.
+        Returns a sorted list of axial coordinates (q, r) where the given faction
+        has at least one unit (army or champion) and there is at least one opposed unit
+        (opposed army, opposed champion, or opposed stronghold).
         """
-        for (q, r) in set(list(self.armies.keys()) + list(self.champions.keys())):
+        from factions import Faction
+        combat_hexes = []
+        possible_hexes = set(list(self.armies.keys()) + list(self.champions.keys()))
+        for (q, r) in possible_hexes:
             has_our_army = any(a.faction == faction for a in self.armies.get((q, r), []))
             has_our_champ = any(c.faction == faction for c in self.champions.get((q, r), []))
             if has_our_army or has_our_champ:
                 has_opposed_army = any(faction.isOpposed(a.faction) for a in self.armies.get((q, r), []))
                 has_opposed_champ = any(faction.isOpposed(c.faction) for c in self.champions.get((q, r), []))
-                if has_opposed_army or has_opposed_champ:
-                    return True
-        return False
+                
+                has_opposed_stronghold = False
+                tile = self.tiles.get((q, r))
+                if tile and getattr(tile, 'is_stronghold', False) and isinstance(tile.owner, Faction) and faction.isOpposed(tile.owner):
+                    has_opposed_stronghold = True
+                
+                if has_opposed_army or has_opposed_champ or has_opposed_stronghold:
+                    combat_hexes.append((q, r))
+        combat_hexes.sort()
+        return combat_hexes
+
+    def has_combat_for_faction(self, faction):
+        """
+        Checks if there is any hex containing the given faction's units
+        and an opposed faction's units.
+        """
+        return len(self.get_combat_hexes(faction)) > 0
+
+    def consolidate_armies(self, faction):
+        """
+        Consolidates all armies of the given faction in each hex into a single army
+        with the combined strength.
+        """
+        for loc in list(self.armies.keys()):
+            faction_armies = [a for a in self.armies[loc] if a.faction == faction]
+            if len(faction_armies) > 1:
+                total_strength = sum(a.strength for a in faction_armies)
+                remaining_army = faction_armies[0]
+                remaining_army.strength = total_strength
+                
+                # Remove the rest of the armies of this faction on this hex
+                for other_army in faction_armies[1:]:
+                    self.remove_army(other_army)
+
+
 
     def center_on_hex(self, q, r):
         """
