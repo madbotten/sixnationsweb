@@ -34,6 +34,39 @@ def calculate_forces_strength(forces_list):
     return total
 
 
+def resolve_combat(allied_forces, opposing_forces):
+    """Roll 1d6 + total strength for each side and return the result."""
+    allied_strength = calculate_forces_strength(allied_forces)
+    opposed_strength = calculate_forces_strength(opposing_forces)
+
+    allied_roll = random.randint(1, 6)
+    opposed_roll = random.randint(1, 6)
+
+    allied_total = allied_strength + allied_roll
+    opposed_total = opposed_strength + opposed_roll
+
+    if allied_total > opposed_total:
+        outcome = "allied"
+    elif opposed_total > allied_total:
+        outcome = "opposed"
+    else:
+        outcome = "draw"
+
+    print(f"[Combat] Allied roll: {allied_roll} + strength {allied_strength} = {allied_total}")
+    print(f"[Combat] Opposed roll: {opposed_roll} + strength {opposed_strength} = {opposed_total}")
+    print(f"[Combat] Outcome: {outcome}")
+
+    return {
+        "allied_roll": allied_roll,
+        "allied_strength": allied_strength,
+        "allied_total": allied_total,
+        "opposed_roll": opposed_roll,
+        "opposed_strength": opposed_strength,
+        "opposed_total": opposed_total,
+        "outcome": outcome,
+    }
+
+
 def draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y, is_mustering=False, secret_faction=None):
     """
     Renders the Faction Turn Phase control panel on the left during human player's turn.
@@ -680,6 +713,19 @@ def main():
     previous_faction_by_player = [None, None]
     bot_just_started_turn = False
 
+    def process_combat_phase(faction):
+        nonlocal combat_hexes, current_combat_idx, loaded_combat_hex_idx, current_turn_phase
+        # Consolidate armies and detect combat locations
+        map_grid.consolidate_armies(faction)
+        combat_hexes = map_grid.get_combat_hexes(faction)
+        current_combat_idx = 0
+        loaded_combat_hex_idx = -1
+
+        # If human player and there are no combat locations, auto-skip to Control Phase
+        if not current_player.is_robot() and not combat_hexes:
+            print(f"[Combat Phase] Automatically skipped Combat Phase for {faction.race} (no opposed units).")
+            advance_turn_phase()
+
     def process_control_phase(faction):
         # We only examine hexes that either have a unit for the active faction (whose turn we are on),
         # or are currently owned by the active faction.
@@ -820,6 +866,25 @@ def main():
         unmoved_champions = sum(1 for loc, champs in map_grid.champions.items() for champ in champs if champ.faction == current_faction and not getattr(champ, 'has_moved', False))
         return unmoved_armies + unmoved_champions
 
+    def process_victory_phase():
+        # Check for victory/loss at the end of the turn
+        for p_idx, p_obj in enumerate(players):
+            p_name = "Player 1" if p_idx == 0 else "Bot Player 2"
+            if map_grid.find_stronghold_coord(p_obj.faction) is None:
+                print(f"[GAME OVER] {p_name} ({p_obj.faction.race}) has lost their stronghold!")
+            vp_count = 0
+            from factions import FACTIONS
+            opposed_facs = [f for f in FACTIONS if p_obj.faction.isOpposed(f)]
+            for f in opposed_facs:
+                if map_grid.find_stronghold_coord(f) is None:
+                    vp_count += 1
+            if vp_count >= 2:
+                print(f"[VICTORY] {p_name} ({p_obj.faction.race}) WINS by destroying opposed strongholds!")
+
+        # Immediately end faction turn and proceed to next player (bypassing Victory Phase)
+        next_player_idx = 1 - current_player_idx
+        start_player_turn(next_player_idx)
+
     # Helper function to advance phase
     def advance_turn_phase():
         nonlocal current_turn_phase, is_mustering, selected_champion, selected_army
@@ -827,57 +892,24 @@ def main():
         is_mustering = False
         selected_champion = None
         selected_army = None
+
+        # Advance from income to move
         if current_turn_phase == settings.TURN_PHASE_INCOME:
             current_turn_phase = settings.TURN_PHASE_MOVE
-            if not current_player.is_robot() and check_movement_left() == 0:
-                map_grid.consolidate_armies(current_faction)
-                combat_hexes = map_grid.get_combat_hexes(current_faction)
-                if combat_hexes:
-                    current_turn_phase = settings.TURN_PHASE_COMBAT
-                    current_combat_idx = 0
-                    loaded_combat_hex_idx = -1
-                else:
-                    print(f"[Combat Phase] Automatically skipped Combat Phase for {current_faction.race} (no opposed units).")
-                    current_turn_phase = settings.TURN_PHASE_CONTROL
-                    process_control_phase(current_faction)
-        elif current_turn_phase == settings.TURN_PHASE_MOVE:
-            # Check if there is any hex containing our faction's units and an opposed faction's units
-            # For human players, skip combat if no opposed units are present.
-            # For bot players, do not skip combat phase (run all phases sequentially as a skeleton).
-            map_grid.consolidate_armies(current_faction)
-            if not current_player.is_robot():
-                combat_hexes = map_grid.get_combat_hexes(current_faction)
-                if not combat_hexes:
-                    print(f"[Combat Phase] Automatically skipped Combat Phase for {current_faction.race} (no opposed units).")
-                    current_turn_phase = settings.TURN_PHASE_CONTROL
-                    process_control_phase(current_faction)
-                else:
-                    current_turn_phase = settings.TURN_PHASE_COMBAT
-                    current_combat_idx = 0
-                    loaded_combat_hex_idx = -1
-            else:
-                current_turn_phase = settings.TURN_PHASE_COMBAT
-        elif current_turn_phase == settings.TURN_PHASE_COMBAT:
+            return
+
+        if current_turn_phase == settings.TURN_PHASE_MOVE:
+            current_turn_phase = settings.TURN_PHASE_COMBAT
+            process_combat_phase(current_faction)
+            return
+        
+        if current_turn_phase == settings.TURN_PHASE_COMBAT:
             current_turn_phase = settings.TURN_PHASE_CONTROL
             process_control_phase(current_faction)
-        elif current_turn_phase == settings.TURN_PHASE_CONTROL:
-            # Check for victory/loss at the end of the turn
-            for p_idx, p_obj in enumerate(players):
-                p_name = "Player 1" if p_idx == 0 else "Bot Player 2"
-                if map_grid.find_stronghold_coord(p_obj.faction) is None:
-                    print(f"[GAME OVER] {p_name} ({p_obj.faction.race}) has lost their stronghold!")
-                vp_count = 0
-                from factions import FACTIONS
-                opposed_facs = [f for f in FACTIONS if p_obj.faction.isOpposed(f)]
-                for f in opposed_facs:
-                    if map_grid.find_stronghold_coord(f) is None:
-                        vp_count += 1
-                if vp_count >= 2:
-                    print(f"[VICTORY] {p_name} ({p_obj.faction.race}) WINS by destroying opposed strongholds!")
-            
-            # Immediately end faction turn and proceed to next player (bypassing Victory Phase)
-            next_player_idx = 1 - current_player_idx
-            start_player_turn(next_player_idx)
+            return
+        
+        if current_turn_phase == settings.TURN_PHASE_CONTROL:
+            process_victory_phase()
 
 
     # Initialize the first turn!
@@ -910,6 +942,7 @@ def main():
     allied_forces = []
     opposing_forces = []
     conflicted_forces = []
+    combat_result = None
 
 
     while running and game_phase == settings.PHASE_MAIN_GAME:
@@ -980,6 +1013,7 @@ def main():
                     allied_forces = []
                     opposing_forces = []
                     conflicted_forces = []
+                    combat_result = None
                     
                     hex_coord = combat_hexes[current_combat_idx]
                     tile = map_grid.tiles.get(hex_coord)
@@ -1079,7 +1113,7 @@ def main():
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if engage_btn_rect.collidepoint(mouse_x, mouse_y):
                         util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=100)
-                        print("[Combat Phase] Clicked ENGAGE (Not yet implemented).")
+                        combat_result = resolve_combat(allied_forces, opposing_forces)
                     elif defer_btn_rect.collidepoint(mouse_x, mouse_y):
                         util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
                         if current_combat_idx < len(combat_hexes) - 1:
@@ -1493,7 +1527,17 @@ def main():
                 screen.blit(txt_col_left, (50, 150))
                 txt_str_left = font_item_name.render(f"Strength: {calculate_forces_strength(left_items)}", True, settings.COLOR_TEXT_PRIMARY)
                 screen.blit(txt_str_left, (50, 175))
-                
+
+                # Combat result display — Allied column
+                if combat_result is not None:
+                    font_result = util.get_font(17, bold=True)
+                    allied_outcome_color = settings.COLOR_NEON_GREEN if combat_result["outcome"] == "allied" else (settings.COLOR_NEON_PINK if combat_result["outcome"] == "opposed" else settings.COLOR_TEXT_MUTED)
+                    txt_allied_result = font_result.render(
+                        f"Roll: {combat_result['allied_roll']}  Total: {combat_result['allied_total']}",
+                        True, allied_outcome_color
+                    )
+                    screen.blit(txt_allied_result, (50, 198))
+
                 if not left_items:
                     txt_empty = font_item_detail.render("No units present", True, settings.COLOR_TEXT_MUTED)
                     screen.blit(txt_empty, (50, 200))
@@ -1524,7 +1568,17 @@ def main():
                 screen.blit(txt_col_mid, (430, 150))
                 txt_str_mid = font_item_name.render(f"Strength: {calculate_forces_strength(middle_items)}", True, settings.COLOR_TEXT_PRIMARY)
                 screen.blit(txt_str_mid, (430, 175))
-                
+
+                # Combat result display — Opposition column
+                if combat_result is not None:
+                    font_result = util.get_font(17, bold=True)
+                    opposed_outcome_color = settings.COLOR_NEON_GREEN if combat_result["outcome"] == "opposed" else (settings.COLOR_NEON_PINK if combat_result["outcome"] == "allied" else settings.COLOR_TEXT_MUTED)
+                    txt_opposed_result = font_result.render(
+                        f"Roll: {combat_result['opposed_roll']}  Total: {combat_result['opposed_total']}",
+                        True, opposed_outcome_color
+                    )
+                    screen.blit(txt_opposed_result, (430, 198))
+
                 if not middle_items:
                     txt_empty = font_item_detail.render("No units present", True, settings.COLOR_TEXT_MUTED)
                     screen.blit(txt_empty, (430, 200))
