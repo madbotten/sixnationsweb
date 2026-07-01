@@ -637,10 +637,11 @@ class TestCombatPhase(unittest.TestCase):
         self.assertEqual(calculate_forces_strength(forces), 7)
         
         # 3. Champion with Artifact strength test (+2 extra)
-        art = Artifact("Flame Sword", "flamesword.jpg")
+        art = Artifact("Flame Sword", "flamesword.jpg", "FLAME_SWORD")
         champ.artifact = art
         # 4 (army) + 3 (champion) + 2 (artifact) = 9
         self.assertEqual(calculate_forces_strength(forces), 9)
+
         
         # 4. Stronghold strength test (3)
         stronghold_tile = Tile(0, 0, "Plains")
@@ -663,8 +664,9 @@ class TestArtifacts(unittest.TestCase):
         # Setup tile with an artifact
         grid.place_tile(0, 0, "Plains", faction_0)
         grid.tiles[(0, 0)].has_artifact = True
-        art = Artifact("Flame Sword", "flamesword.jpg")
+        art = Artifact("Flame Sword", "flamesword.jpg", "FLAME_SWORD")
         grid.tiles[(0, 0)].artifact = art
+
 
         # Place champion at (0, 1) on an existing tile
         grid.place_tile(0, 1, "Plains", faction_0)

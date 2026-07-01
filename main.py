@@ -19,25 +19,77 @@ from armies import Army
 
 
 
-def calculate_forces_strength(forces_list):
+def calculate_forces_strength(forces_list, opposing_forces=None):
+    """
+    Calculates total combat strength for a side's forces.
+
+    Artifact effects applied here:
+    - FLAME_SWORD:      Champion's holding faction gains +2 combat strength.
+    - WALL_BREAKER:     Treats opposing stronghold_strength as 2 less (applied on the
+                        opposing side's stronghold item when resolving combat; handled
+                        by passing a negative bonus via stronghold item's obj attribute).
+    - TOXIC_CROSSBOW:   If the opposing side has a champion holding this, each champion
+                        on THIS side fights at -1 strength (min 1).
+
+    Args:
+        forces_list (list): Force item dicts for this side.
+        opposing_forces (list | None): Force item dicts for the opposing side, used to
+                                       check for Toxic Crossbow.
+    """
+    # Check if opposing side has a champion carrying a Toxic Crossbow
+    toxic_crossbow_active = False
+    if opposing_forces:
+        for item in opposing_forces:
+            if item['type'] == 'champion':
+                art = getattr(item['obj'], 'artifact', None)
+                if art is not None and getattr(art, 'power', '') == 'TOXIC_CROSSBOW':
+                    toxic_crossbow_active = True
+                    break
+
     total = 0
     for item in forces_list:
         if item['type'] == 'army':
             total += getattr(item['obj'], 'strength', 1)
         elif item['type'] == 'champion':
             champ = item['obj']
-            total += getattr(champ, 'strength', 3)
-            if getattr(champ, 'artifact', None) is not None:
-                total += 2
+            champ_str = getattr(champ, 'strength', 3)
+            if toxic_crossbow_active:
+                champ_str = max(1, champ_str - 1)
+            total += champ_str
+            art = getattr(champ, 'artifact', None)
+            if art is not None and getattr(art, 'power', '') == 'FLAME_SWORD':
+                total += 2  # Flame Sword: +2 combat strength
         elif item['type'] == 'stronghold':
-            total += 3
+            tile = item['obj']
+            sh_str = tile.stronghold_strength
+            total += sh_str
     return total
 
 
-def resolve_combat(allied_forces, opposing_forces):
-    """Roll 1d6 + total strength for each side and return the result."""
-    allied_strength = calculate_forces_strength(allied_forces)
-    opposed_strength = calculate_forces_strength(opposing_forces)
+def resolve_combat(allied_forces, opposing_forces, moving_faction, map_grid):
+    """
+    Roll 1d6 + total strength for each side and return the result.
+
+    Artifact effects applied here:
+    - TOXIC_CROSSBOW: passed to calculate_forces_strength via opposing_forces.
+    - WALL_BREAKER:   If allied side has a champion holding Wall Breaker and opposing
+                      side has a stronghold, reduce effective stronghold strength by 2.
+    """
+    # Wall Breaker: check if allied champion holds it and opposing has a stronghold
+    allied_has_wall_breaker = any(
+        item['type'] == 'champion' and
+        getattr(getattr(item['obj'], 'artifact', None), 'power', '') == 'WALL_BREAKER'
+        for item in allied_forces
+    )
+    if allied_has_wall_breaker:
+        for item in opposing_forces:
+            if item['type'] == 'stronghold':
+                tile = item['obj']
+                tile.stronghold_strength = max(0, tile.stronghold_strength - 2)
+                print(f"[Wall Breaker] Stronghold effective strength reduced by 2 (now {tile.stronghold_strength}).")
+
+    allied_strength = calculate_forces_strength(allied_forces, opposing_forces=opposing_forces)
+    opposed_strength = calculate_forces_strength(opposing_forces, opposing_forces=allied_forces)
 
     allied_roll = random.randint(1, 6)
     opposed_roll = random.randint(1, 6)
@@ -56,6 +108,11 @@ def resolve_combat(allied_forces, opposing_forces):
     print(f"[Combat] Opposed roll: {opposed_roll} + strength {opposed_strength} = {opposed_total}")
     print(f"[Combat] Outcome: {outcome}")
 
+    if outcome == "allied":
+        take_combat_losses(allied_forces, opposing_forces, allied_roll, moving_faction, map_grid)
+    elif outcome == "opposed":
+        take_combat_losses(opposing_forces, allied_forces, opposed_roll, moving_faction, map_grid)
+
     return {
         "allied_roll": allied_roll,
         "allied_strength": allied_strength,
@@ -65,6 +122,191 @@ def resolve_combat(allied_forces, opposing_forces):
         "opposed_total": opposed_total,
         "outcome": outcome,
     }
+
+
+
+def take_combat_losses(winner_forces, loser_forces, winner_raw_die_roll, moving_faction, map_grid):
+    """
+    Apply combat losses to the losing side after a battle.
+
+    Losses equal the winner's raw die roll.  Armies absorb losses before
+    champions (armies are "preferential" targets).  Within armies, those
+    whose faction is farthest from moving_faction on the diplomacy ring are
+    eliminated first.  Armies take partial strength damage and are removed
+    from both the display list and the game board when strength hits 0.
+    Champions soak remaining losses with partial-strength damage and are
+    similarly removed when strength hits 0.
+
+    Artifact effects:
+    - GOLDEN_AXE:  If the winning side has a champion holding Golden Axe, the
+                   total losses inflicted increase by 1.
+    - ELVEN_ARMS:  When a losing champion would take lethal damage (strength → 0),
+                   the Elven Arms artifact is consumed instead: it absorbs up to 3 pts
+                   of damage (champion survives with remaining strength), and any
+                   overflow damage beyond what the artifact covers passes to an enemy
+                   stronghold in the same hex (if one exists).
+
+    Args:
+        winner_forces:        List of force dicts on the winning side.
+        loser_forces:         List of force dicts on the losing side.
+        winner_raw_die_roll:  The raw 1d6 result rolled by the winning side
+                              (equals the total losses inflicted).
+        moving_faction:       The faction whose turn it is (used to determine
+                              ring-distance ordering among loser armies).
+        map_grid:             The MapGrid instance (used to remove destroyed
+                              units from the game board).
+    """
+    losses_remaining = winner_raw_die_roll
+
+    # --- Golden Axe: winner champion adds +1 to losses inflicted ---
+    for item in winner_forces:
+        if item['type'] == 'champion':
+            art = getattr(item['obj'], 'artifact', None)
+            if art is not None and getattr(art, 'power', '') == 'GOLDEN_AXE':
+                losses_remaining += 1
+                print(f"[Golden Axe] {item['obj'].name} inflicts +1 bonus loss (total: {losses_remaining}).")
+                break  # Only one champion can trigger this
+
+    # --- Phase 1: Armies absorb losses (farthest ring distance first) ---
+    loser_armies = [item for item in loser_forces if item['type'] == 'army']
+
+    # Sort armies so that farthest diplomatic distance from moving_faction
+    # comes first (they are eliminated before closer allies).
+    loser_armies.sort(
+        key=lambda item: moving_faction.diplomatic_distance(item['obj'].faction),
+        reverse=True
+    )
+
+    for item in loser_armies:
+        if losses_remaining <= 0:
+            break
+        army = item['obj']
+        damage = min(losses_remaining, army.strength)
+        army.strength -= damage
+        losses_remaining -= damage
+        if army.strength <= 0:
+            loser_forces.remove(item)
+            map_grid.remove_army(army)
+            print(f"[Combat Losses] Army '{item['name']}' ({army.faction.race}) destroyed.")
+        else:
+            print(f"[Combat Losses] Army '{item['name']}' ({army.faction.race}) took {damage} damage (strength now {army.strength}).")
+
+    # --- Phase 2: Champions absorb remaining losses (with Elven Arms shield check) ---
+    loser_champs = [item for item in loser_forces if item['type'] == 'champion']
+
+    for item in loser_champs:
+        if losses_remaining <= 0:
+            break
+        champ = item['obj']
+        damage = min(losses_remaining, champ.strength)
+        would_be_lethal = (damage >= champ.strength)
+
+        art = getattr(champ, 'artifact', None)
+        if would_be_lethal and art is not None and getattr(art, 'power', '') == 'ELVEN_ARMS':
+            # --- Elven Arms: sacrifice the artifact to save the champion ---
+            absorbed = min(3, damage)          # Artifact absorbs up to 3 pts
+            overflow = damage - absorbed        # Remaining damage after absorption
+            champ.strength -= absorbed
+            if champ.strength <= 0:
+                champ.strength = 1             # Champion survives with at least 1 strength
+            losses_remaining -= damage
+            champ.artifact = None              # Artifact is destroyed
+            print(
+                f"[Elven Arms] {champ.name}'s Elven Arms sacrificed! Absorbed {absorbed} damage. "
+                f"Champion survives with {champ.strength} strength."
+            )
+            # Any overflow passes to an enemy stronghold in the same hex, if present
+            if overflow > 0:
+                loser_strongholds = [i for i in loser_forces if i['type'] == 'stronghold']
+                for sh_item in loser_strongholds:
+                    tile = sh_item['obj']
+                    sh_damage = min(overflow, tile.stronghold_strength)
+                    tile.stronghold_strength -= sh_damage
+                    overflow -= sh_damage
+                    if tile.stronghold_strength <= 0:
+                        tile.is_stronghold = False
+                        loser_forces.remove(sh_item)
+                        print(f"[Elven Arms Overflow] Stronghold '{sh_item['name']}' destroyed by overflow damage!")
+                    else:
+                        print(f"[Elven Arms Overflow] Stronghold '{sh_item['name']}' took {sh_damage} overflow (strength now {tile.stronghold_strength}).")
+                    break  # Only one stronghold target
+        else:
+            champ.strength -= damage
+            losses_remaining -= damage
+            if champ.strength <= 0:
+                loser_forces.remove(item)
+                map_grid.remove_champion(champ)
+                print(f"[Combat Losses] Champion '{champ.name}' ({champ.faction.race}) slain.")
+            else:
+                print(f"[Combat Losses] Champion '{champ.name}' ({champ.faction.race}) took {damage} damage (strength now {champ.strength}).")
+
+    # --- Phase 2.5: Stronghold absorbs remaining losses (after all units are gone) ---
+    if losses_remaining > 0:
+        loser_strongholds = [item for item in loser_forces if item['type'] == 'stronghold']
+        for item in loser_strongholds:
+            if losses_remaining <= 0:
+                break
+            tile = item['obj']
+            damage = min(losses_remaining, tile.stronghold_strength)
+            tile.stronghold_strength -= damage
+            losses_remaining -= damage
+            if tile.stronghold_strength <= 0:
+                tile.is_stronghold = False
+                loser_forces.remove(item)
+                print(f"[Combat Losses] Stronghold '{item['name']}' has fallen! The stronghold is destroyed.")
+            else:
+                print(f"[Combat Losses] Stronghold '{item['name']}' took {damage} damage (strength now {tile.stronghold_strength}).")
+
+    if losses_remaining > 0:
+        print(f"[Combat Losses] {losses_remaining} excess loss(es) absorbed with no targets remaining.")
+
+
+    # --- Phase 3: Winner takes half losses (rounded down) ---
+    winner_losses = winner_raw_die_roll // 2
+    print(f"[Combat Losses] Winner takes {winner_losses} loss(es) (half of {winner_raw_die_roll}).")
+
+    winner_armies = [item for item in winner_forces if item['type'] == 'army']
+    winner_armies.sort(
+        key=lambda item: moving_faction.diplomatic_distance(item['obj'].faction),
+        reverse=True
+    )
+
+    for item in winner_armies:
+        if winner_losses <= 0:
+            break
+        army = item['obj']
+        damage = min(winner_losses, army.strength)
+        army.strength -= damage
+        winner_losses -= damage
+        if army.strength <= 0:
+            winner_forces.remove(item)
+            map_grid.remove_army(army)
+            print(f"[Combat Losses] (Winner) Army '{item['name']}' ({army.faction.race}) destroyed.")
+        else:
+            print(f"[Combat Losses] (Winner) Army '{item['name']}' ({army.faction.race}) took {damage} damage (strength now {army.strength}).")
+
+    winner_champs = [item for item in winner_forces if item['type'] == 'champion']
+
+    for item in winner_champs:
+        if winner_losses <= 0:
+            break
+        champ = item['obj']
+        damage = min(winner_losses, champ.strength)
+        champ.strength -= damage
+        winner_losses -= damage
+        if champ.strength <= 0:
+            winner_forces.remove(item)
+            map_grid.remove_champion(champ)
+            print(f"[Combat Losses] (Winner) Champion '{champ.name}' ({champ.faction.race}) slain.")
+        else:
+            print(f"[Combat Losses] (Winner) Champion '{champ.name}' ({champ.faction.race}) took {damage} damage (strength now {champ.strength}).")
+
+    if winner_losses > 0:
+        print(f"[Combat Losses] {winner_losses} excess winner loss(es) absorbed with no targets remaining.")
+
+
+
+
 
 
 def draw_left_phase_panel(screen, left_panel_rect, current_faction, current_turn_phase, map_grid, mouse_x, mouse_y, is_mustering=False, secret_faction=None):
@@ -333,7 +575,11 @@ def draw_collapsed_tab(screen, current_faction, current_turn_phase, map_grid, mo
 def draw_left_champion_statistics_panel(screen, selected_champion, left_panel_rect, map_grid, mouse_x, mouse_y):
     """
     Renders the statistics HUD panel for the selected Champion unit on the left.
+    Returns an artifact tooltip tuple (text, color) if the mouse hovers over the
+    artifact row and the champion holds an artifact, otherwise returns None.
     """
+    artifact_tooltip = None
+
     # Draw panel background glass overlay
     pygame.draw.rect(screen, settings.COLOR_HUD_BG, left_panel_rect)
     
@@ -415,24 +661,46 @@ def draw_left_champion_statistics_panel(screen, selected_champion, left_panel_re
         # Artifact Row
         art_rect = pygame.Rect(20, start_y + 3 * row_h, 260, 60)
         pygame.draw.rect(screen, (20, 24, 33), art_rect, border_radius=8)
-        pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, art_rect, width=1, border_radius=8)
-        
+
+        art = getattr(selected_champion, 'artifact', None)
+        if art is not None:
+            # Highlight border in neon pink when the mouse hovers over the artifact row
+            is_hover_art = art_rect.collidepoint(mouse_x, mouse_y)
+            art_border_color = settings.COLOR_NEON_PINK if is_hover_art else settings.COLOR_TEXT_MUTED
+            pygame.draw.rect(screen, art_border_color, art_rect, width=1, border_radius=8)
+        else:
+            pygame.draw.rect(screen, settings.COLOR_TEXT_MUTED, art_rect, width=1, border_radius=8)
+
         lbl_art = font_label.render("ARTIFACT", True, settings.COLOR_NEON_CYAN)
         screen.blit(lbl_art, (35, start_y + 3 * row_h + 10))
         
-        if getattr(selected_champion, 'artifact', None) is not None:
-            art_name = selected_champion.artifact.name.upper()
+        if art is not None:
+            art_name = art.name.upper()
             val_art = font_value.render(art_name, True, settings.COLOR_NEON_PINK)
             try:
-                art_img = selected_champion.artifact.get_image(size=(40, 40))
+                art_img = art.get_image(size=(40, 40))
                 screen.blit(art_img, (220, start_y + 3 * row_h + 10))
             except Exception as e:
                 print(f"[UI Warning] Failed to render artifact image: {e}")
+
+            # Build tooltip when mouse hovers the artifact row
+            power_tooltips = {
+                "FLAME_SWORD":    "Flame Sword: +2 combat strength",
+                "GOLDEN_AXE":     "Golden Axe: +1 loss inflicted when your side wins",
+                "AIR_SWORD":      "Air Sword: move 2 hexes per turn",
+                "ELVEN_ARMS":     "Elven Arms: sacrificed on lethal hit, absorbs 3 damage",
+                "STAR_STAFF":     "Star Staff: +1 gold each income phase",
+                "TOXIC_CROSSBOW": "Toxic Crossbow: enemy champions fight at -1 strength",
+                "WALL_BREAKER":   "Wall Breaker: +2 effective strength vs. strongholds",
+            }
+            tooltip_text = power_tooltips.get(getattr(art, 'power', ''), art.name)
+            if art_rect.collidepoint(mouse_x, mouse_y):
+                artifact_tooltip = (tooltip_text, settings.COLOR_NEON_PINK)
         else:
             val_art = font_value.render("NONE", True, settings.COLOR_TEXT_MUTED)
         screen.blit(val_art, (35, start_y + 3 * row_h + 30))
-        
-        # Close Button at bottom (y = 800 since there are no moves/summon options)
+
+        # Close Button at bottom
         close_btn_rect = pygame.Rect(20, 800, 260, 45)
         is_hover_close = close_btn_rect.collidepoint(mouse_x, mouse_y)
         btn_fill = (40, 45, 55) if is_hover_close else (25, 29, 38)
@@ -447,6 +715,8 @@ def draw_left_champion_statistics_panel(screen, selected_champion, left_panel_re
         
     except Exception as e:
         print(f"[Render Error] Failed to draw champion stats: {e}")
+
+    return artifact_tooltip
 
 
 def draw_left_army_statistics_panel(screen, selected_army, left_panel_rect, map_grid, mouse_x, mouse_y):
@@ -827,7 +1097,14 @@ def main():
         for loc, champs_list in map_grid.champions.items():
             for champ in champs_list:
                 champ.has_moved = False
-                
+                # Air Sword: refresh the extra move step each turn
+                art = getattr(champ, 'artifact', None)
+                if art is not None and getattr(art, 'power', '') == 'AIR_SWORD':
+                    champ.moves_remaining = 1
+                else:
+                    champ.moves_remaining = 0
+
+
         current_player_idx = player_index
         current_player = players[player_index]
         player = current_player
@@ -846,6 +1123,16 @@ def main():
         gold_before = ", ".join([f"{f.race}={f.gold}" for f in FACTIONS])
         income = map_grid.calculate_faction_income(chosen_f)
         chosen_f.gold += income
+
+        # Star Staff: +1 gold if the faction's champion holds it
+        for loc, champs in map_grid.champions.items():
+            for champ in champs:
+                if champ.faction == chosen_f:
+                    art = getattr(champ, 'artifact', None)
+                    if art is not None and getattr(art, 'power', '') == 'STAR_STAFF':
+                        chosen_f.gold += 1
+                        print(f"[Star Staff] {chosen_f.race} earns +1 bonus gold from Star Staff (total: {chosen_f.gold}).")
+
         gold_after = ", ".join([f"{f.race}={f.gold}" for f in FACTIONS])
         print(f"[Gold Debug] Before: {gold_before} | Added {income} to {chosen_f.race} | After: {gold_after}")
         
@@ -1113,7 +1400,7 @@ def main():
                 if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     if engage_btn_rect.collidepoint(mouse_x, mouse_y):
                         util.play_sound(filename=None, volume=0.4, pitch_hz=659.25, duration_ms=100)
-                        combat_result = resolve_combat(allied_forces, opposing_forces)
+                        combat_result = resolve_combat(allied_forces, opposing_forces, current_faction, map_grid)
                     elif defer_btn_rect.collidepoint(mouse_x, mouse_y):
                         util.play_sound(filename=None, volume=0.4, pitch_hz=523.25, duration_ms=100)
                         if current_combat_idx < len(combat_hexes) - 1:
@@ -1364,11 +1651,19 @@ def main():
                                         q, r = map_grid.screen_to_axial(mouse_x, mouse_y, map_viewport_rect)
                                         if map_grid.can_move_champion(selected_champion, q, r):
                                             map_grid.move_champion(selected_champion, q, r)
-                                            selected_champion.has_moved = True # Mark as moved this turn
-                                            selected_champion = None
                                             util.play_sound(filename=None, volume=0.4, pitch_hz=587.33, duration_ms=100)
-                                            if check_movement_left() == 0:
-                                                advance_turn_phase()
+
+                                            # Air Sword: if moves_remaining > 0 after the move,
+                                            # keep the champion selected for a second step.
+                                            if getattr(selected_champion, 'moves_remaining', 0) > 0:
+                                                selected_champion.moves_remaining -= 1
+                                                print(f"[Air Sword] {selected_champion.name} has 1 extra move step remaining — stay selected.")
+                                                # Do NOT mark has_moved yet; champion stays selected
+                                            else:
+                                                selected_champion.has_moved = True  # Mark as moved this turn
+                                                selected_champion = None
+                                                if check_movement_left() == 0:
+                                                    advance_turn_phase()
                                         else:
                                             selected_champion = None
                                             util.play_sound(filename=None, volume=0.3, pitch_hz=330.0, duration_ms=80)
@@ -1536,7 +1831,7 @@ def main():
                         f"Roll: {combat_result['allied_roll']}  Total: {combat_result['allied_total']}",
                         True, allied_outcome_color
                     )
-                    screen.blit(txt_allied_result, (50, 198))
+                    screen.blit(txt_allied_result, (50, 850))
 
                 if not left_items:
                     txt_empty = font_item_detail.render("No units present", True, settings.COLOR_TEXT_MUTED)
@@ -1565,9 +1860,9 @@ def main():
                     
                 # Column 2: Opposition Side (x=430)
                 txt_col_mid = font_col_header.render("OPPOSITION SIDE", True, settings.COLOR_NEON_PINK)
-                screen.blit(txt_col_mid, (430, 150))
+                screen.blit(txt_col_mid, (530, 150))
                 txt_str_mid = font_item_name.render(f"Strength: {calculate_forces_strength(middle_items)}", True, settings.COLOR_TEXT_PRIMARY)
-                screen.blit(txt_str_mid, (430, 175))
+                screen.blit(txt_str_mid, (530, 175))
 
                 # Combat result display — Opposition column
                 if combat_result is not None:
@@ -1577,7 +1872,7 @@ def main():
                         f"Roll: {combat_result['opposed_roll']}  Total: {combat_result['opposed_total']}",
                         True, opposed_outcome_color
                     )
-                    screen.blit(txt_opposed_result, (430, 198))
+                    screen.blit(txt_opposed_result, (530, 850))
 
                 if not middle_items:
                     txt_empty = font_item_detail.render("No units present", True, settings.COLOR_TEXT_MUTED)
@@ -1635,25 +1930,26 @@ def main():
                             txt_strength = font_item_detail.render("Structure", True, (255, 215, 0))
                         screen.blit(txt_strength, (810 + avatar_size + 15, item_y + int(avatar_size * 0.5)))
                     
-            # Draw Engage & Defer buttons
+            # Draw Engage & Defer/Continue buttons
             engage_btn_rect = pygame.Rect(340, 900, 240, 60)
             defer_btn_rect = pygame.Rect(620, 900, 240, 60)
-            
-            # Engage Button Hover
-            is_hover_engage = engage_btn_rect.collidepoint(mouse_x, mouse_y)
-            if is_hover_engage:
-                pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, engage_btn_rect, border_radius=10)
-                text_color_engage = (11, 14, 20)
-            else:
-                pygame.draw.rect(screen, (20, 24, 33), engage_btn_rect, border_radius=10)
-                pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, engage_btn_rect, width=2, border_radius=10)
-                text_color_engage = settings.COLOR_NEON_GREEN
-                
+
             font_btn = util.get_font(20, bold=True)
-            txt_engage = font_btn.render("ENGAGE", True, text_color_engage)
-            screen.blit(txt_engage, txt_engage.get_rect(center=engage_btn_rect.center))
-            
-            # Defer Button Hover
+
+            # Only show Engage button before combat has been resolved
+            if combat_result is None:
+                is_hover_engage = engage_btn_rect.collidepoint(mouse_x, mouse_y)
+                if is_hover_engage:
+                    pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, engage_btn_rect, border_radius=10)
+                    text_color_engage = (11, 14, 20)
+                else:
+                    pygame.draw.rect(screen, (20, 24, 33), engage_btn_rect, border_radius=10)
+                    pygame.draw.rect(screen, settings.COLOR_NEON_GREEN, engage_btn_rect, width=2, border_radius=10)
+                    text_color_engage = settings.COLOR_NEON_GREEN
+                txt_engage = font_btn.render("ENGAGE", True, text_color_engage)
+                screen.blit(txt_engage, txt_engage.get_rect(center=engage_btn_rect.center))
+
+            # Defer button — relabeled CONTINUE after combat resolves
             is_hover_defer = defer_btn_rect.collidepoint(mouse_x, mouse_y)
             if is_hover_defer:
                 pygame.draw.rect(screen, settings.COLOR_NEON_PINK, defer_btn_rect, border_radius=10)
@@ -1662,8 +1958,9 @@ def main():
                 pygame.draw.rect(screen, (20, 24, 33), defer_btn_rect, border_radius=10)
                 pygame.draw.rect(screen, settings.COLOR_NEON_PINK, defer_btn_rect, width=2, border_radius=10)
                 text_color_defer = settings.COLOR_NEON_PINK
-                
-            txt_defer = font_btn.render("DEFER", True, text_color_defer)
+
+            defer_label = "CONTINUE" if combat_result is not None else "DEFER"
+            txt_defer = font_btn.render(defer_label, True, text_color_defer)
             screen.blit(txt_defer, txt_defer.get_rect(center=defer_btn_rect.center))
             
             pygame.display.flip()
@@ -1714,7 +2011,9 @@ def main():
                 show_champ_profile = True
                 
         if show_champ_profile:
-            draw_left_champion_statistics_panel(screen, selected_champion, left_panel_rect, map_grid, mouse_x, mouse_y)
+            art_tooltip = draw_left_champion_statistics_panel(screen, selected_champion, left_panel_rect, map_grid, mouse_x, mouse_y)
+            if art_tooltip is not None:
+                tooltip_to_draw = art_tooltip
             
         # 2.1 Render Left Statistics Panel for selected Army (only if not in movement phase)
         elif selected_army is not None and current_turn_phase != settings.TURN_PHASE_MOVE:

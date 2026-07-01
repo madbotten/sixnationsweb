@@ -24,6 +24,8 @@ class Champion:
         self.r = r
         self.has_moved = False
         self.artifact = None
+        self._strength = 3       # Mutable; artifacts/damage may adjust this
+        self.moves_remaining = 0  # Extra moves granted by Air Sword
 
     @property
     def faction(self):
@@ -45,8 +47,13 @@ class Champion:
 
     @property
     def strength(self):
-        """Returns the strength of the champion (always 3)."""
-        return 3
+        """Returns the current strength of the champion (default 3)."""
+        return self._strength
+
+    @strength.setter
+    def strength(self, val):
+        """Sets the champion's strength."""
+        self._strength = val
 
     @property
     def hex_location(self):

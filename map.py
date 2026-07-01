@@ -15,6 +15,7 @@ class Tile:
         self.terrain_type = terrain_type
         self.owner = owner  # 'player', 'bot', or a Faction object
         self.is_stronghold = False
+        self.stronghold_strength = 3  # Defensive strength of this stronghold tile
         self.has_artifact = False
         self.artifact = None
         
@@ -280,6 +281,10 @@ class MapGrid:
             tile.artifact = None
             tile.has_artifact = False
             print(f"[Artifact Claimed] {champion.name} claimed {champion.artifact.name}!")
+            # Air Sword grants an extra move step this turn
+            if champion.artifact.power == "AIR_SWORD":
+                champion.moves_remaining = 1
+                print(f"[Air Sword] {champion.name} may take one additional move this turn.")
 
     def get_champion_count(self, faction):
         """
@@ -741,13 +746,14 @@ class MapGrid:
                         screen.blit(txt_sh, txt_sh.get_rect(center=(cx, cy - h / 3.0 - 3.0)))
                     except:
                         pass
-                elif getattr(tile, 'has_artifact', False):
+                elif getattr(tile, 'has_artifact', False) and tile.artifact is not None:
                     try:
                         font_art = util.get_font(10, bold=True)
                         txt_art = font_art.render("ARTIFACT", True, settings.COLOR_NEON_PINK)
                         screen.blit(txt_art, txt_art.get_rect(center=(cx, cy - h / 3.0 - 3.0)))
                     except:
                         pass
+
                 
                 # Dynamic layout scaling based on current hex width (baseline 293)
                 scale = self.hex_width / 293.0
