@@ -1,9 +1,9 @@
 """
 Six Nations — Bot AI  (Phase 6)
 
-Blend:
-  Turn  1 → ~10 % intent, 90 % random
-  Turn 50 → ~90 % intent, 10 % random
+Blend (controlled by settings.BOT_INITIAL_RANDOM):
+  Turn  1 → (1 - BOT_INITIAL_RANDOM) intent  [default 40% intent / 60% random]
+  Turn 50 → ~90% intent, 10% random
   (linear interpolation, capped at each end)
 
 Intent priority scores (approximate):
@@ -36,9 +36,10 @@ import settings
 class BotMemory:
     """Stores a record of every move the human player made, and tracks suspicion scores per nation."""
 
-    def __init__(self):
+    def __init__(self, debug=False):
         self.moves         = []   # chronological move records
         self.nation_scores = {}   # ring_index -> int score
+        self.debug         = debug
 
     def record(self, turn_number, nation, unit_type_str, from_hex, to_hex, action_type):
         """
@@ -60,21 +61,37 @@ class BotMemory:
     # Scoring API
     # ------------------------------------------------------------------
 
-    def add_score(self, ring_index, points):
+    def add_score(self, ring_index, points, nation_names=None):
         """
         Add (or subtract) suspicion points for a nation.
         When points > 0, half (floor) also propagates to each adjacent ally
         on the diplomacy ring, since players tend to move their allies too.
         Negative penalties do NOT propagate to allies.
+        nation_names: optional list of color-name strings indexed by ring_index,
+                      used for debug output.
         """
-        self.nation_scores[ring_index] = \
-            self.nation_scores.get(ring_index, 0) + points
+        names = nation_names or {}
+
+        def _name(ri):
+            if isinstance(names, list) and ri < len(names):
+                return names[ri]
+            return str(ri)
+
+        old = self.nation_scores.get(ring_index, 0)
+        self.nation_scores[ring_index] = old + points
+        new = self.nation_scores[ring_index]
+        if self.debug:
+            sign = '+' if points >= 0 else ''
+            print(f"  [Score] {_name(ring_index)}: {old} {sign}{points} -> {new}")
+
         if points > 0:
             ally_pts = points // 2
             if ally_pts > 0:
                 for ally_ri in ((ring_index - 1) % 6, (ring_index + 1) % 6):
-                    self.nation_scores[ally_ri] = \
-                        self.nation_scores.get(ally_ri, 0) + ally_pts
+                    old_a = self.nation_scores.get(ally_ri, 0)
+                    self.nation_scores[ally_ri] = old_a + ally_pts
+                    if self.debug:
+                        print(f"  [Score]   ally {_name(ally_ri)}: {old_a} +{ally_pts} -> {self.nation_scores[ally_ri]}")
 
     def guess_faction(self, nation_list, exclude_ring_indices=()):
         """
@@ -121,9 +138,14 @@ class BotMemory:
 # ---------------------------------------------------------------------------
 
 def _intent_prob(turn_number: int) -> float:
-    """Probability of making a strategic intent move on this turn."""
-    t = min(max(turn_number, 1), 50)
-    return 0.10 + (t - 1) / 49.0 * 0.80   # 10% -> 90%
+    """Probability of making a strategic intent move on this turn.
+
+    Interpolates linearly from (1 - settings.BOT_INITIAL_RANDOM) at turn 1
+    up to 0.90 at turn 50.  BOT_INITIAL_RANDOM=0.60 → starts at 40% intent.
+    """
+    t         = min(max(turn_number, 1), 50)
+    start_p   = 1.0 - settings.BOT_INITIAL_RANDOM   # intent prob at turn 1
+    return start_p + (t - 1) / 49.0 * (0.90 - start_p)
 
 
 def _axial_dist(q1, r1, q2, r2) -> int:
@@ -159,7 +181,8 @@ def _enemy_set(ring_index):
     return {(ring_index + 2) % 6, (ring_index + 3) % 6, (ring_index + 4) % 6}
 
 
-def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri, turn_number):
+def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri,
+                                    turn_number, nation_list=None):
     """
     After BOT_ADAPTIVE_TURN, apply two sovereign-targeting rules:
 
@@ -170,8 +193,10 @@ def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri, t
 
     Rule 2 — Don't help the human win:
       If an attack would kill a sovereign that is an enemy of the suspected
-      human (helping the human's win condition) but NOT an enemy of the bot's
-      own color, suppress the action with a large penalty (-800).
+      human (helping the human's win condition), suppress it (-800) UNLESS
+      the sovereign is also a bot target AND the human still needs 2+ kills.
+      — If the human is already one kill away from winning, suppress ALL
+        their remaining target kills (even shared bot+human targets).
 
     Returns a new (possibly reweighted) action list.
     """
@@ -180,6 +205,23 @@ def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri, t
 
     bot_enemy_ri   = _enemy_set(bot_ri)
     human_enemy_ri = _enemy_set(suspected_human_ri)
+
+    # Count how many of the suspected human's 3 targets are already ghost nations
+    human_kills_so_far = 0
+    bot_kills_so_far   = 0
+    if nation_list:
+        human_kills_so_far = sum(
+            1 for n in nation_list
+            if n.ring_index in human_enemy_ri and n.is_ghost
+        )
+        bot_kills_so_far = sum(
+            1 for n in nation_list
+            if n.ring_index in bot_enemy_ri and n.is_ghost
+        )
+    # If human already has 1 kill, any remaining human-target sovereign kill wins for them
+    human_one_away = (human_kills_so_far >= 1)
+    # If bot also has 1 kill, killing a shared target gives a tie — that's acceptable
+    bot_one_away   = (bot_kills_so_far >= 1)
 
     result = []
     for action in actions:
@@ -191,11 +233,19 @@ def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri, t
             for sov in target_sovs:
                 sov_ri = sov.nation.ring_index
                 if sov_ri == suspected_human_ri:
-                    # Rule 1: kill the suspected human's sovereign — top priority
+                    # Rule 1: kill the suspected human's own sovereign — top priority
                     score += 800
-                elif sov_ri in human_enemy_ri and sov_ri not in bot_enemy_ri:
-                    # Rule 2: would only help human win, not bot — strongly avoid
-                    score -= 800
+                elif sov_ri in human_enemy_ri:
+                    if sov_ri not in bot_enemy_ri:
+                        # Pure human benefit, not a bot target — suppress
+                        score -= 800
+                    elif human_one_away and bot_one_away:
+                        # Shared target, both one kill away → tie result — allow
+                        pass
+                    elif human_one_away:
+                        # Would win for human but bot still needs 2+ — suppress
+                        score -= 800
+                    # else: shared target, human still needs 2+ kills — allow
         result.append((score, atype, *payload))
     return result
 
@@ -339,41 +389,48 @@ def _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
 
     # Apply adaptive sovereign intelligence
     actions = _adaptive_sovereign_adjustments(
-        grid, actions, bot_ri, suspected_human_ri, turn_number)
+        grid, actions, bot_ri, suspected_human_ri, turn_number,
+        nation_list=nation_list)
 
     return actions
 
 
 # ---------------------------------------------------------------------------
-# Action execution
 # ---------------------------------------------------------------------------
 
 def _execute(grid, action):
     """
-    Execute one scored action tuple.
+    Execute one scored action tuple  (score, atype, actor, coord[, path]).
+    path is 'intent' | 'random' — used for the debug description label.
     Returns (moved_nation, action_type_str, description) or (None, None, reason).
     """
-    score, atype, *payload = action
+    score, atype, *rest = action
+    # Last element may be a path label; everything before it is payload
+    if rest and isinstance(rest[-1], str) and rest[-1] in ('intent', 'random'):
+        payload, path = rest[:-1], rest[-1]
+        tag = f"[Bot-{path}]"
+    else:
+        payload = rest
+        tag = "[Bot]"
 
     if atype == 'attack':
         unit, coord = payload
         success, msg, _ = grid.resolve_attack(unit, *coord)
         if success:
             return unit.nation, 'attack', \
-                f"[Bot-intent] Attack {unit.nation.color_name} -> {coord}  score={score:.0f}  {msg}"
-        return None, None, f"[Bot-intent] Attack failed: {msg}"
+                f"{tag} Attack {unit.nation.color_name} -> {coord}  score={score:.0f}  {msg}"
+        return None, None, f"{tag} Attack failed: {msg}"
 
     if atype == 'move':
         unit, coord = payload
         grid.apply_move(unit, *coord)
         return unit.nation, 'move', \
-            f"[Bot-intent] Move {unit.nation.color_name} -> {coord}  score={score:.0f}"
+            f"{tag} Move {unit.nation.color_name} -> {coord}  score={score:.0f}"
 
     if atype == 'recruit':
         nation, coord = payload
         grid.recruit_army(nation, *coord)
-        return nation, 'recruit', \
-            f"[Bot-intent] Recruit {nation.color_name} at {coord}"
+        return nation, 'recruit', f"{tag} Recruit {nation.color_name} at {coord}"
 
     if atype == 'promote':
         nation, coord = payload
@@ -381,11 +438,10 @@ def _execute(grid, action):
                        if a.nation.ring_index == nation.ring_index]
         if armies_here:
             grid.promote_to_champion(armies_here[0])
-            return nation, 'promote', \
-                f"[Bot-intent] Promote {nation.color_name} at {coord}"
-        return None, None, "[Bot-intent] Promote: no army found"
+            return nation, 'promote', f"{tag} Promote {nation.color_name} at {coord}"
+        return None, None, f"{tag} Promote: no army found"
 
-    return None, None, f"[Bot-intent] Unknown action: {atype}"
+    return None, None, f"{tag} Unknown action: {atype}"
 
 
 # ---------------------------------------------------------------------------
@@ -495,7 +551,8 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
         best      = max(a[0] for a in actions)
         threshold = (best * 0.85) if best > 0 else (best - 50)
         top_tier  = [a for a in actions if a[0] >= threshold]
-        return random.choice(top_tier)
+        chosen = random.choice(top_tier)
+        return (*chosen, 'intent')   # tag with path label
 
     else:
         # Build random pool — also apply adaptive sovereign rules
@@ -513,12 +570,14 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
         if not pool:
             return None
         pool = _adaptive_sovereign_adjustments(
-            grid, pool, bot_ri, suspected_human_ri, turn_number)
+            grid, pool, bot_ri, suspected_human_ri, turn_number,
+            nation_list=nation_list)
         # For random, still pick randomly but exclude strongly-penalised actions
         best_score  = max(a[0] for a in pool)
         if best_score > -500:
             pool = [a for a in pool if a[0] > -500]
-        return random.choice(pool)
+        chosen = random.choice(pool)
+        return (*chosen, 'random')   # tag with path label
 
 
 def execute_bot_action(grid, action):

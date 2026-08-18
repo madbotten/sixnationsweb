@@ -60,3 +60,13 @@ COLOR_PANEL_BORDER = ( 34,  41,  58)
 #   • Prioritise attacks on the suspected human sovereign
 #   • Avoid attacks on sovereigns that only benefit the human player
 BOT_ADAPTIVE_TURN = 25
+
+# Fraction of moves that are RANDOM at the very start of the game (turn 1).
+# By turn 50 the bot will always be ~10% random regardless of this setting.
+# Range: 0.0 (pure intent from turn 1) to 1.0 (always random).
+BOT_INITIAL_RANDOM = 0.60   # 60% random at start → 40% intent
+
+# -- Deployment mode ----------------------------------------------------------
+# 'DEBUG'  : show developer overlays (bot faction guess, etc.)
+# 'EXPORT' : clean release build — no debug overlays shown
+DEPLOYMENT = 'DEBUG'

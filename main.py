@@ -256,44 +256,60 @@ def draw_error(screen, font_small, message, alpha):
 
 
 def draw_game_over(screen, font_large, font_small, result):
-    """Semi-transparent game-over overlay."""
-    overlay = pygame.Surface((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT),
-                             pygame.SRCALPHA)
-    overlay.fill((0, 0, 0, 160))
+    """Semi-transparent game-over overlay with bold, shadowed text."""
+    W, H = settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT
+
+    # Darker overlay so the board fades further into the background
+    overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 210))
     screen.blit(overlay, (0, 0))
 
     if result == GAME_RESULT_WIN_SCORE:
         msg = "YOU WIN!"
-        col = (80, 230, 130)
+        col = (80, 235, 140)
         sub = "You have destroyed 2 of your 3 target sovereigns."
     elif result == GAME_RESULT_WIN_OPPONENT_DEAD:
         msg = "YOU WIN!"
-        col = (80, 230, 130)
+        col = (80, 235, 140)
         sub = "Your opponent\u2019s secret sovereign has been destroyed."
     elif result == GAME_RESULT_LOSS_SOVEREIGN:
         msg = "YOU LOSE."
-        col = (220, 80, 60)
+        col = (235, 80, 60)
         sub = "Your secret nation\u2019s sovereign has been destroyed."
     elif result == GAME_RESULT_TIE:
-        msg = "IT'S A TIE."
-        col = (210, 195, 55)
+        msg = "IT\u2019S A TIE."
+        col = (220, 205, 60)
         sub = "Both secret nations share the same victories \u2014 a simultaneous win."
     else:   # GAME_RESULT_LOSS_BOT_SCORE
         msg = "YOU LOSE."
-        col = (220, 80, 60)
+        col = (235, 80, 60)
         sub = "Your opponent has destroyed 2 of their 3 target sovereigns."
 
-    title = font_large.render(msg, True, col)
-    screen.blit(title, title.get_rect(
-        center=(settings.SCREEN_WIDTH // 2, settings.SCREEN_HEIGHT // 2 - 30)))
+    font_title = util.get_font(72, bold=True)
+    font_sub   = util.get_font(24, bold=True)
+    font_hint  = util.get_font(18)
+    SHADOW     = (0, 0, 0)
 
-    hint = font_small.render(sub, True, settings.COLOR_TEXT_MUTED)
-    screen.blit(hint, hint.get_rect(
-        center=(settings.SCREEN_WIDTH // 2, settings.SCREEN_HEIGHT // 2 + 20)))
+    # Title
+    cy_title = H // 2 - 60
+    title_surf = font_title.render(msg, True, col)
+    shadow_surf = font_title.render(msg, True, SHADOW)
+    screen.blit(shadow_surf, shadow_surf.get_rect(center=(W // 2 + 3, cy_title + 3)))
+    screen.blit(title_surf,  title_surf.get_rect(center=(W // 2, cy_title)))
 
-    esc = font_small.render("Press ESC to quit.", True, settings.COLOR_TEXT_MUTED)
-    screen.blit(esc, esc.get_rect(
-        center=(settings.SCREEN_WIDTH // 2, settings.SCREEN_HEIGHT // 2 + 60)))
+    # Subtitle
+    cy_sub = H // 2 + 20
+    sub_surf = font_sub.render(sub, True, (230, 235, 255))
+    sh_sub   = font_sub.render(sub, True, SHADOW)
+    screen.blit(sh_sub,  sh_sub.get_rect(center=(W // 2 + 2, cy_sub + 2)))
+    screen.blit(sub_surf, sub_surf.get_rect(center=(W // 2, cy_sub)))
+
+    # ESC hint
+    cy_esc = H // 2 + 66
+    esc_surf = font_hint.render("Press ESC to quit.", True, (160, 168, 195))
+    sh_esc   = font_hint.render("Press ESC to quit.", True, SHADOW)
+    screen.blit(sh_esc,  sh_esc.get_rect(center=(W // 2 + 1, cy_esc + 1)))
+    screen.blit(esc_surf, esc_surf.get_rect(center=(W // 2, cy_esc)))
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +519,7 @@ def main():
     sidebar_buttons  = []
 
     # Bot memory: records all human moves for future analysis
-    bot_memory = BotMemory()
+    bot_memory = BotMemory(debug=(settings.DEPLOYMENT == 'DEBUG'))
 
     # Bot animation flash state
     bot_pending_action    = None
@@ -622,7 +638,9 @@ def main():
                         moved_nation     = pending_nation
                         bot_memory.record(turn_number, pending_nation,
                                           None, None, (tq, tr), 'recruit')
-                        bot_memory.add_score(pending_nation.ring_index, 2)
+                        if settings.DEPLOYMENT == 'DEBUG':
+                            print(f"[Human recruit] T{turn_number} {pending_nation.color_name} at {(tq,tr)}")
+                        bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
                         action_pending   = pending_nation = None
                         highlight_muster = highlight_promo = set()
 
@@ -653,7 +671,9 @@ def main():
                             moved_nation     = pending_nation
                             bot_memory.record(turn_number, pending_nation,
                                               None, (tq, tr), None, 'promote')
-                            bot_memory.add_score(pending_nation.ring_index, 2)
+                            if settings.DEPLOYMENT == 'DEBUG':
+                                print(f"[Human promote] T{turn_number} {pending_nation.color_name} at {(tq,tr)}")
+                            bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
                             action_pending   = pending_nation = None
                             highlight_muster = highlight_promo = set()
 
@@ -710,11 +730,25 @@ def main():
                                           drag_unit_type, from_hex, (tq, tr), 'move')
                         # Scoring
                         ri = drag_unit.nation.ring_index
-                        bot_memory.add_score(ri, 2)
+                        _nnames = settings.NATION_NAMES
+                        if settings.DEPLOYMENT == 'DEBUG':
+                            print(f"[Human move] T{turn_number} {drag_unit.nation.color_name} {_unit_type_snap} {from_hex}->{(tq,tr)}")
+                        bot_memory.add_score(ri, 2, _nnames)
                         if _unit_type_snap == 'champion' and grid.is_supported(_unit_snap):
-                            bot_memory.add_score(ri, 4)
-                        elif _unit_type_snap == 'sovereign' and not grid.is_supported(_unit_snap):
-                            bot_memory.add_score(ri, -4)
+                            bot_memory.add_score(ri, 4, _nnames)
+                        elif _unit_type_snap == 'sovereign':
+                            if not grid.is_supported(_unit_snap):
+                                bot_memory.add_score(ri, -4, _nnames)
+                            # Center-proximity: moving a sovereign toward the center
+                            # suggests the player is NOT secretly allied with it
+                            # (a true ally would protect their sovereign, not advance it).
+                            fq, fr = from_hex
+                            old_d = max(abs(fq), abs(fr), abs(fq + fr))
+                            new_d = max(abs(tq), abs(tr), abs(tq + tr))
+                            if new_d <= 1:      # entered center 7 hexes
+                                bot_memory.add_score(ri, -3, _nnames)
+                            elif new_d < old_d: # moved closer to center, not yet center-7
+                                bot_memory.add_score(ri, -2, _nnames)
                     else:
                         error_message = msg; error_alpha = 255.0
 
@@ -736,9 +770,12 @@ def main():
                         moved_nation = drag_unit.nation
                         bot_memory.record(turn_number, drag_unit.nation,
                                           drag_unit_type, from_hex, (tq, tr), 'attack')
-                        bot_memory.add_score(drag_unit.nation.ring_index, 2)
+                        _nnames = settings.NATION_NAMES
+                        if settings.DEPLOYMENT == 'DEBUG':
+                            print(f"[Human attack] T{turn_number} {drag_unit.nation.color_name} {from_hex}->{(tq,tr)}")
+                        bot_memory.add_score(drag_unit.nation.ring_index, 2, _nnames)
                         for _ri in _target_ris:
-                            bot_memory.add_score(_ri, -4)
+                            bot_memory.add_score(_ri, -4, _nnames)
                     else:
                         error_message = msg; error_alpha = 255.0
 
@@ -804,7 +841,8 @@ def main():
                 # Execute the action
                 moved_nation, _atype, bot_msg = bot_ai.execute_bot_action(
                     grid, bot_pending_action)
-                print(f"[Bot] {bot_msg}")
+                if settings.DEPLOYMENT == 'DEBUG':
+                    print(f"[Bot] {bot_msg}")
 
                 if moved_nation:
                     bot_player.add_to_cooldown(moved_nation)
@@ -899,14 +937,15 @@ def main():
             draw_cooldown_panel(screen, font_small, players, global_cooldown_idx)
             draw_error(screen, font_small, error_message, error_alpha)
 
-            # Debug: bot faction guess (top-left, below top bar)
-            _guess = bot_memory.guess_faction(
-                nation_list,
-                exclude_ring_indices=(bot_nation.ring_index,))
-            if _guess:
-                _gt = f"Bot guess for player: {_guess.color_name}"
-                _gs = font_small.render(_gt, True, _guess.color_rgb)
-                screen.blit(_gs, (14, settings.TOP_BAR_HEIGHT + 8))
+            # Debug: bot faction guess (top-left, below top bar) — DEBUG mode only
+            if settings.DEPLOYMENT == 'DEBUG':
+                _guess = bot_memory.guess_faction(
+                    nation_list,
+                    exclude_ring_indices=(bot_nation.ring_index,))
+                if _guess:
+                    _gt = f"Bot guess for player: {_guess.color_name}"
+                    _gs = font_small.render(_gt, True, _guess.color_rgb)
+                    screen.blit(_gs, (14, settings.TOP_BAR_HEIGHT + 8))
 
             # Drag ghost drawn last (on top of everything)
             if drag_unit and drag_unit_type:
