@@ -33,10 +33,11 @@ import random
 # ---------------------------------------------------------------------------
 
 class BotMemory:
-    """Stores a record of every move the human player made."""
+    """Stores a record of every move the human player made, and tracks suspicion scores per nation."""
 
     def __init__(self):
-        self.moves = []   # list of dicts
+        self.moves         = []   # chronological move records
+        self.nation_scores = {}   # ring_index -> int score
 
     def record(self, turn_number, nation, unit_type_str, from_hex, to_hex, action_type):
         """
@@ -53,6 +54,52 @@ class BotMemory:
             'to':     to_hex,
             'action': action_type,
         })
+
+    # ------------------------------------------------------------------
+    # Scoring API
+    # ------------------------------------------------------------------
+
+    def add_score(self, ring_index, points):
+        """
+        Add (or subtract) suspicion points for a nation.
+        When points > 0, half (floor) also propagates to each adjacent ally
+        on the diplomacy ring, since players tend to move their allies too.
+        Negative penalties do NOT propagate to allies.
+        """
+        self.nation_scores[ring_index] = \
+            self.nation_scores.get(ring_index, 0) + points
+        if points > 0:
+            ally_pts = points // 2
+            if ally_pts > 0:
+                for ally_ri in ((ring_index - 1) % 6, (ring_index + 1) % 6):
+                    self.nation_scores[ally_ri] = \
+                        self.nation_scores.get(ally_ri, 0) + ally_pts
+
+    def guess_faction(self, nation_list, exclude_ring_indices=()):
+        """
+        Return the Nation with the highest suspicion score,
+        or None if no moves have been recorded yet.
+        exclude_ring_indices: iterable of ring_index values to skip
+        (use to prevent the bot from guessing its own secret nation).
+        """
+        if not self.nation_scores:
+            return None
+        candidates = {
+            ri: pts
+            for ri, pts in self.nation_scores.items()
+            if ri not in exclude_ring_indices
+        }
+        if not candidates:
+            return None
+        best_ri = max(candidates, key=lambda ri: candidates[ri])
+        for n in nation_list:
+            if n.ring_index == best_ri:
+                return n
+        return None
+
+    # ------------------------------------------------------------------
+    # Utility
+    # ------------------------------------------------------------------
 
     def nation_move_counts(self):
         """Return dict {ring_index: count} of how often human moved each nation."""

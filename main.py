@@ -622,6 +622,7 @@ def main():
                         moved_nation     = pending_nation
                         bot_memory.record(turn_number, pending_nation,
                                           None, None, (tq, tr), 'recruit')
+                        bot_memory.add_score(pending_nation.ring_index, 2)
                         action_pending   = pending_nation = None
                         highlight_muster = highlight_promo = set()
 
@@ -652,6 +653,7 @@ def main():
                             moved_nation     = pending_nation
                             bot_memory.record(turn_number, pending_nation,
                                               None, (tq, tr), None, 'promote')
+                            bot_memory.add_score(pending_nation.ring_index, 2)
                             action_pending   = pending_nation = None
                             highlight_muster = highlight_promo = set()
 
@@ -699,21 +701,44 @@ def main():
 
                 if (tq, tr) in highlight_move:
                     from_hex = (drag_unit.q, drag_unit.r)
+                    _unit_type_snap = drag_unit_type  # capture before drag clears
+                    _unit_snap      = drag_unit        # capture before apply_move moves it
                     success, msg = grid.apply_move(drag_unit, tq, tr)
                     if success:
                         moved_nation = drag_unit.nation
                         bot_memory.record(turn_number, drag_unit.nation,
                                           drag_unit_type, from_hex, (tq, tr), 'move')
+                        # Scoring
+                        ri = drag_unit.nation.ring_index
+                        bot_memory.add_score(ri, 2)
+                        if _unit_type_snap == 'champion' and grid.is_supported(_unit_snap):
+                            bot_memory.add_score(ri, 4)
+                        elif _unit_type_snap == 'sovereign' and not grid.is_supported(_unit_snap):
+                            bot_memory.add_score(ri, -4)
                     else:
                         error_message = msg; error_alpha = 255.0
 
                 elif (tq, tr) in highlight_attack:
                     from_hex = (drag_unit.q, drag_unit.r)
+                    # Capture target-hex nations BEFORE resolving (destroyed units disappear)
+                    _target_ris = set()
+                    for _u in grid.sovereigns.get((tq, tr), []):
+                        if drag_unit.nation.is_enemy(_u.nation):
+                            _target_ris.add(_u.nation.ring_index)
+                    for _u in grid.champions.get((tq, tr), []):
+                        if drag_unit.nation.is_enemy(_u.nation):
+                            _target_ris.add(_u.nation.ring_index)
+                    for _u in grid.armies.get((tq, tr), []):
+                        if drag_unit.nation.is_enemy(_u.nation):
+                            _target_ris.add(_u.nation.ring_index)
                     success, msg, _ = grid.resolve_attack(drag_unit, tq, tr)
                     if success:
                         moved_nation = drag_unit.nation
                         bot_memory.record(turn_number, drag_unit.nation,
                                           drag_unit_type, from_hex, (tq, tr), 'attack')
+                        bot_memory.add_score(drag_unit.nation.ring_index, 2)
+                        for _ri in _target_ris:
+                            bot_memory.add_score(_ri, -4)
                     else:
                         error_message = msg; error_alpha = 255.0
 
@@ -866,6 +891,15 @@ def main():
             draw_diplo_panel(screen, diplo_img, font_small)
             draw_cooldown_panel(screen, font_small, players, global_cooldown_idx)
             draw_error(screen, font_small, error_message, error_alpha)
+
+            # Debug: bot faction guess (top-left, below top bar)
+            _guess = bot_memory.guess_faction(
+                nation_list,
+                exclude_ring_indices=(bot_nation.ring_index,))
+            if _guess:
+                _gt = f"Bot guess for player: {_guess.color_name}"
+                _gs = font_small.render(_gt, True, _guess.color_rgb)
+                screen.blit(_gs, (14, settings.TOP_BAR_HEIGHT + 8))
 
             # Drag ghost drawn last (on top of everything)
             if drag_unit and drag_unit_type:
