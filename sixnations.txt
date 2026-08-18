@@ -107,7 +107,7 @@ VICTORY CONDITIONS
 
 A player wins for their secret Nation assignment by destroying the Sovereigns of 2 of their 3 enemy nations (the 3 nations opposite them on the diplomatic ring).
 
-Nations that lose their sovereign become ghost nations. They can no longer recruit new armies or promote champions. Their pieces remain in play, should a player still want to use them as their move.
+Nations that lose their sovereign become ghost nations. They can no longer recruit new armies or promote champions. Their pieces remain in play, should a player still want to use them as their move. Ghost nations lose their coloration on the map as a reminder they have been decapitated.
 
 A player loses immediately if their secret assigned Nation loses its sovereign.
 

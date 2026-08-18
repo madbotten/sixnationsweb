@@ -677,20 +677,22 @@ class MapGrid:
 
     def draw(self, screen: pygame.Surface,
              highlight_move=None, highlight_attack=None,
-             drag_unit=None, frozen_nations=None):
+             drag_unit=None, frozen_nations=None, ghost_nations=None):
         """
         Render hex board and units.
         highlight_move   : set of (q,r) to outline in green (valid moves).
         highlight_attack : set of (q,r) to outline in red   (valid attacks).
         drag_unit        : unit currently being dragged (skip drawing it at original pos).
+        ghost_nations    : set of ring_index values whose territory shading is suppressed.
         """
         w, h = self.hex_width, self.hex_height
+        _ghost_ri = ghost_nations or set()
 
         # -- Hex tiles -------------------------------------------------------
         for (q, r), tile in self.tiles.items():
             cx, cy = self.screen_pos(q, r)
 
-            if tile.owner is not None:
+            if tile.owner is not None and tile.owner.ring_index not in _ghost_ri:
                 fill   = tile.owner.color_light
                 border = tile.owner.color_rgb
                 bwidth = 3 if tile.is_corner else 2

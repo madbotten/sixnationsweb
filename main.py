@@ -868,12 +868,14 @@ def main():
             eligible_ring_idx = {n.ring_index for n in eligible_now}
             frozen_ring_idx   = {n.ring_index for n in nation_list
                                  if n.ring_index not in eligible_ring_idx}
+            ghost_ring_idx    = {n.ring_index for n in nation_list if n.is_ghost}
 
             grid.draw(screen,
                       highlight_move=highlight_move,
                       highlight_attack=highlight_attack,
                       drag_unit=drag_unit,
-                      frozen_nations=frozen_ring_idx)
+                      frozen_nations=frozen_ring_idx,
+                      ghost_nations=ghost_ring_idx)
 
             # Action-pending highlights drawn on top of board
             hw, hh = grid.hex_width, grid.hex_height
