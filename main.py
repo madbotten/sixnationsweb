@@ -771,8 +771,13 @@ def main():
             bot_think_timer -= dt
             if bot_think_timer <= 0:
                 # Compute the action (don't execute yet — animate first)
+                _suspected = bot_memory.guess_faction(
+                    nation_list,
+                    exclude_ring_indices=(bot_nation.ring_index,))
+                _suspected_ri = _suspected.ring_index if _suspected else None
                 bot_pending_action = bot_ai.compute_bot_action(
-                    grid, bot_player, global_cooldown_idx, nation_list, turn_number)
+                    grid, bot_player, global_cooldown_idx, nation_list,
+                    turn_number, suspected_human_ri=_suspected_ri)
                 if bot_pending_action is None:
                     # No legal move at all; skip straight to human turn
                     game_state         = STATE_HUMAN_TURN

@@ -26,6 +26,7 @@ The bot also keeps a BotMemory record of every human move for future analysis.
 """
 
 import random
+import settings
 
 
 # ---------------------------------------------------------------------------
@@ -150,8 +151,54 @@ def _eligible_nations(player, global_cooldown_idx, nation_list):
 
 
 # ---------------------------------------------------------------------------
-# Scoring
+# Scoring helpers
 # ---------------------------------------------------------------------------
+
+def _enemy_set(ring_index):
+    """Return the 3 ring-indices that are enemies of the given nation."""
+    return {(ring_index + 2) % 6, (ring_index + 3) % 6, (ring_index + 4) % 6}
+
+
+def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri, turn_number):
+    """
+    After BOT_ADAPTIVE_TURN, apply two sovereign-targeting rules:
+
+    Rule 1 — Hunt the suspected human sovereign:
+      If a legal attack would kill a sovereign of the suspected human faction,
+      give that action a large bonus (+800) — even if that nation is normally
+      an ally of the bot.
+
+    Rule 2 — Don't help the human win:
+      If an attack would kill a sovereign that is an enemy of the suspected
+      human (helping the human's win condition) but NOT an enemy of the bot's
+      own color, suppress the action with a large penalty (-800).
+
+    Returns a new (possibly reweighted) action list.
+    """
+    if turn_number < settings.BOT_ADAPTIVE_TURN or suspected_human_ri is None:
+        return actions
+
+    bot_enemy_ri   = _enemy_set(bot_ri)
+    human_enemy_ri = _enemy_set(suspected_human_ri)
+
+    result = []
+    for action in actions:
+        score, atype, *payload = action
+        if atype == 'attack':
+            unit, coord = payload
+            tq, tr = coord
+            target_sovs = grid.sovereigns.get((tq, tr), [])
+            for sov in target_sovs:
+                sov_ri = sov.nation.ring_index
+                if sov_ri == suspected_human_ri:
+                    # Rule 1: kill the suspected human's sovereign — top priority
+                    score += 800
+                elif sov_ri in human_enemy_ri and sov_ri not in bot_enemy_ri:
+                    # Rule 2: would only help human win, not bot — strongly avoid
+                    score -= 800
+        result.append((score, atype, *payload))
+    return result
+
 
 def _score_attack(grid, attacker, tq, tr, enemy_ring_set) -> float:
     """Score for attacker targeting hex (tq, tr)."""
@@ -254,13 +301,16 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set) -> float:
 # Action gathering
 # ---------------------------------------------------------------------------
 
-def _gather_actions(grid, bot_player, global_cooldown_idx, nation_list):
+def _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
+                    suspected_human_ri=None, turn_number=0):
     """
     Build a scored list of all legal bot actions.
     Returns list of (score, action_type, *payload).
+    Applies adaptive sovereign strategy after BOT_ADAPTIVE_TURN.
     """
     eligible        = _eligible_nations(bot_player, global_cooldown_idx, nation_list)
     bot_secret      = bot_player.secret_nation
+    bot_ri          = bot_secret.ring_index
     enemy_ring_set  = {n.ring_index for n in bot_secret.enemy_nations(nation_list)}
     allied_ring_set = {n.ring_index for n in nation_list if not bot_secret.is_enemy(n)}
 
@@ -286,6 +336,10 @@ def _gather_actions(grid, bot_player, global_cooldown_idx, nation_list):
         for coord in grid.get_promote_hexes(nation):
             s = 70.0 if is_allied else 20.0
             actions.append((s, 'promote', nation, coord))
+
+    # Apply adaptive sovereign intelligence
+    actions = _adaptive_sovereign_adjustments(
+        grid, actions, bot_ri, suspected_human_ri, turn_number)
 
     return actions
 
@@ -338,9 +392,12 @@ def _execute(grid, action):
 # Turn entry points
 # ---------------------------------------------------------------------------
 
-def _turn_intent(grid, bot_player, global_cooldown_idx, nation_list):
+def _turn_intent(grid, bot_player, global_cooldown_idx, nation_list,
+                 suspected_human_ri=None, turn_number=0):
     """Strategic intent: pick from the top-scoring actions."""
-    actions = _gather_actions(grid, bot_player, global_cooldown_idx, nation_list)
+    actions = _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
+                              suspected_human_ri=suspected_human_ri,
+                              turn_number=turn_number)
     if not actions:
         return None, None, "[Bot-intent] No legal actions."
 
@@ -413,7 +470,8 @@ def do_bot_turn(grid, bot_player, global_cooldown_idx, nation_list, turn_number)
 # Two-phase API (compute then execute separately, for animation support)
 # ---------------------------------------------------------------------------
 
-def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_number):
+def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_number,
+                       suspected_human_ri=None):
     """
     Select the bot's next action WITHOUT executing it.
 
@@ -422,11 +480,16 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
 
     For 'move'/'attack':   payload = (unit, coord)
     For 'recruit'/'promote': payload = (nation, coord)
+
+    suspected_human_ri: ring_index of the bot's best guess for the human's
+    secret faction (or None if unknown). Used for adaptive sovereign strategy.
     """
     use_intent = random.random() < _intent_prob(turn_number)
 
     if use_intent:
-        actions = _gather_actions(grid, bot_player, global_cooldown_idx, nation_list)
+        actions = _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
+                                  suspected_human_ri=suspected_human_ri,
+                                  turn_number=turn_number)
         if not actions:
             return None
         best      = max(a[0] for a in actions)
@@ -435,7 +498,8 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
         return random.choice(top_tier)
 
     else:
-        # Build random pool in the same (score, atype, actor, coord) format
+        # Build random pool — also apply adaptive sovereign rules
+        bot_ri   = bot_player.secret_nation.ring_index
         eligible = _eligible_nations(bot_player, global_cooldown_idx, nation_list)
         pool = []
         for nation in eligible:
@@ -448,6 +512,12 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
                 pool.append((0, 'promote', nation, coord))
         if not pool:
             return None
+        pool = _adaptive_sovereign_adjustments(
+            grid, pool, bot_ri, suspected_human_ri, turn_number)
+        # For random, still pick randomly but exclude strongly-penalised actions
+        best_score  = max(a[0] for a in pool)
+        if best_score > -500:
+            pool = [a for a in pool if a[0] > -500]
         return random.choice(pool)
 
 

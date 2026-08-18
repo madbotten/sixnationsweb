@@ -54,3 +54,9 @@ COLOR_TEXT_MUTED   = (128, 138, 162)
 COLOR_TOP_BAR      = (  8,  10,  18)
 COLOR_PANEL        = ( 13,  17,  27)
 COLOR_PANEL_BORDER = ( 34,  41,  58)
+
+# -- Bot behaviour ------------------------------------------------------------
+# After this turn number the bot begins using suspected-player-faction intel:
+#   • Prioritise attacks on the suspected human sovereign
+#   • Avoid attacks on sovereigns that only benefit the human player
+BOT_ADAPTIVE_TURN = 25
