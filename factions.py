@@ -1,75 +1,39 @@
 """
-Faction System - Alignments
-Defines the Faction class and predefined Factions in the diplomatic ring.
+Nation System -- Six Nations
+Six nations arranged in a diplomatic ring (indices 0-5).
+Adjacent nations on the ring are allies; all others are enemies.
 """
-
-class Faction:
-    def __init__(self, ring_number, race, home_terrain):
-        """
-        Initializes a Faction instance.
-        
-        Args:
-            ring_number (int): The position on the diplomatic ring (0-9).
-            race (str): The race of the faction (e.g. 'Humans').
-            home_terrain (str): The home terrain type (e.g. 'Plains').
-        """
-        self.ring_number = ring_number
-        self.race = race
-        self.home_terrain = home_terrain
-        self._gold = 0
-
-    @property
-    def gold(self):
-        """Returns the gold amount of the faction."""
-        return self._gold
-
-    @gold.setter
-    def gold(self, val):
-        """Sets the gold amount, validating that it is a nonnegative integer."""
-        if not isinstance(val, int) or val < 0:
-            raise ValueError("Gold must be a nonnegative integer.")
-        self._gold = val
-
-    def diplomatic_distance(self, faction):
-        """
-        Calculates the shortest diplomatic distance to another faction along the ring (0-9).
-        distance(x, y) = min(|x - y|, 10 - |x - y|)
-        """
-        return min(abs(self.ring_number - faction.ring_number), 10 - abs(self.ring_number - faction.ring_number))
-
-    def isFullyAligned(self, faction):
-        """Returns True if the faction is fully aligned (distance = 0) with the given faction."""
-        return self.diplomatic_distance(faction) == 0
-
-    def isStronglyAligned(self, faction):
-        """Returns True if the faction is strongly aligned (distance = 1) with the given faction."""
-        return self.diplomatic_distance(faction) == 1
-
-    def isLooselyAligned(self, faction):
-        """Returns True if the faction is loosely aligned (distance = 2 or 3) with the given faction."""
-        return self.diplomatic_distance(faction) in (2, 3)
-
-    def isOpposed(self, faction):
-        """Returns True if the faction is opposed (distance = 4 or 5) to the given faction."""
-        return self.diplomatic_distance(faction) in (4, 5)
-
-    def __repr__(self):
-        return f"Faction(ring_number={self.ring_number}, race='{self.race}', home_terrain='{self.home_terrain}', gold={self._gold})"
+import settings
 
 
-# Predefined static list of the 10 factions from the diplomatic ring
-FACTIONS = [
-    Faction(0, "Humans", "Plains"),
-    Faction(1, "Elves", "Woods"),
-    Faction(2, "Dwarves", "Mountains"),
-    Faction(3, "Giants", "Hills"),
-    Faction(4, "Lizardfolk", "Jungle"),
-    Faction(5, "Kuotoa", "Swamp"),
-    Faction(6, "Drow", "Subterranean"),
-    Faction(7, "Pirates", "Coastal"),
-    Faction(8, "Barbarians", "Barrens"),
-    Faction(9, "Nomads", "Desert")
-]
+class Nation:
+    """Represents one of the six nations on the diplomatic ring."""
 
-# Quick lookup dictionary mapping ring number to Faction
-FACTIONS_BY_RING = {f.ring_number: f for f in FACTIONS}
+    def __init__(self, ring_index: int):
+        self.ring_index  = ring_index
+        self.color_rgb   = settings.NATION_COLORS[ring_index]
+        self.color_light = settings.NATION_HEX_FILLS[ring_index]
+        self.color_name  = settings.NATION_NAMES[ring_index]
+        self.is_ghost    = False   # True when this nation's sovereign is destroyed
+
+    def is_ally(self, other: "Nation") -> bool:
+        """True when the two nations are immediate neighbours on the ring."""
+        diff = abs(self.ring_index - other.ring_index)
+        return diff == 1 or diff == 5
+
+    def is_enemy(self, other: "Nation") -> bool:
+        """True when the two nations are neither the same nor allies."""
+        if self.ring_index == other.ring_index:
+            return False
+        return not self.is_ally(other)
+
+    def enemy_nations(self, all_nations: "list[Nation]") -> "list[Nation]":
+        """Return the 3 enemy nations (opposite side of the ring)."""
+        return [n for n in all_nations if self.is_enemy(n)]
+
+    def __repr__(self) -> str:
+        return f"Nation({self.color_name})"
+
+
+# The six predefined nation singletons, shared across the whole game.
+NATIONS: list = [Nation(i) for i in range(6)]

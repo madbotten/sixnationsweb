@@ -1,55 +1,56 @@
 """
-Settings and configuration constants for the Alignments game.
-Contains display window dimensions, frame rate controls, and visual theme colors.
+Settings and configuration constants for Six Nations.
 """
+import math
 
-# Window settings
-SCREEN_WIDTH = 1600
-SCREEN_HEIGHT = 1000
-WINDOW_TITLE = "Alignments"
-FPS = 60
+# -- Window -------------------------------------------------------------------
+SCREEN_WIDTH  = 2000
+SCREEN_HEIGHT = 1400
+WINDOW_TITLE  = "Six Nations"
+FPS           = 60
 
-# Game Phase Enumerations
-PHASE_MAP_BUILDING = 0
-PHASE_MAIN_GAME = 1
+# -- Hex grid (flat-topped hexagons) ------------------------------------------
+# HEX_WIDTH  = vertex-to-vertex horizontal distance.
+# HEX_HEIGHT = vertex-to-vertex vertical distance.
+# Proper flat-top ratio: HEX_HEIGHT = HEX_WIDTH * sqrt(3) / 2
+HEX_WIDTH  = 200
+HEX_HEIGHT = int(HEX_WIDTH * math.sqrt(3) / 2)   # ~173 px
 
-# Faction Turn Phase Enumerations
-TURN_PHASE_INCOME = 0
-TURN_PHASE_MOVE = 1
-TURN_PHASE_COMBAT = 2
-TURN_PHASE_CONTROL = 3
-TURN_PHASE_VICTORY = 4
+# Fixed center of the map on screen (no scroll or zoom).
+MAP_CENTER_X = 1000
+MAP_CENTER_Y = 735
 
-# Hex Grid Layout Constants
-HEX_WIDTH = 293           # Width of the squashed hex artwork on screen (33% larger)
-HEX_HEIGHT = 160          # Height of the squashed hex artwork on screen (33% larger)
-PANEL_WIDTH = 300         # Width of the left side panel (reduced by 25%)
-SCROLL_SPEED = 500        # Camera scroll speed in pixels per second
+# -- UI regions ---------------------------------------------------------------
+TOP_BAR_HEIGHT  = 70   # Top status bar height
+DIPLO_RING_SIZE = 300  # Square side for DiplomacyRing.jpg panel (top-right)
+COOLDOWN_PANEL_W = 300
+COOLDOWN_PANEL_H = 150
 
-# Tile Pool Specifications
-# The 17 unique tiles (only one copy of each exists in the entire game)
-UNIQUE_TILES = [
-    "Elmany", "FungalJungle", "GoldenCanyon", "Limbo", "PitofDespair",
-    "Tanelorn", "TempleofEvil", "TheDark", "Tileronde",
-    "TowerofJustice", "SunkenCanopy", "PetrifiedForest", "StormTundra"
+# -- Nation colours (ring order 0-5) ------------------------------------------
+# Yellow, Green, Sky Blue, Cobalt, Magenta, Crimson
+NATION_COLORS = [
+    (230, 200,  50),   # 0  Yellow
+    ( 55, 190,  80),   # 1  Green
+    ( 70, 185, 230),   # 2  Sky Blue
+    ( 55,  85, 200),   # 3  Cobalt
+    (210,  55, 170),   # 4  Magenta
+    (210,  45,  65),   # 5  Crimson
 ]
 
-# The 10 common tiles (can be duplicated at random to pad decks to 16)
-COMMON_TILES = [
-    "Woods", "Swamp", "Mountains", "Plains", "Desert", "Hills", "Coastal", "Subterranean", "Barrens", "Jungle"
+NATION_NAMES = ["Yellow", "Green", "Sky Blue", "Cobalt", "Magenta", "Crimson"]
+
+# Dark tinted fills for starting hex interiors (18% blend over dark bg).
+NATION_HEX_FILLS = [
+    tuple(int(18 + c * 0.20) for c in col)
+    for col in NATION_COLORS
 ]
 
-# Total hand capacity per player
-TOTAL_TILES_PER_PLAYER = 16
-
-# Premium Sci-Fi Visual Theme Colors (RGB format)
-COLOR_BACKGROUND = (11, 14, 20)      # Sleek deep space charcoal-navy
-COLOR_HUD_BG = (20, 24, 33, 180)     # Glassmorphic HUD overlay (with alpha)
-COLOR_TEXT_PRIMARY = (235, 240, 250) # Crisp near-white
-COLOR_TEXT_MUTED = (140, 150, 170)   # Clean futuristic gray
-
-# Neon Energy Visual States (for grid connections and interactions)
-COLOR_NEON_CYAN = (0, 243, 255)      # Active energy beams / aligned state
-COLOR_NEON_PURPLE = (189, 0, 255)    # Core reactor power/charging
-COLOR_NEON_PINK = (255, 0, 127)      # Unaligned node warning / pulse indicator
-COLOR_NEON_GREEN = (50, 255, 120)    # Fully stabilized system state
+# -- Background and UI colours ------------------------------------------------
+COLOR_BACKGROUND   = (11, 14, 22)
+COLOR_HEX_NEUTRAL  = (20, 26, 38)
+COLOR_HEX_BORDER   = (36, 44, 60)
+COLOR_TEXT_PRIMARY = (235, 240, 250)
+COLOR_TEXT_MUTED   = (128, 138, 162)
+COLOR_TOP_BAR      = (  8,  10,  18)
+COLOR_PANEL        = ( 13,  17,  27)
+COLOR_PANEL_BORDER = ( 34,  41,  58)

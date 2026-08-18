@@ -1,861 +1,737 @@
 """
-Hexagonal Map Engine - Alignments
-Handles axial grid geometry, camera viewports, placement validation, and modular rendering.
+Hexagonal Map Engine -- Six Nations
+
+Board layout (flat-topped hexagons, axial coordinates):
+  Ring 0 : 1  hex  -- center, neutral
+  Ring 1 : 6  hexes -- inner ring, neutral
+  Ring 2 : 12 hexes -- 6 nation army-start hexes + 6 neutral
+  Ring 3 : 18 hexes -- all nation territory (3 per nation + corner)
+  Total  : 37 hexes
+
+Each nation owns 4 hexes:
+  - 1 corner hex  (ring-3 vertex) -- Sovereign + Champion start here
+  - 2 adjacent ring-3 hexes      -- 1 Army each
+  - 1 adjacent ring-2 hex        -- 1 Army
 """
 
-import math
 import pygame
 import settings
-import util
+from factions import NATIONS
+
+
+# ---------------------------------------------------------------------------
+# Tile
+# ---------------------------------------------------------------------------
 
 class Tile:
-    def __init__(self, q, r, terrain_type, owner='player'):
-        self.q = q
-        self.r = r
-        self.terrain_type = terrain_type
-        self.owner = owner  # 'player', 'bot', or a Faction object
-        self.is_stronghold = False
-        self.stronghold_strength = 3  # Defensive strength of this stronghold tile
-        self.has_artifact = False
-        self.artifact = None
-        
-        # Unique tiles have distinct aesthetic colors when rendering placeholders
-        self.glow_color = settings.COLOR_NEON_CYAN
-        uniques_lower = [t.lower() for t in settings.UNIQUE_TILES]
-        terrain_clean = terrain_type.lower()
-        if terrain_clean in uniques_lower:
-            # Shift between hot pink, purple, and green for unique tiles
-            idx = uniques_lower.index(terrain_clean)
-            if idx % 3 == 0:
-                self.glow_color = settings.COLOR_NEON_PINK
-            elif idx % 3 == 1:
-                self.glow_color = settings.COLOR_NEON_PURPLE
-            else:
-                self.glow_color = settings.COLOR_NEON_GREEN
+    def __init__(self, q: int, r: int, owner=None):
+        self.q         = q
+        self.r         = r
+        self.owner     = owner      # None = neutral, Nation = starting territory
+        self.is_corner = False      # True for the sovereign/champion-start hex
 
-    def get_surface(self, size):
-        # Delegate image loading to cache utility
-        return util.load_terrain_image(self.terrain_type, alpha=True, color_fallback=self.glow_color, size=size)
+
+# ---------------------------------------------------------------------------
+# MapGrid
+# ---------------------------------------------------------------------------
 
 class MapGrid:
+    """Full 37-hex board.  Statically centred; no scroll or zoom."""
+
+    NATION_CORNERS = [
+        ( 0, -3),   # 0 Yellow
+        ( 3, -3),   # 1 Green
+        ( 3,  0),   # 2 Sky Blue
+        ( 0,  3),   # 3 Cobalt
+        (-3,  3),   # 4 Magenta
+        (-3,  0),   # 5 Crimson
+    ]
+
+    # [corner, army1, army2, army3]
+    NATION_HEXES = [
+        [( 0, -3), ( 1, -3), (-1, -2), ( 0, -2)],   # 0 Yellow
+        [( 3, -3), ( 2, -3), ( 3, -2), ( 2, -2)],   # 1 Green
+        [( 3,  0), ( 3, -1), ( 2,  1), ( 2,  0)],   # 2 Sky Blue
+        [( 0,  3), (-1,  3), ( 1,  2), ( 0,  2)],   # 3 Cobalt
+        [(-3,  3), (-2,  3), (-3,  2), (-2,  2)],   # 4 Magenta
+        [(-3,  0), (-3,  1), (-2, -1), (-2,  0)],   # 5 Crimson
+    ]
+
     def __init__(self):
-        # Key: (q, r), Value: Tile
-        self.tiles = {}
-        # Key: (q, r), Value: List of Champion units
-        self.champions = {}
-        # Key: (q, r), Value: List of Army units
-        self.armies = {}
-        
-        # Camera scroll offset (center of the screen)
-        # Starting camera is centered on (0, 0)
-        self.camera_x = 0
-        self.camera_y = 0
-        
-        self.hex_width = settings.HEX_WIDTH
+        self.tiles      = {}   # (q,r) -> Tile
+        self.armies     = {}   # (q,r) -> [Army, ...]
+        self.champions  = {}   # (q,r) -> [Champion, ...]
+        self.sovereigns = {}   # (q,r) -> [Sovereign, ...]
+        self.hex_width  = settings.HEX_WIDTH
         self.hex_height = settings.HEX_HEIGHT
 
-    def get_ring_coords(self, n):
-        """
-        Returns ordered coordinates of concentric Ring n.
-        For Ring 0, returns [(0, 0)].
-        """
-        if n == 0:
-            return [(0, 0)]
-        results = []
-        q, r = 0, -n
-        directions = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)]
-        for d in directions:
-            for _ in range(n):
-                results.append((q, r))
-                q += d[0]
-                r += d[1]
-        return results
+    # =======================================================================
+    # Map generation
+    # =======================================================================
 
     def generate_map(self):
-        """
-        Generates a 37-hex grid:
-        - Center 7 hexes (Ring 0 & Ring 1) are random unique terrains with artifacts.
-        - Outer 30 hexes (Ring 2 & Ring 3) are divided into 10 adjacent sectors of 3 hexes.
-        - Each Faction (0-9) is assigned to a sector such that no two opposed factions start next to each other.
-        - The 3 hexes of a faction's sector are placed with their home terrain and owned by the Faction.
-        - Exactly one Stronghold is placed in Ring 3 for each Faction.
-        """
-        import random
-        from factions import FACTIONS
-        
+        """Place all 37 hex tiles and starting units."""
+        from armies    import Army
+        from champions import Champion, Sovereign
+
         self.tiles.clear()
-        
-        # 1. Place the center 7 unique tiles
-        from artifacts import create_artifact_pool
-        artifact_pool = create_artifact_pool()
-        center_coords = self.get_ring_coords(0) + self.get_ring_coords(1)
-        unique_terrains = random.sample(settings.UNIQUE_TILES, len(center_coords))
-        
-        for coord, terrain in zip(center_coords, unique_terrains):
-            q, r = coord
-            self.place_tile(q, r, terrain, "system")
-            self.tiles[(q, r)].has_artifact = True
-            if artifact_pool:
-                self.tiles[(q, r)].artifact = artifact_pool.pop(0)
-            
-        # 2. Find a valid faction placement cycle around the outside
-        faction_order = None
-        while not faction_order:
-            shuffled_factions = list(FACTIONS)
-            random.shuffle(shuffled_factions)
-            valid = True
-            for i in range(10):
-                f1 = shuffled_factions[i]
-                f2 = shuffled_factions[(i + 1) % 10]
-                if f1.isOpposed(f2):
-                    valid = False
-                    break
-            if valid:
-                faction_order = shuffled_factions
+        self.armies.clear()
+        self.champions.clear()
+        self.sovereigns.clear()
 
-        # 3. Retrieve Ring 2 and Ring 3 coordinates
-        ring2 = self.get_ring_coords(2)
-        ring3 = self.get_ring_coords(3)
-        outer_coords = ring2 + ring3
-        
-        # Sort outer coordinates by polar angle
-        def get_polar_key(coord):
-            q, r = coord
-            x, y = self.get_hex_center(q, r)
-            angle = math.atan2(y, x)
-            if angle < 0:
-                angle += 2 * math.pi
-            # Sub-sort: outer ring (Ring 3) has distance 3, inner (Ring 2) has distance 2.
-            dist = max(abs(q), abs(r), abs(q + r))
-            return (angle, -dist)
-            
-        outer_coords.sort(key=get_polar_key)
-        
-        # 4. Partition the sorted coordinates into 10 sectors of 3 hexes each
-        # And place tiles for each Faction in the cycle
-        for idx, faction in enumerate(faction_order):
-            sector_coords = outer_coords[idx * 3 : (idx + 1) * 3]
-            
-            # Place the 3 home terrain tiles
-            for coord in sector_coords:
+        nation_coords = {coord for hexes in self.NATION_HEXES for coord in hexes}
+
+        for coord in (self.get_ring_coords(0)
+                      + self.get_ring_coords(1)
+                      + self.get_ring_coords(2)):
+            if coord not in nation_coords:
+                self.tiles[coord] = Tile(coord[0], coord[1], owner=None)
+
+        for nation_idx, hexes in enumerate(self.NATION_HEXES):
+            nation = NATIONS[nation_idx]
+            corner = self.NATION_CORNERS[nation_idx]
+            for i, coord in enumerate(hexes):
                 q, r = coord
-                self.place_tile(q, r, faction.home_terrain, faction)
-                
-            # Randomly pick a tile in the outer ring (Ring 3) to be the Stronghold.
-            ring3_candidates = [
-                c for c in sector_coords if max(abs(c[0]), abs(c[1]), abs(c[0] + c[1])) == 3
-            ]
-            
-            stronghold_coord = random.choice(ring3_candidates) if ring3_candidates else random.choice(sector_coords)
-            self.tiles[stronghold_coord].is_stronghold = True
-            
-            # Give each faction an army in their stronghold hex at setup
-            self.muster_army(faction, stronghold_coord[0], stronghold_coord[1], strength=1)
-            
-            # Give each faction a champion in their stronghold hex at setup
-            from champions import Champion
-            champion = Champion(faction, stronghold_coord[0], stronghold_coord[1])
-            self.add_champion(champion)
+                t = Tile(q, r, owner=nation)
+                if coord == corner:
+                    t.is_corner = True
+                self.tiles[coord] = t
+                if i == 0:
+                    self.add_sovereign(Sovereign(nation, q, r))
+                    self.add_champion(Champion(nation, q, r))
+                else:
+                    self.add_army(Army(nation, q, r))
 
-    def place_tile(self, q, r, terrain_type, owner):
-        """
-        Adds a tile to the map coordinates.
-        """
-        self.tiles[(q, r)] = Tile(q, r, terrain_type, owner)
-
-    def add_champion(self, champion):
-        """
-        Adds a champion unit to the map. Supports multiple units at the same location.
-        """
-        loc = champion.hex_location
-        if loc not in self.champions:
-            self.champions[loc] = []
-        self.champions[loc].append(champion)
+    # =======================================================================
+    # Unit management
+    # =======================================================================
 
     def add_army(self, army):
-        """
-        Adds an army unit to the map. Supports multiple units at the same location.
-        """
-        loc = army.hex_location
-        if loc not in self.armies:
-            self.armies[loc] = []
-        self.armies[loc].append(army)
+        self.armies.setdefault(army.hex_location, []).append(army)
 
     def remove_army(self, army):
-        """
-        Removes an army from its current location on the map.
-        """
         loc = army.hex_location
         if loc in self.armies:
-            if army in self.armies[loc]:
-                self.armies[loc].remove(army)
+            self.armies[loc] = [a for a in self.armies[loc] if a is not army]
             if not self.armies[loc]:
                 del self.armies[loc]
 
-    def remove_champion(self, champion):
-        """
-        Removes a champion from its current location on the map.
-        """
-        loc = champion.hex_location
+    def add_champion(self, champ):
+        self.champions.setdefault(champ.hex_location, []).append(champ)
+
+    def remove_champion(self, champ):
+        loc = champ.hex_location
         if loc in self.champions:
-            if champion in self.champions[loc]:
-                self.champions[loc].remove(champion)
+            self.champions[loc] = [c for c in self.champions[loc] if c is not champ]
             if not self.champions[loc]:
                 del self.champions[loc]
 
-    def can_muster_army(self, faction, q, r):
-        """
-        Checks if the faction controls the hex (owns the tile) and can muster there.
-        """
-        tile = self.get_tile(q, r)
-        if not tile:
-            return False
-        return tile.owner == faction
+    def add_sovereign(self, sov):
+        self.sovereigns.setdefault(sov.hex_location, []).append(sov)
 
-    def muster_army(self, faction, q, r, strength=1):
-        """
-        Creates and adds an army to the map at (q, r) if controlled by the faction.
-        """
-        if not self.can_muster_army(faction, q, r):
-            raise ValueError(f"Faction {faction.race} does not control hex ({q}, {r}) to muster an army.")
-        
-        from armies import Army
-        index = self.get_next_army_index(faction)
-        army = Army(faction, q, r, strength=strength, index=index)
-        self.add_army(army)
-        return army
+    def remove_sovereign(self, sov):
+        loc = sov.hex_location
+        if loc in self.sovereigns:
+            self.sovereigns[loc] = [s for s in self.sovereigns[loc] if s is not sov]
+            if not self.sovereigns[loc]:
+                del self.sovereigns[loc]
 
-    def can_move_army(self, army, target_q, target_r):
-        """
-        Checks if the army can move to the target coordinates.
-        The target hex must have an existing tile, and must be adjacent to the army's current location.
-        """
-        if not self.get_tile(target_q, target_r):
-            return False
-        
-        current_loc = army.hex_location
-        neighbors = self.get_neighbors(current_loc[0], current_loc[1])
-        return (target_q, target_r) in neighbors
+    def get_units_at(self, q, r):
+        return {
+            'sovereigns': list(self.sovereigns.get((q, r), [])),
+            'champions':  list(self.champions.get((q, r), [])),
+            'armies':     list(self.armies.get((q, r), [])),
+        }
 
-    def move_army(self, army, new_q, new_r):
-        """
-        Moves the army to the new location (new_q, new_r) if valid.
-        """
-        if not self.can_move_army(army, new_q, new_r):
-            raise ValueError(f"Army cannot move to ({new_q}, {new_r}) from {army.hex_location}.")
-        
-        self.remove_army(army)
-        army.q = new_q
-        army.r = new_r
-        self.add_army(army)
+    def get_all_nation_units(self, nation):
+        """Return all units (sovereigns, champions, armies) belonging to nation."""
+        units = []
+        for slist in self.sovereigns.values():
+            units.extend(s for s in slist if s.nation.ring_index == nation.ring_index)
+        for clist in self.champions.values():
+            units.extend(c for c in clist if c.nation.ring_index == nation.ring_index)
+        for alist in self.armies.values():
+            units.extend(a for a in alist if a.nation.ring_index == nation.ring_index)
+        return units
 
-    def can_move_champion(self, champion, target_q, target_r):
-        """
-        Checks if the champion can move to the target coordinates.
-        The target hex must have an existing tile, and must be adjacent to the champion's current location.
-        """
-        if not self.get_tile(target_q, target_r):
-            return False
-        
-        current_loc = champion.hex_location
-        neighbors = self.get_neighbors(current_loc[0], current_loc[1])
-        return (target_q, target_r) in neighbors
+    def _army_count(self, nation) -> int:
+        return sum(
+            1 for alist in self.armies.values()
+            for a in alist if a.nation.ring_index == nation.ring_index
+        )
 
-    def move_champion(self, champion, new_q, new_r):
-        """
-        Moves the champion to the new location (new_q, new_r) if valid.
-        """
-        if not self.can_move_champion(champion, new_q, new_r):
-            raise ValueError(f"Champion cannot move to ({new_q}, {new_r}) from {champion.hex_location}.")
-        
-        self.remove_champion(champion)
-        champion.q = new_q
-        champion.r = new_r
-        self.add_champion(champion)
+    def _has_champion(self, nation) -> bool:
+        return any(
+            c.nation.ring_index == nation.ring_index
+            for clist in self.champions.values() for c in clist
+        )
 
-        # Claim artifact if present on the target tile and champion has none
-        tile = self.get_tile(new_q, new_r)
-        if tile and tile.artifact is not None and champion.artifact is None:
-            champion.artifact = tile.artifact
-            champion.artifact.discovered = True
-            tile.artifact = None
-            tile.has_artifact = False
-            print(f"[Artifact Claimed] {champion.name} claimed {champion.artifact.name}!")
-            # Air Sword grants an extra move step this turn
-            if champion.artifact.power == "AIR_SWORD":
-                champion.moves_remaining = 1
-                print(f"[Air Sword] {champion.name} may take one additional move this turn.")
+    # =======================================================================
+    # Geometry helpers
+    # =======================================================================
 
-    def get_champion_count(self, faction):
-        """
-        Returns the number of active champions with the given faction on the grid.
-        """
-        count = 0
-        for loc, c_list in self.champions.items():
-            for c in c_list:
-                if c.faction == faction:
-                    count += 1
-        return count
+    def get_ring_coords(self, n: int):
+        if n == 0:
+            return [(0, 0)]
+        results, q, r = [], 0, -n
+        for dq, dr in [(1,0),(0,1),(-1,1),(-1,0),(0,-1),(1,-1)]:
+            for _ in range(n):
+                results.append((q, r)); q += dq; r += dr
+        return results
 
-    def get_next_champion_index(self, faction):
-        """
-        Returns the first unused index (always 1 since only one is allowed) or None if already in play.
-        """
-        for loc, c_list in self.champions.items():
-            for c in c_list:
-                if c.faction == faction:
-                    return None
-        return 1
+    def get_hex_center(self, q, r):
+        return self.hex_width * 0.75 * q, self.hex_height * (r + q / 2.0)
 
-    def get_army_count(self, faction):
-        """
-        Returns the number of active armies with the given faction on the grid.
-        """
-        count = 0
-        for loc, a_list in self.armies.items():
-            for a in a_list:
-                if a.faction == faction:
-                    count += 1
-        return count
-
-    def get_controlled_hex_count(self, faction):
-        """
-        Returns the number of hexes controlled by the given faction.
-        """
-        return sum(1 for tile in self.tiles.values() if tile.owner == faction)
-
-    def calculate_faction_income(self, faction):
-        """
-        Calculates the gold income for a faction:
-        1 gold for each 3 hexes controlled, rounded down, minimum 1 gold.
-        """
-        controlled_count = self.get_controlled_hex_count(faction)
-        return max(1, controlled_count // 3)
-
-    def get_next_army_index(self, faction):
-        """
-        Returns the first unused index for a given faction.
-        """
-        used_indices = set()
-        for loc, a_list in self.armies.items():
-            for a in a_list:
-                if a.faction == faction:
-                    used_indices.add(a.index)
-        # Search sequentially without a maximum cap
-        idx = 1
-        while idx in used_indices:
-            idx += 1
-        return idx
-
-    def is_hex_muster_available(self, q, r):
-        """
-        Returns True always since there is no limit/hex tracking on armies.
-        """
-        return True
-
-
-    def get_champion_at_screen_pos(self, mouse_x, mouse_y, viewport_rect):
-        """
-        Checks if a left-click occurred on any Champion unit nested in the map grid.
-        Returns the Champion object if hit, otherwise None.
-        """
-        view_cx = viewport_rect.x + viewport_rect.width / 2.0
-        view_cy = viewport_rect.y + viewport_rect.height / 2.0
-        
-        # Identify axial coordinates under the mouse
-        q, r = self.screen_to_axial(mouse_x, mouse_y, viewport_rect)
-        
-        champions_list = self.champions.get((q, r), [])
-        if not champions_list:
-            return None
-            
+    def screen_pos(self, q, r):
         lx, ly = self.get_hex_center(q, r)
-        cx = view_cx + self.camera_x + lx
-        cy = view_cy + self.camera_y + ly
-        
-        num_champs = len(champions_list)
-        
-        # Dynamic layout scaling based on current hex width (baseline 293)
-        scale = self.hex_width / 293.0
-        size_val = max(12, int(36 * scale))
-        size_val_champ = int(size_val * 1.2)
-        unit_size = (size_val_champ, size_val_champ)
-        spacing = max(2, int(6 * scale))
-        row_padding = max(1, int(3 * scale))
-        oy = int(-unit_size[1] / 2.0 - row_padding)  # Top row for Champions (bottoms just above center)
-        
-        for idx, champ in enumerate(champions_list):
-            ox = int((idx - (num_champs - 1) / 2.0) * (unit_size[0] + spacing))
-            px = int(cx + ox - unit_size[0] / 2)
-            py = int(cy + oy - unit_size[1] / 2)
-            
-            champ_rect = pygame.Rect(px, py, unit_size[0], unit_size[1])
-            if champ_rect.collidepoint(mouse_x, mouse_y):
-                return champ
-        return None
+        return settings.MAP_CENTER_X + lx, settings.MAP_CENTER_Y + ly
 
-    def get_army_at_screen_pos(self, mouse_x, mouse_y, viewport_rect):
-        """
-        Checks if a left-click occurred on any Army unit nested in the map grid.
-        Returns the Army object if hit, otherwise None.
-        """
-        view_cx = viewport_rect.x + viewport_rect.width / 2.0
-        view_cy = viewport_rect.y + viewport_rect.height / 2.0
-        
-        # Identify axial coordinates under the mouse
-        q, r = self.screen_to_axial(mouse_x, mouse_y, viewport_rect)
-        
-        armies_list = self.armies.get((q, r), [])
-        if not armies_list:
-            return None
-            
-        lx, ly = self.get_hex_center(q, r)
-        cx = view_cx + self.camera_x + lx
-        cy = view_cy + self.camera_y + ly
-        
-        num_armies = len(armies_list)
-        
-        # Dynamic layout scaling based on current hex width (baseline 293)
-        scale = self.hex_width / 293.0
-        size_val = max(12, int(36 * scale))
-        unit_size = (size_val, size_val)
-        spacing = max(2, int(6 * scale))
-        row_padding = max(1, int(3 * scale))
-        oy = int(unit_size[1] / 2.0 + row_padding)  # Bottom row for Armies (tops just below center)
-        
-        for idx, army in enumerate(armies_list):
-            ox = int((idx - (num_armies - 1) / 2.0) * (unit_size[0] + spacing))
-            px = int(cx + ox - unit_size[0] / 2)
-            py = int(cy + oy - unit_size[1] / 2)
-            
-            army_rect = pygame.Rect(px, py, unit_size[0], unit_size[1])
-            if army_rect.collidepoint(mouse_x, mouse_y):
-                return army
-        return None
+    def screen_to_axial(self, sx, sy):
+        lx = sx - settings.MAP_CENTER_X
+        ly = sy - settings.MAP_CENTER_Y
+        q  = lx / (self.hex_width * 0.75)
+        r  = (ly / self.hex_height) - q / 2.0
+        return self.hex_round(q, r)
 
+    def hex_round(self, q, r):
+        s = -q - r
+        rq, rr, rs = round(q), round(r), round(s)
+        dq, dr, ds = abs(rq-q), abs(rr-r), abs(rs-s)
+        if dq > dr and dq > ds: rq = -rr - rs
+        elif dr > ds:            rr = -rq - rs
+        return int(rq), int(rr)
+
+    def get_neighbors(self, q, r):
+        """6 neighbours in fixed direction order (0=right, clockwise)."""
+        return [
+            (q+1, r  ), (q+1, r-1),
+            (q,   r-1), (q-1, r  ),
+            (q-1, r+1), (q,   r+1),
+        ]
 
     def get_tile(self, q, r):
         return self.tiles.get((q, r))
 
-    def get_hex_center(self, q, r):
-        """
-        Converts axial grid coordinates (q, r) to local cartesian coordinates (x, y) relative to map center.
-        """
-        x = self.hex_width * 0.75 * q
-        y = self.hex_height * (r + q / 2.0)
-        return x, y
+    # =======================================================================
+    # Game Logic -- support / trap detection
+    # =======================================================================
 
-    def screen_to_axial(self, screen_x, screen_y, viewport_rect):
-        """
-        Converts screen coordinates to closest integer axial (q, r) coordinates.
-        """
-        # Calculate coordinate relative to viewport center and camera offset
-        view_cx = viewport_rect.x + viewport_rect.width / 2.0
-        view_cy = viewport_rect.y + viewport_rect.height / 2.0
-        
-        local_x = screen_x - view_cx - self.camera_x
-        local_y = screen_y - view_cy - self.camera_y
-        
-        # Generalized squashed fractional axial coordinates
-        q = local_x / (self.hex_width * 0.75)
-        r = (local_y / self.hex_height) - q / 2.0
-        
-        return self.hex_round(q, r)
+    @staticmethod
+    def _are_allied(n1, n2) -> bool:
+        """True if two nations are the same or ring-adjacent (allies)."""
+        return n1.ring_index == n2.ring_index or n1.is_ally(n2)
 
-    def hex_round(self, q, r):
+    def is_supported(self, unit) -> bool:
         """
-        Robustly rounds floating point axial coordinates to the nearest hex grid integer.
+        True if unit has at least one allied unit in the same hex.
+        (Armies cannot support other armies -- irrelevant since max 1 army
+        per hex -- but allied champions/sovereigns do support an army.)
         """
-        s = -q - r
-        
-        rq = round(q)
-        rr = round(r)
-        rs = round(s)
-        
-        q_diff = abs(rq - q)
-        r_diff = abs(rr - r)
-        s_diff = abs(rs - s)
-        
-        if q_diff > r_diff and q_diff > s_diff:
-            rq = -rr - rs
-        elif r_diff > s_diff:
-            rr = -rq - rs
+        q, r = unit.hex_location
+        units = self.get_units_at(q, r)
+        nation = unit.nation
+        for sov in units['sovereigns']:
+            if sov is not unit and self._are_allied(nation, sov.nation):
+                return True
+        for champ in units['champions']:
+            if champ is not unit and self._are_allied(nation, champ.nation):
+                return True
+        for army in units['armies']:
+            if army is not unit and self._are_allied(nation, army.nation):
+                return True
+        return False
+
+    def _has_enemy_unit_at(self, q, r, nation) -> bool:
+        """True if any unit at (q,r) is an enemy of nation."""
+        for sov  in self.sovereigns.get((q,r), []):
+            if nation.is_enemy(sov.nation):   return True
+        for champ in self.champions.get((q,r), []):
+            if nation.is_enemy(champ.nation): return True
+        for army  in self.armies.get((q,r), []):
+            if nation.is_enemy(army.nation):  return True
+        return False
+
+    def is_trapped(self, sovereign) -> bool:
+        """
+        An unsupported sovereign is trapped if enemy units occupy at least
+        one pair of geometrically opposite neighbours (directions 0&3, 1&4, 2&5).
+        Supported sovereigns are never trapped.
+        """
+        if self.is_supported(sovereign):
+            return False
+        q, r   = sovereign.hex_location
+        nbrs   = self.get_neighbors(q, r)
+        nation = sovereign.nation
+        for i in range(3):
+            if (self._has_enemy_unit_at(*nbrs[i],   nation) and
+                    self._has_enemy_unit_at(*nbrs[i+3], nation)):
+                return True
+        return False
+
+    def _sovereign_supporters(self, sov):
+        """
+        Return (supporting_champions, supporting_armies, supporting_sovereigns)
+        -- units in the same hex that are allied with sov (excluding sov itself).
+        """
+        q, r   = sov.hex_location
+        nation = sov.nation
+        s_champs = [c for c in self.champions.get((q,r),[])
+                    if c is not sov and self._are_allied(nation, c.nation)]
+        s_armies = [a for a in self.armies.get((q,r),[])
+                    if self._are_allied(nation, a.nation)]
+        s_sovs   = [s for s in self.sovereigns.get((q,r),[])
+                    if s is not sov and self._are_allied(nation, s.nation)]
+        return s_champs, s_armies, s_sovs
+
+    # =======================================================================
+    # Game Logic -- valid move / attack queries
+    # =======================================================================
+
+    def get_valid_moves(self, unit) -> list:
+        """
+        Return list of (q,r) hexes the unit can move to (non-attack moves only).
+        Army   : adjacent hex with no army AND no enemy units.
+        Champion/Sovereign: adjacent hex with no enemy units.
+        """
+        from armies    import Army
+        from champions import Champion, Sovereign
+        q, r   = unit.hex_location
+        nation = unit.nation
+        valid  = []
+        for nq, nr in self.get_neighbors(q, r):
+            if not self.get_tile(nq, nr):
+                continue
+            if self._has_enemy_unit_at(nq, nr, nation):
+                continue
+            if isinstance(unit, Army) and self.armies.get((nq, nr)):
+                continue          # only one army per hex
+            valid.append((nq, nr))
+        return valid
+
+    def get_valid_attacks(self, unit) -> list:
+        """
+        Return list of (q,r) hexes where unit can make a legal attack.
+        Only armies and champions may attack.
+        """
+        from armies    import Army
+        from champions import Champion
+        q, r   = unit.hex_location
+        nation = unit.nation
+        valid  = set()
+        atk_supp = self.is_supported(unit)
+
+        for nq, nr in self.get_neighbors(q, r):
+            if not self.get_tile(nq, nr):
+                continue
+
+            e_armies = [a for a in self.armies.get((nq,nr),[])
+                        if nation.is_enemy(a.nation)]
+            e_champs = [c for c in self.champions.get((nq,nr),[])
+                        if nation.is_enemy(c.nation)]
+            e_sovs   = [s for s in self.sovereigns.get((nq,nr),[])
+                        if nation.is_enemy(s.nation)]
+
+            if isinstance(unit, Army):
+                # vs enemy army
+                for ea in e_armies:
+                    if atk_supp or not self.is_supported(ea):
+                        valid.add((nq, nr)); break
+                # vs trapped+unsupported sovereign (army can't attack champion)
+                for es in e_sovs:
+                    if not self.is_supported(es) and self.is_trapped(es):
+                        valid.add((nq, nr)); break
+
+            elif isinstance(unit, Champion):
+                # vs enemy army
+                for ea in e_armies:
+                    if atk_supp or not self.is_supported(ea):
+                        valid.add((nq, nr)); break
+                # vs enemy champion
+                for ec in e_champs:
+                    if atk_supp or not self.is_supported(ec):
+                        valid.add((nq, nr)); break
+                # vs enemy sovereign
+                for es in e_sovs:
+                    sov_supp = self.is_supported(es)
+                    if not sov_supp:
+                        valid.add((nq, nr)); break
+                    if atk_supp:
+                        sc, sa, ss = self._sovereign_supporters(es)
+                        if not sc:   # not shielded by a champion
+                            valid.add((nq, nr)); break
+
+        return list(valid)
+
+    # =======================================================================
+    # Game Logic -- applying moves and attacks
+    # =======================================================================
+
+    def _move_unit(self, unit, tq, tr):
+        """Unconditionally relocate unit to (tq, tr)."""
+        from armies    import Army
+        from champions import Champion, Sovereign
+        if isinstance(unit, Army):
+            self.remove_army(unit);     unit.q, unit.r = tq, tr; self.add_army(unit)
+        elif isinstance(unit, Champion):
+            self.remove_champion(unit); unit.q, unit.r = tq, tr; self.add_champion(unit)
+        elif isinstance(unit, Sovereign):
+            self.remove_sovereign(unit);unit.q, unit.r = tq, tr; self.add_sovereign(unit)
+
+    def apply_move(self, unit, tq, tr):
+        """
+        Validate and apply a non-attack move.
+        Returns (success: bool, message: str).
+        """
+        if (tq, tr) not in self.get_valid_moves(unit):
+            return False, "That move is not legal."
+        self._move_unit(unit, tq, tr)
+        return True, "Move applied."
+
+    def resolve_attack(self, attacker, tq, tr, target_type=None):
+        """
+        Resolve an attack by attacker on hex (tq, tr).
+
+        target_type: 'army' | 'champion' | 'sovereign' | None (auto-select).
+
+        Returns (success: bool, message: str, destroyed: list[unit]).
+        If success is False the attack was illegal and nothing was changed.
+        When the attacker survives and must advance, it is moved automatically.
+        """
+        from armies    import Army
+        from champions import Champion, Sovereign
+
+        nation       = attacker.nation
+        atk_supp     = self.is_supported(attacker)
+
+        # Collect enemy units in target hex
+        e_armies  = [a for a in self.armies.get((tq,tr),[])    if nation.is_enemy(a.nation)]
+        e_champs  = [c for c in self.champions.get((tq,tr),[]) if nation.is_enemy(c.nation)]
+        e_sovs    = [s for s in self.sovereigns.get((tq,tr),[]) if nation.is_enemy(s.nation)]
+
+        # Auto-select target type if not specified
+        if target_type is None:
+            if e_armies:   target_type = 'army'
+            elif e_champs: target_type = 'champion'
+            elif e_sovs:   target_type = 'sovereign'
+            else:          return False, "No enemy units in target hex.", []
+
+        destroyed         = []
+        messages          = []
+        attacker_lives    = True
+        advance           = False
+        force_no_advance  = False
+
+        # -------------------------------------------------------------------
+        # ARMY attacks
+        # -------------------------------------------------------------------
+        if isinstance(attacker, Army):
+
+            if target_type == 'army':
+                if not e_armies:
+                    return False, "No enemy army in that hex.", []
+                target = e_armies[0]
+                tgt_supp = self.is_supported(target)
+
+                if not atk_supp and tgt_supp:
+                    return False, "Illegal: unsupported army cannot attack a supported army.", []
+                if not atk_supp and not tgt_supp:
+                    self.remove_army(target); self.remove_army(attacker)
+                    destroyed += [target, attacker]; attacker_lives = False
+                    messages.append("Both armies destroyed.")
+                elif atk_supp and not tgt_supp:
+                    self.remove_army(target); destroyed.append(target)
+                    advance = True; messages.append("Enemy army destroyed, attacker advances.")
+                else:   # both supported
+                    self.remove_army(target); self.remove_army(attacker)
+                    destroyed += [target, attacker]; attacker_lives = False
+                    messages.append("Both armies destroyed (both supported).")
+
+            elif target_type == 'champion':
+                return False, "Illegal: armies cannot attack champions.", []
+
+            elif target_type == 'sovereign':
+                if not e_sovs:
+                    return False, "No enemy sovereign in that hex.", []
+                target = e_sovs[0]
+                if self.is_supported(target) or not self.is_trapped(target):
+                    return False, "Illegal: army can only attack an unsupported, trapped sovereign.", []
+                self.remove_sovereign(target); destroyed.append(target)
+                advance = True
+                messages.append(f"{target.nation.color_name} sovereign destroyed!")
+
+        # -------------------------------------------------------------------
+        # CHAMPION attacks
+        # -------------------------------------------------------------------
+        elif isinstance(attacker, Champion):
+
+            if target_type == 'army':
+                if not e_armies:
+                    return False, "No enemy army in that hex.", []
+                target = e_armies[0]
+                if not atk_supp and self.is_supported(target):
+                    return False, "Illegal: unsupported champion cannot attack a supported army.", []
+                self.remove_army(target); destroyed.append(target)
+                messages.append("Enemy army destroyed.")
+
+            elif target_type == 'champion':
+                if not e_champs:
+                    return False, "No enemy champion in that hex.", []
+                target = e_champs[0]
+                tgt_supp = self.is_supported(target)
+                if not atk_supp and tgt_supp:
+                    return False, "Illegal: unsupported champion cannot attack a supported champion.", []
+                if not atk_supp and not tgt_supp:
+                    self.remove_champion(target); self.remove_champion(attacker)
+                    destroyed += [target, attacker]; attacker_lives = False
+                    messages.append("Both champions destroyed.")
+                elif atk_supp and not tgt_supp:
+                    self.remove_champion(target); destroyed.append(target)
+                    advance = True; messages.append("Enemy champion destroyed, attacker advances.")
+                else:
+                    self.remove_champion(target); self.remove_champion(attacker)
+                    destroyed += [target, attacker]; attacker_lives = False
+                    messages.append("Both champions destroyed (both supported).")
+
+            elif target_type == 'sovereign':
+                if not e_sovs:
+                    return False, "No enemy sovereign in that hex.", []
+                target = e_sovs[0]
+                sov_supp = self.is_supported(target)
+
+                if not atk_supp and sov_supp:
+                    return False, "Illegal: unsupported champion cannot attack a supported sovereign.", []
+
+                if not sov_supp:
+                    # Unsupported sovereign -- always legal
+                    self.remove_sovereign(target); destroyed.append(target)
+                    messages.append(f"{target.nation.color_name} sovereign destroyed!")
+                else:
+                    # Attacker is supported, sovereign is supported
+                    sc, sa, ss = self._sovereign_supporters(target)
+                    if sc:
+                        return False, "Illegal: champion cannot attack a sovereign supported by a champion.", []
+                    elif sa:
+                        # Attack hits the supporting army instead
+                        army = sa[0]
+                        self.remove_army(army); destroyed.append(army)
+                        messages.append(f"Supporting army destroyed; sovereign shielded.")
+                    else:
+                        # Supported only by another sovereign
+                        self.remove_sovereign(target); destroyed.append(target)
+                        force_no_advance = True   # rule exception: no advance
+                        messages.append(f"{target.nation.color_name} sovereign destroyed! (champion stays)")
         else:
-            rs = -rq - rr
-            
-        return int(rq), int(rr)
+            return False, "Sovereigns cannot attack.", []
 
-    def get_neighbors(self, q, r):
+        # -------------------------------------------------------------------
+        # Forward movement
+        # -------------------------------------------------------------------
+        if attacker_lives and advance and not force_no_advance:
+            still_enemy = self._has_enemy_unit_at(tq, tr, nation)
+            army_there  = bool(self.armies.get((tq, tr)))
+            can_advance = not still_enemy and (not isinstance(attacker, Army) or not army_there)
+            if can_advance:
+                self._move_unit(attacker, tq, tr)
+            else:
+                messages.append("Attacker cannot advance (hex not clear).")
+
+        return True, " ".join(messages), destroyed
+
+    # =======================================================================
+    # Game Logic -- recruitment & promotion
+    # =======================================================================
+
+    def get_recruit_hexes(self, nation) -> list:
         """
-        Returns the 6 neighbor coordinates for axial coordinate (q, r).
+        Return starting hexes where a new army may be placed.
+        Conditions: nation not ghost, fewer than 3 armies, hex has no army
+        and no enemy units.
         """
+        if nation.is_ghost or self._army_count(nation) >= 3:
+            return []
         return [
-            (q + 1, r),
-            (q - 1, r),
-            (q, r + 1),
-            (q, r - 1),
-            (q + 1, r - 1),
-            (q - 1, r + 1)
+            coord for coord in self.NATION_HEXES[nation.ring_index]
+            if not self.armies.get(coord)
+            and not self._has_enemy_unit_at(*coord, nation)
         ]
 
+    def recruit_army(self, nation, q, r):
+        """Place a new Army for nation at (q,r). Returns the new Army."""
+        from armies import Army
+        army = Army(nation, q, r)
+        self.add_army(army)
+        return army
 
+    def get_promote_hexes(self, nation) -> list:
+        """
+        Return starting hexes where an army may be promoted to champion.
+        Conditions: nation not ghost, no champion on board,
+        hex has an army belonging to nation.
+        """
+        if nation.is_ghost or self._has_champion(nation):
+            return []
+        return [
+            coord for coord in self.NATION_HEXES[nation.ring_index]
+            if any(a.nation.ring_index == nation.ring_index
+                   for a in self.armies.get(coord, []))
+        ]
 
-    def is_valid_placement(self, q, r, terrain_type=None):
-        """
-        Validates if a tile can be placed at (q, r).
-        1. Coordinate must be empty.
-        2. Must have at least one adjacent tile in the current map grid.
-        """
-        if (q, r) in self.tiles:
-            return False
-            
-        has_neighbor = False
-        for n_q, n_r in self.get_neighbors(q, r):
-            if (n_q, n_r) in self.tiles:
-                has_neighbor = True
-                break
-                
-        return has_neighbor
+    def promote_to_champion(self, army):
+        """Remove army and place a Champion in the same hex. Returns the Champion."""
+        from champions import Champion
+        q, r = army.hex_location
+        self.remove_army(army)
+        champ = Champion(army.nation, q, r)
+        self.add_champion(champ)
+        return champ
 
+    # =======================================================================
+    # Game Logic -- win / loss / ghost detection
+    # =======================================================================
 
-    def get_valid_placements(self, terrain_type=None):
-        """
-        Scans all occupied coordinates and gathers unique adjacent empty coordinates that satisfy constraints.
-        """
-        valid_positions = set()
-        for q, r in self.tiles.keys():
-            for n_q, n_r in self.get_neighbors(q, r):
-                if (n_q, n_r) not in self.tiles:
-                    if self.is_valid_placement(n_q, n_r, terrain_type):
-                        valid_positions.add((n_q, n_r))
-        return list(valid_positions)
+    def check_ghost_nations(self, all_nations):
+        """Mark any nation missing its sovereign as a ghost nation."""
+        living_sov_nations = {
+            s.nation.ring_index
+            for slist in self.sovereigns.values() for s in slist
+        }
+        for nation in all_nations:
+            nation.is_ghost = nation.ring_index not in living_sov_nations
 
-    def scroll(self, dx, dy):
+    def check_win_condition(self, player, all_nations) -> bool:
         """
-        Shifts the map camera.
+        Player wins if 2 of their 3 enemy nations are ghost nations
+        (sovereigns destroyed).
         """
-        self.camera_x += dx
-        self.camera_y += dy
+        enemies       = player.secret_nation.enemy_nations(all_nations)
+        ghost_enemies = [e for e in enemies if e.is_ghost]
+        return len(ghost_enemies) >= 2
 
-    def find_stronghold_coord(self, faction):
-        """
-        Finds the axial coordinates (q, r) of the stronghold owned by the faction.
-        """
-        for coord, tile in self.tiles.items():
-            if tile.is_stronghold and tile.owner == faction:
-                return coord
-        return None
+    def check_loss_condition(self, player) -> bool:
+        """Player loses immediately if their own secret nation becomes a ghost."""
+        return player.secret_nation.is_ghost
 
-    def destroy_stronghold(self, faction):
-        """
-        When a Stronghold of a faction is destroyed, all units of that Faction
-        will also be removed and any hexes in control of that Faction will be
-        moved back to owned by none.
-        """
-        # 1. Remove stronghold status and owner from the stronghold tile
-        sh_coord = self.find_stronghold_coord(faction)
-        if sh_coord:
-            self.tiles[sh_coord].is_stronghold = False
-            self.tiles[sh_coord].owner = None
-            
-        # 2. Move any hexes in control of that Faction back to owned by None
-        for coord, tile in self.tiles.items():
-            if tile.owner == faction:
-                tile.owner = None
-                
-        # 3. Remove all armies of that Faction
-        for coord in list(self.armies.keys()):
-            self.armies[coord] = [army for army in self.armies[coord] if army.faction != faction]
-            if not self.armies[coord]:
-                del self.armies[coord]
-                
-        # 4. Remove all champions of that Faction
-        for coord in list(self.champions.keys()):
-            self.champions[coord] = [champ for champ in self.champions[coord] if champ.faction != faction]
-            if not self.champions[coord]:
-                del self.champions[coord]
-
-    def get_combat_hexes(self, faction):
-        """
-        Returns a sorted list of axial coordinates (q, r) where the given faction
-        has at least one unit (army or champion) and there is at least one opposed unit
-        (opposed army, opposed champion, or opposed stronghold).
-        """
-        from factions import Faction
-        combat_hexes = []
-        possible_hexes = set(list(self.armies.keys()) + list(self.champions.keys()))
-        for (q, r) in possible_hexes:
-            has_our_army = any(a.faction == faction for a in self.armies.get((q, r), []))
-            has_our_champ = any(c.faction == faction for c in self.champions.get((q, r), []))
-            if has_our_army or has_our_champ:
-                has_opposed_army = any(faction.isOpposed(a.faction) for a in self.armies.get((q, r), []))
-                has_opposed_champ = any(faction.isOpposed(c.faction) for c in self.champions.get((q, r), []))
-                
-                has_opposed_stronghold = False
-                tile = self.tiles.get((q, r))
-                if tile and getattr(tile, 'is_stronghold', False) and isinstance(tile.owner, Faction) and faction.isOpposed(tile.owner):
-                    has_opposed_stronghold = True
-                
-                if has_opposed_army or has_opposed_champ or has_opposed_stronghold:
-                    combat_hexes.append((q, r))
-        combat_hexes.sort()
-        return combat_hexes
-
-    def has_combat_for_faction(self, faction):
-        """
-        Checks if there is any hex containing the given faction's units
-        and an opposed faction's units.
-        """
-        return len(self.get_combat_hexes(faction)) > 0
-
-    def consolidate_armies(self, faction):
-        """
-        Consolidates all armies of the given faction in each hex into a single army
-        with the combined strength.
-        """
-        for loc in list(self.armies.keys()):
-            faction_armies = [a for a in self.armies[loc] if a.faction == faction]
-            if len(faction_armies) > 1:
-                total_strength = sum(a.strength for a in faction_armies)
-                remaining_army = faction_armies[0]
-                remaining_army.strength = total_strength
-                
-                # Remove the rest of the armies of this faction on this hex
-                for other_army in faction_armies[1:]:
-                    self.remove_army(other_army)
-
-
-
-    def center_on_hex(self, q, r):
-        """
-        Centers the map camera viewport on the given hex coordinate (q, r).
-        """
-        lx, ly = self.get_hex_center(q, r)
-        self.camera_x = -lx
-        self.camera_y = -ly
-
+    # =======================================================================
+    # Rendering helpers
+    # =======================================================================
 
     def draw_hex_polygon(self, surface, cx, cy, w, h, color, width=0):
-        """
-        Draws a squashed flat-topped hexagon onto a surface with custom width and height.
-        """
-        vertices = [
-            (cx + w / 2.0, cy),
-            (cx + w / 4.0, cy + h / 2.0),
-            (cx - w / 4.0, cy + h / 2.0),
-            (cx - w / 2.0, cy),
-            (cx - w / 4.0, cy - h / 2.0),
-            (cx + w / 4.0, cy - h / 2.0)
+        verts = [
+            (cx + w/2.0, cy       ), (cx + w/4.0, cy + h/2.0),
+            (cx - w/4.0, cy + h/2.0), (cx - w/2.0, cy      ),
+            (cx - w/4.0, cy - h/2.0), (cx + w/4.0, cy - h/2.0),
         ]
-        pygame.draw.polygon(surface, color, vertices, width)
+        pygame.draw.polygon(surface, color, verts, width)
 
-    def draw(self, screen, viewport_rect, ghost_info=None, dragged_terrain=None, highlight_coords=None, highlight_color=(255, 0, 127)):
+    def draw_unit_icon(self, screen, cx, cy, unit_type, nation_color, size=44, frozen=False):
+        cx, cy = int(cx), int(cy)
+        c = nation_color
+
+        if frozen:
+            # White-circle "frozen" style: light disc + smaller symbol inside
+            radius  = size // 2
+            s       = int(size * 0.33)
+            pygame.draw.circle(screen, (225, 230, 242), (cx, cy), radius)
+            pygame.draw.circle(screen, (150, 158, 180), (cx, cy), radius, 1)
+            outline = (130, 140, 165)
+        else:
+            # Bare-symbol style: larger, directly on hex background
+            s       = int(size * 0.42)
+            outline = (10, 13, 22)
+
+        if unit_type == 'army':
+            sw  = int(s * 0.65)
+            pts = [
+                (cx - sw, cy - int(s * 0.72)),
+                (cx + sw, cy - int(s * 0.72)),
+                (cx + sw, cy + int(s * 0.10)),
+                (cx,      cy + s             ),
+                (cx - sw, cy + int(s * 0.10)),
+            ]
+            pygame.draw.polygon(screen, c, pts)
+            pygame.draw.polygon(screen, outline, pts, 2)
+
+        elif unit_type == 'champion':
+            bw = max(3, size // 11)
+            gw = int(s * 1.55)
+            gh = max(3, size // 11)
+            gy = cy + int(s * 0.40)
+            pygame.draw.rect(screen, c, (cx - bw//2, cy - s, bw, s * 2))
+            pygame.draw.rect(screen, c, (cx - gw//2, gy - gh//2, gw, gh))
+            pygame.draw.rect(screen, outline, (cx - bw//2, cy - s, bw, s * 2), 1)
+            pygame.draw.rect(screen, outline, (cx - gw//2, gy - gh//2, gw, gh), 1)
+
+        elif unit_type == 'sovereign':
+            base_y = cy + int(s * 0.44)
+            pts = [
+                (cx - s,          base_y              ),
+                (cx - s,          cy - int(s * 0.56)  ),
+                (cx - int(s*0.4), cy - int(s * 0.10)  ),
+                (cx,              cy - s               ),
+                (cx + int(s*0.4), cy - int(s * 0.10)  ),
+                (cx + s,          cy - int(s * 0.56)  ),
+                (cx + s,          base_y              ),
+            ]
+            pygame.draw.polygon(screen, c, pts)
+            pygame.draw.polygon(screen, outline, pts, 2)
+
+    def draw(self, screen: pygame.Surface,
+             highlight_move=None, highlight_attack=None,
+             drag_unit=None, frozen_nations=None):
         """
-        Renders the active map and visual guidelines onto the screen, clipped to viewport_rect.
-        ghost_info is a dictionary: {'q': int, 'r': int, 'terrain': str, 'valid': bool}
+        Render hex board and units.
+        highlight_move   : set of (q,r) to outline in green (valid moves).
+        highlight_attack : set of (q,r) to outline in red   (valid attacks).
+        drag_unit        : unit currently being dragged (skip drawing it at original pos).
         """
-        # Create a clipper sub-surface or clip drawing region of screen
-        original_clip = screen.get_clip()
-        screen.set_clip(viewport_rect)
-        
-        # Calculate viewport center
-        view_cx = viewport_rect.x + viewport_rect.width / 2.0
-        view_cy = viewport_rect.y + viewport_rect.height / 2.0
-        
-        # Draw background space grid coordinates (faint aesthetic dots or lines to guide map scale)
-        # We can dynamically iterate through visible coordinates
-        w = self.hex_width
-        h = self.hex_height
-        
-        # Determine placements based on constraints for currently dragged tile
-        all_spots = self.get_valid_placements(None)
-        valid_spots = self.get_valid_placements(dragged_terrain) if dragged_terrain else all_spots
-        bad_spots = [spot for spot in all_spots if spot not in valid_spots]
-        
-        # Draw empty valid placement spots as glowing neon grid targets
-        for q, r in valid_spots:
-            lx, ly = self.get_hex_center(q, r)
-            cx = view_cx + self.camera_x + lx
-            cy = view_cy + self.camera_y + ly
-            
-            # Draw hex outline only if visible
-            if (viewport_rect.x - w / 2 < cx < viewport_rect.x + viewport_rect.width + w / 2 and
-                viewport_rect.y - h / 2 < cy < viewport_rect.y + viewport_rect.height + h / 2):
-                
-                # Faint glowing outline for placement suggestions
-                self.draw_hex_polygon(screen, cx, cy, w - 4, h - 4, (30, 45, 60), width=1)
-                pygame.draw.circle(screen, (40, 60, 80), (int(cx), int(cy)), 3)
+        w, h = self.hex_width, self.hex_height
 
-        # Draw bad spots (constraint violations) in translucent red shading!
-        for q, r in bad_spots:
-            lx, ly = self.get_hex_center(q, r)
-            cx = view_cx + self.camera_x + lx
-            cy = view_cy + self.camera_y + ly
-            
-            # Draw bad hex outline and shading only if visible
-            if (viewport_rect.x - w / 2 < cx < viewport_rect.x + viewport_rect.width + w / 2 and
-                viewport_rect.y - h / 2 < cy < viewport_rect.y + viewport_rect.height + h / 2):
-                
-                # Draw transparent filled red shading using a temp Surface
-                red_shade = pygame.Surface((w, h), pygame.SRCALPHA)
-                self.draw_hex_polygon(red_shade, w / 2.0, h / 2.0, w - 4, h - 4, (255, 30, 60, 80), width=0) # Soft red fill
-                self.draw_hex_polygon(red_shade, w / 2.0, h / 2.0, w - 4, h - 4, (255, 30, 60, 255), width=2) # Neon red border
-                pygame.draw.circle(red_shade, (255, 30, 60), (int(w / 2.0), int(h / 2.0)), 4)
-                
-                # Blit red shading onto screen
-                screen.blit(red_shade, (int(cx - w / 2.0), int(cy - h / 2.0)))
-
-        # Draw already placed tiles
-        tile_size_px = (int(w), int(h))
+        # -- Hex tiles -------------------------------------------------------
         for (q, r), tile in self.tiles.items():
-            lx, ly = self.get_hex_center(q, r)
-            cx = view_cx + self.camera_x + lx
-            cy = view_cy + self.camera_y + ly
-            
-            # Simple visibility clipping to avoid drawing out-of-screen tiles
-            if (viewport_rect.x - w < cx < viewport_rect.x + viewport_rect.width + w and
-                viewport_rect.y - h < cy < viewport_rect.y + viewport_rect.height + h):
-                
-                # Retrieve texture surface (uses synthetic fallback if missing)
-                tile_surf = tile.get_surface(tile_size_px)
-                
-                # Blit texture surface centered at (cx, cy)
-                blit_x = int(cx - tile_surf.get_width() / 2)
-                blit_y = int(cy - tile_surf.get_height() / 2)
-                screen.blit(tile_surf, (blit_x, blit_y))
-                
-                # Draw solid black boundary lines around all placed hexes (commented out per feedback)
-                # self.draw_hex_polygon(screen, cx, cy, w - 2, h - 2, (0, 0, 0), width=3)
-                
+            cx, cy = self.screen_pos(q, r)
 
-                
-                from factions import Faction
-                if isinstance(tile.owner, Faction):
-                    try:
-                        font_owner = util.get_font(10, bold=True)
-                        txt_owner = font_owner.render(tile.owner.race.upper(), True, settings.COLOR_NEON_CYAN)
-                        screen.blit(txt_owner, txt_owner.get_rect(center=(cx, cy + h / 4.0 + 3.0)))
-                    except:
-                        pass
+            if tile.owner is not None:
+                fill   = tile.owner.color_light
+                border = tile.owner.color_rgb
+                bwidth = 3 if tile.is_corner else 2
+            else:
+                fill   = settings.COLOR_HEX_NEUTRAL
+                border = settings.COLOR_HEX_BORDER
+                bwidth = 1
 
-                # Render Stronghold and Artifact visual markers
-                if getattr(tile, 'is_stronghold', False):
-                    try:
-                        font_sh = util.get_font(11, bold=True)
-                        txt_sh = font_sh.render("STRONGHOLD", True, (255, 215, 0))
-                        screen.blit(txt_sh, txt_sh.get_rect(center=(cx, cy - h / 3.0 - 3.0)))
-                    except:
-                        pass
-                elif getattr(tile, 'has_artifact', False) and tile.artifact is not None:
-                    try:
-                        font_art = util.get_font(10, bold=True)
-                        txt_art = font_art.render("ARTIFACT", True, settings.COLOR_NEON_PINK)
-                        screen.blit(txt_art, txt_art.get_rect(center=(cx, cy - h / 3.0 - 3.0)))
-                    except:
-                        pass
-
-                
-                # Dynamic layout scaling based on current hex width (baseline 293)
-                scale = self.hex_width / 293.0
-                size_val = max(12, int(36 * scale))
-                unit_size_army = (size_val, size_val)
-                unit_size_champ = (int(size_val * 1.2), int(size_val * 1.2))
-                spacing = max(2, int(6 * scale))
-                border_w = max(1, int(1.2 * scale))
-                row_padding = max(1, int(3 * scale))
+            self.draw_hex_polygon(screen, cx, cy, w-1, h-1, fill)
+            self.draw_hex_polygon(screen, cx, cy, w-1, h-1, border, bwidth)
 
 
-                # 2. Render Champions in the top row (bottoms just above center)
-                champions_list = self.champions.get((q, r), [])
-                if champions_list:
-                    num_champs = len(champions_list)
-                    oy_champ = int(-unit_size_champ[1] / 2.0 - row_padding)
-                    for idx, champ in enumerate(champions_list):
-                        ox = int((idx - (num_champs - 1) / 2.0) * (unit_size_champ[0] + spacing))
-                        px = int(cx + ox - unit_size_champ[0] / 2)
-                        py = int(cy + oy_champ - unit_size_champ[1] / 2)
-                        
-                        champ_surf = champ.get_surface(size=unit_size_champ, mask_type="square")
-                        screen.blit(champ_surf, (px, py))
-                        
-                        glow_color = settings.COLOR_NEON_CYAN
-                        pygame.draw.rect(screen, glow_color, (px, py, unit_size_champ[0], unit_size_champ[1]), border_w)
+        # -- Highlights ------------------------------------------------------
+        if highlight_move:
+            for (q, r) in highlight_move:
+                cx, cy = self.screen_pos(q, r)
+                self.draw_hex_polygon(screen, cx, cy, w-2, h-2, (60, 220, 80), 3)
 
-                # 3. Render Armies in the bottom row (tops just below center)
-                armies_list = self.armies.get((q, r), [])
-                if armies_list:
-                    num_armies = len(armies_list)
-                    oy_army = int(unit_size_army[1] / 2.0 + row_padding)
-                    for idx, army in enumerate(armies_list):
-                        ox = int((idx - (num_armies - 1) / 2.0) * (unit_size_army[0] + spacing))
-                        px = int(cx + ox - unit_size_army[0] / 2)
-                        py = int(cy + oy_army - unit_size_army[1] / 2)
-                        
-                        army_surf = army.get_surface(size=unit_size_army, mask_type="square")
-                        screen.blit(army_surf, (px, py))
-                        
-                        glow_color = settings.COLOR_NEON_CYAN
-                        pygame.draw.rect(screen, glow_color, (px, py, unit_size_army[0], unit_size_army[1]), border_w)
+        if highlight_attack:
+            for (q, r) in highlight_attack:
+                cx, cy = self.screen_pos(q, r)
+                self.draw_hex_polygon(screen, cx, cy, w-2, h-2, (220, 55, 55), 3)
 
-                        # Draw strength number if strength > 1
-                        if getattr(army, 'strength', 1) > 1:
-                            try:
-                                font_num = util.get_font(12, bold=True)
-                                txt_num = font_num.render(str(army.strength), True, (255, 255, 255))
-                                txt_rect = txt_num.get_rect(center=(px + unit_size_army[0] / 2, py + unit_size_army[1] / 2))
-                                # Draw small black circle behind text for maximum contrast
-                                pygame.draw.circle(screen, (0, 0, 0), txt_rect.center, max(8, int(txt_num.get_width() / 2.0 + 3)))
-                                screen.blit(txt_num, txt_rect)
-                            except:
-                                pass
+        # -- Units -----------------------------------------------------------
+        UNIT_SIZE    = 44
+        UNIT_SPACING = 52
 
-        # Draw ghost preview (snapping guideline) under drag and drop
-        if ghost_info:
-            g_q = ghost_info['q']
-            g_r = ghost_info['r']
-            g_terrain = ghost_info['terrain']
-            g_valid = ghost_info['valid']
-            
-            lx, ly = self.get_hex_center(g_q, g_r)
-            cx = view_cx + self.camera_x + lx
-            cy = view_cy + self.camera_y + ly
-            
-            # Check visibility
-            if (viewport_rect.x - w < cx < viewport_rect.x + viewport_rect.width + w and
-                viewport_rect.y - h < cy < viewport_rect.y + viewport_rect.height + h):
-                
-                # Draw ghost surface alpha blended
-                ghost_color = settings.COLOR_NEON_CYAN if g_valid else settings.COLOR_NEON_PINK
-                
-                # Draw translucent glowing polygon filling the ghost cell
-                ghost_surface = pygame.Surface((w, h), pygame.SRCALPHA)
-                # Compute local hex center relative to ghost surface
-                self.draw_hex_polygon(ghost_surface, w / 2.0, h / 2.0, w - 4, h - 4, (*ghost_color, 80), width=0)
-                self.draw_hex_polygon(ghost_surface, w / 2.0, h / 2.0, w - 4, h - 4, ghost_color, width=3)
-                
-                # Try drawing the name of the ghost terrain
-                try:
-                    font = util.get_font(10, bold=True)
-                    text = font.render(g_terrain.upper(), True, (255, 255, 255))
-                    text_rect = text.get_rect(center=(w / 2.0, h / 2.0))
-                    ghost_surface.blit(text, text_rect)
-                except:
-                    pass
-                
-                screen.blit(ghost_surface, (int(cx - w / 2.0), int(cy - h / 2.0)))
-                
-        # Draw highlight borders around specific tiles if provided
-        if highlight_coords:
-            for q, r in highlight_coords:
-                lx, ly = self.get_hex_center(q, r)
-                cx = view_cx + self.camera_x + lx
-                cy = view_cy + self.camera_y + ly
-                
-                if (viewport_rect.x - w / 2 < cx < viewport_rect.x + viewport_rect.width + w / 2 and
-                    viewport_rect.y - h / 2 < cy < viewport_rect.y + viewport_rect.height + h / 2):
-                    
-                    # Draw a nice thick neon glowing outline for movement destinations
-                    self.draw_hex_polygon(screen, cx, cy, w - 2, h - 2, highlight_color, width=3)
-
-        # Restore clip
-        screen.set_clip(original_clip)
+        for (q, r) in self.tiles:
+            cx, cy = self.screen_pos(q, r)
+            units = (
+                [('sovereign', u) for u in self.sovereigns.get((q,r), []) if u is not drag_unit]
+                + [('champion', u) for u in self.champions.get((q,r), []) if u is not drag_unit]
+                + [('army',     u) for u in self.armies.get((q,r), [])    if u is not drag_unit]
+            )
+            n = len(units)
+            if n == 0:
+                continue
+            for i, (utype, unit) in enumerate(units):
+                ux = cx + (i - (n-1)/2.0) * UNIT_SPACING
+                frozen = (frozen_nations is not None
+                          and unit.nation.ring_index in frozen_nations)
+                self.draw_unit_icon(screen, ux, cy, utype,
+                                    unit.nation.color_rgb, UNIT_SIZE,
+                                    frozen=frozen)

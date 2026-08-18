@@ -1,0 +1,115 @@
+THE SIX NATIONS
+
+In this game, six nations are placed around a symmetrical map composed of 37 smaller hexes arranged in a large hexagon shape. Each nation starts in control of four hexes, one corner hex and the three surrounding hexes.
+
+THE DIPLOMACY RING
+
+The nations are allies with each of their two neighboring nations.
+Their colors are selected so each nation is closer in color to its allies. The ring of six nations are yellow, green, sky blue, cobalt, magenta, crimson in that order around the map so that each nation is similar in color to its allies.
+
+
+
+THE MAP
+
+The board is composed of a hex map of 37 hexes (1 center hex + 3 surrounding rings). Each of the six nations start with control of 4 adjacent cornermost hexes.
+
+SUMMARY
+
+This is a game for 2-3 players.
+
+Players seek to push their randomly assigned Nation (and its close allies) to power. The goal is to defeat 2 of the 3 nations opposite them on the hex map by killing their sovereigns.
+ 
+Each turn, a player makes one move of a piece of ANY nation, however a player cannot move a piece of a nation they moved in their last 2 moves (in other words, a player can only play the piece of a given nation once every 3 turns).
+
+GAME SETUP
+
+Each player in the game secretly gets assigned a different random Nation 1-6.
+
+Each nation starts with one sovereign and one champion in their cornermost hex. The three adjacent hexes each start with one army. These pieces are of the color of that nation.
+
+A nation can never have more than 3 armies. A nation can never have more than 1 champion. A nation can never have more than one sovereign.
+
+
+TERM DEFINITIONS
+
+Unit - An Army, Champion, or Sovereign.
+
+Allied Unit - A unit is allied with another unit if it belongs to the same nation, or an adjacent nation on the diplomatic ring.
+
+Enemy Unit - Any non-allied unit.
+
+Supported - A unit is supported if it has another allied unit of any type with it in the same hex. Note that armies never support other armies, because only one army may be in a hex at once.
+
+Trapped - An unsupported sovereign is trapped if the sovereign has at least two enemy units on opposite sides of it. Supported sovereigns are never trapped.
+
+Ghost Nation - A nation that has lost its sovereign.
+
+Player Move Cooldown - A player cannot move a nation they moved on their last 2 turns. Each player has 2 nations on their cooldown list.
+
+Global Move Cooldown - A player cannot move the nation that the previous player just moved.
+
+
+GAMEPLAY
+
+There are three types of units on the map: Champions, Armies, and Sovereigns.
+
+Each turn, a player can make one move of a unit of ANY nation, except they may not move any nation on their cooldown list or the global cooldown. A counter of the given color is placed to show what the last two nations any player has moved recently. 
+
+A game turn move is any one of the following:
+An army can move from one hex into an adjacent hex that has no army and no enemy units. 
+An army may qualify to attack one adjacent hex with a non-allied unit in it.
+A sovereign can move from its current hex into an adjacent hex that does not have an enemy unit in it.
+A champion can move from its current hex into any adjacent hex that does not have an enemy unit in it.
+A champion may qualify to attack any hex adjacent to it with enemy units in it.
+Replacing one of the 3 armies: if a non-ghost nation no longer has 3 armies, then as a move, one new army may be placed on one of the four nation starting hexes, only if there is a hex with no other armies and no enemy units on it.
+Promotion: if a non-ghost nation has lost its champion, one army in one of the four starting hexes of that nation may be promoted to a new champion.
+
+Note that armies can NEVER share hexes. Only champions and sovereigns may share hexes with armies, and only with allied armies, champions, or sovereigns. Thus, the maximum number of units that can coexist in a hex is 5: one army, two allied sovereigns, and two allied champions.
+
+ATTACKS
+
+Only Armies and Champions can attack.
+Armies and Champions cannot attack allied units.
+The current player states the unit attacking, and the adjacent target hex, the target nation, and the target unit type.
+A unit must move forward after an attack, unless it violates other rules (only one army per hex, and cannot enter a hex with enemy units in it).
+
+An army can attack an adjacent enemy army. The result depends on support:
+If an unsupported army attacks an enemy unsupported army: both armies are destroyed.
+An unsupported army may not attack an enemy supported army: this is not a legal move.
+If a supported army attacks an enemy unsupported army: the enemy unsupported army is destroyed.
+If a supported army attacks an enemy supported army: both armies are destroyed.
+An army may not attack a champion.
+An army may not attack a sovereign, unless the sovereign is unsupported and trapped. If the army attacks an unsupported, trapped sovereign, the sovereign is destroyed and the army moves forward.
+
+If an army destroys another army or sovereign, if the attacking army survives, it must move into the hex unless there is another army or enemy unit in that hex.
+
+A champion can attack an adjacent enemy army. The result depends on support:
+If an unsupported champion attacks an enemy unsupported army: the army is destroyed.
+An unsupported champion may not attack a supported army, this is an illegal move.
+If a supported champion attacks a supported army, that army is destroyed.
+
+A champion can attack an adjacent enemy champion.
+If an unsupported champion attacks an enemy unsupported champion: both champions are destroyed.
+An unsupported champion may not attack a supported champion, this is not a legal move.
+If a supported champion attacks an enemy unsupported champion, the unsupported champion is destroyed and the champion must move forward.
+If a supported champion attacks an enemy supported champion, then both champions are destroyed.
+
+A champion can attack an adjacent enemy sovereign.
+If an unsupported champion attacks an enemy unsupported sovereign, then the unsupported sovereign is destroyed.
+An unsupported champion may not attack a supported sovereign, this is an illegal move.
+If a supported champion attacks a sovereign supported by an army, then the army is destroyed, effectively making this an attack against the army.
+A champion may not attack a sovereign supported by a champion.
+If a supported champion attacks an enemy sovereign supported by another sovereign, the enemy sovereign is destroyed and the champion does not move forward.
+
+
+
+VICTORY CONDITIONS
+
+A player wins for their secret Nation assignment by destroying the Sovereigns of 2 of their 3 enemy nations (the 3 nations opposite them on the diplomatic ring).
+
+Nations that lose their sovereign become ghost nations. They can no longer recruit new armies or promote champions. Their pieces remain in play, should a player still want to use them as their move.
+
+A player loses immediately if their secret assigned Nation loses its sovereign.
+
+It is possible for two players to win at the same time, resulting in a tie: if they started out with adjacent nations, they will share 2 of their three target sovereigns.
+
