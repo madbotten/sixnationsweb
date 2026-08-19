@@ -19,6 +19,71 @@ HEXES_DIR = os.path.join(BASE_DIR, "hexes")
 CHAMPIONS_DIR = os.path.join(BASE_DIR, "champions")
 ARMIES_DIR = os.path.join(BASE_DIR, "armies")
 ARTIFACTS_DIR = os.path.join(BASE_DIR, "artifacts")
+IMAGES_DIR = os.path.join(BASE_DIR, "images")
+
+# ---------------------------------------------------------------------------
+# Image loading helpers
+# ---------------------------------------------------------------------------
+
+_tinted_cache = {}   # (path, r, g, b, w, h) -> Surface
+
+
+def load_image(filename, size=None, alpha=False):
+    """Load an image from the images/ directory, optionally scaling it.
+
+    Args:
+        filename: File name relative to images/.
+        size:     (width, height) tuple to scale to, or None for original.
+        alpha:    If True, use convert_alpha() to preserve transparency.
+    Returns:
+        pygame.Surface (cached by filename+size).
+    """
+    key = (filename, size, alpha)
+    if key in _image_cache:
+        return _image_cache[key]
+
+    path = os.path.join(IMAGES_DIR, filename)
+    if not os.path.exists(path):
+        return None
+    try:
+        img = pygame.image.load(path)
+        img = img.convert_alpha() if alpha else img.convert()
+        if size is not None:
+            img = pygame.transform.smoothscale(img, size)
+        _image_cache[key] = img
+        return img
+    except pygame.error as e:
+        print(f"[Util Warning] Could not load {filename}: {e}")
+        return None
+
+
+def load_tinted_sprite(filename, color, width, height):
+    """Load a white-on-transparent PNG and tint it to *color*.
+
+    Uses BLEND_RGB_MULT so white pixels become *color* and transparent
+    pixels stay transparent.  Results are cached by (file, color, size).
+
+    Args:
+        filename: File name relative to images/.
+        color:    (r, g, b) nation color tuple.
+        width:    Target sprite width in pixels.
+        height:   Target sprite height in pixels.
+    Returns:
+        pygame.Surface with per-pixel alpha, or None on error.
+    """
+    key = (filename, color[0], color[1], color[2], width, height)
+    if key in _tinted_cache:
+        return _tinted_cache[key]
+
+    # Load or retrieve the base template at this size
+    base = load_image(filename, size=(width, height), alpha=True)
+    if base is None:
+        return None
+
+    tinted = base.copy()
+    tinted.fill(color, special_flags=pygame.BLEND_RGB_MULT)
+    _tinted_cache[key] = tinted
+    return tinted
 
 def get_font(size, bold=False):
     """

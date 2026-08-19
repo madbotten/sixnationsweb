@@ -184,29 +184,27 @@ def _enemy_set(ring_index):
 def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri,
                                     turn_number, nation_list=None):
     """
-    After BOT_ADAPTIVE_TURN, apply two sovereign-targeting rules:
+    Apply sovereign-targeting intelligence based on the suspected human faction:
 
-    Rule 1 — Hunt the suspected human sovereign:
+    Rule 1 — Hunt the suspected human sovereign (after BOT_ADAPTIVE_TURN):
       If a legal attack would kill a sovereign of the suspected human faction,
-      give that action a large bonus (+800) — even if that nation is normally
-      an ally of the bot.
+      give that action top priority (+2000).
 
-    Rule 2 — Don't help the human win:
-      If an attack would kill a sovereign that is an enemy of the suspected
-      human (helping the human's win condition), suppress it (-800) UNLESS
-      the sovereign is also a bot target AND the human still needs 2+ kills.
-      — If the human is already one kill away from winning, suppress ALL
-        their remaining target kills (even shared bot+human targets).
-
-    Returns a new (possibly reweighted) action list.
+    Rule 2 — Don't hand the human the game:
+      - If an attack would kill a sovereign that is an enemy of the suspected human
+        and NOT an enemy of the bot (pure human benefit): completely suppress it (-9999.0).
+      - If the attack kills a shared enemy sovereign and the human is 1 kill away:
+        - If bot is also 1 kill away: ALLOW (tie attempt).
+        - If bot is not 1 kill away: completely suppress it (-9999.0) so it doesn't give
+          the human a solo victory.
     """
-    if turn_number < settings.BOT_ADAPTIVE_TURN or suspected_human_ri is None:
+    if suspected_human_ri is None:
         return actions
 
     bot_enemy_ri   = _enemy_set(bot_ri)
     human_enemy_ri = _enemy_set(suspected_human_ri)
 
-    # Count how many of the suspected human's 3 targets are already ghost nations
+    # Count how many of the suspected human's and bot's 3 targets are already ghost nations
     human_kills_so_far = 0
     bot_kills_so_far   = 0
     if nation_list:
@@ -223,34 +221,43 @@ def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri,
     # If bot also has 1 kill, killing a shared target gives a tie — that's acceptable
     bot_one_away   = (bot_kills_so_far >= 1)
 
+    is_adaptive_phase = (turn_number >= settings.BOT_ADAPTIVE_TURN)
+
     result = []
     for action in actions:
         score, atype, *payload = action
         if atype == 'attack':
-            unit, coord = payload
+            unit, coord = payload[0], payload[1]
             tq, tr = coord
             target_sovs = grid.sovereigns.get((tq, tr), [])
             for sov in target_sovs:
+                # Only apply adjustments if the attacking unit can legally attack this sovereign
+                if not unit.nation.is_enemy(sov.nation):
+                    continue
                 sov_ri = sov.nation.ring_index
-                if sov_ri == suspected_human_ri:
-                    # Rule 1: kill the suspected human's own sovereign — top priority
-                    score += 800
+
+                if sov_ri == suspected_human_ri and is_adaptive_phase:
+                    # Rule 1: hunt the suspected human's sovereign
+                    score += 2000.0
+
                 elif sov_ri in human_enemy_ri:
                     if sov_ri not in bot_enemy_ri:
-                        # Pure human benefit, not a bot target — suppress
-                        score -= 800
+                        # Pure human benefit, not a bot target — forbid completely
+                        if is_adaptive_phase or human_one_away:
+                            score = -9999.0
                     elif human_one_away and bot_one_away:
                         # Shared target, both one kill away → tie result — allow
-                        pass
+                        score += 1000.0
                     elif human_one_away:
-                        # Would win for human but bot still needs 2+ — suppress
-                        score -= 800
-                    # else: shared target, human still needs 2+ kills — allow
+                        # Would give human solo win on the spot — forbid completely
+                        score = -9999.0
+                    # else: shared target and human needs 2+ kills — allow normal scoring
+
         result.append((score, atype, *payload))
     return result
 
 
-def _score_attack(grid, attacker, tq, tr, enemy_ring_set) -> float:
+def _score_attack(grid, attacker, tq, tr, enemy_ring_set, allied_ring_set=None) -> float:
     """Score for attacker targeting hex (tq, tr)."""
     from armies    import Army
     from champions import Champion, Sovereign
@@ -262,6 +269,9 @@ def _score_attack(grid, attacker, tq, tr, enemy_ring_set) -> float:
 
     if e_sovs:
         ri    = e_sovs[0].nation.ring_index
+        # NEVER attack the bot's own secret nation's sovereign
+        if allied_ring_set and ri in allied_ring_set:
+            return -9999.0
         score = 1000 if ri in enemy_ring_set else 250
     elif e_champs:
         ri    = e_champs[0].nation.ring_index
@@ -298,6 +308,7 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set) -> float:
                 )
                 score += 250 if allies_here > 0 else 25
         else:
+            # Non-allied (target) sovereign — push toward center & threats
             curr_threats = sum(
                 1 for nq, nr in grid.get_neighbors(unit.q, unit.r)
                 if grid._has_enemy_unit_at(nq, nr, nation)
@@ -310,6 +321,16 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set) -> float:
                 score += 80 + (new_threats - curr_threats) * 20
             else:
                 score += 5
+
+            # Center-proximity bonus: push target sovereigns toward center
+            old_d = max(abs(unit.q), abs(unit.r), abs(unit.q + unit.r))
+            new_d = max(abs(tq), abs(tr), abs(tq + tr))
+            if new_d < old_d:
+                # Bigger bonus for getting closer to center
+                score += 60 + (old_d - new_d) * 30
+                # Extra bonus for reaching the inner ring
+                if new_d <= 1:
+                    score += 30
 
     elif isinstance(unit, Champion):
         if is_allied:
@@ -372,7 +393,8 @@ def _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
 
         for unit in units:
             for coord in grid.get_valid_attacks(unit):
-                s = _score_attack(grid, unit, *coord, enemy_ring_set)
+                s = _score_attack(grid, unit, *coord, enemy_ring_set,
+                                  allied_ring_set=allied_ring_set)
                 actions.append((s, 'attack', unit, coord))
 
             for coord in grid.get_valid_moves(unit):
@@ -469,12 +491,22 @@ def _turn_random(grid, bot_player, global_cooldown_idx, nation_list):
     if not eligible:
         return None, None, "[Bot-random] No eligible nations."
 
+    bot_secret      = bot_player.secret_nation
+    allied_ring_set = {n.ring_index for n in nation_list if not bot_secret.is_enemy(n)}
+
     random.shuffle(eligible)
     pool = []
     for nation in eligible:
         for unit in grid.get_all_nation_units(nation):
             pool += [('move',   unit, c) for c in grid.get_valid_moves(unit)]
-            pool += [('attack', unit, c) for c in grid.get_valid_attacks(unit)]
+            for c in grid.get_valid_attacks(unit):
+                # Never randomly attack an allied sovereign
+                tq, tr = c
+                allied_sovs = [s for s in grid.sovereigns.get((tq, tr), [])
+                               if s.nation.ring_index in allied_ring_set
+                               and unit.nation.is_enemy(s.nation)]
+                if not allied_sovs:
+                    pool.append(('attack', unit, c))
         for coord in grid.get_recruit_hexes(nation):
             pool.append(('recruit', nation, coord))
         for coord in grid.get_promote_hexes(nation):
@@ -548,6 +580,10 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
                                   turn_number=turn_number)
         if not actions:
             return None
+        # Discard any disqualified actions (score < -1000)
+        valid_actions = [a for a in actions if a[0] > -1000]
+        if valid_actions:
+            actions = valid_actions
         best      = max(a[0] for a in actions)
         threshold = (best * 0.85) if best > 0 else (best - 50)
         top_tier  = [a for a in actions if a[0] >= threshold]
@@ -556,13 +592,22 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
 
     else:
         # Build random pool — also apply adaptive sovereign rules
-        bot_ri   = bot_player.secret_nation.ring_index
+        bot_ri          = bot_player.secret_nation.ring_index
+        allied_ring_set = {n.ring_index for n in nation_list
+                           if not bot_player.secret_nation.is_enemy(n)}
         eligible = _eligible_nations(bot_player, global_cooldown_idx, nation_list)
         pool = []
         for nation in eligible:
             for unit in grid.get_all_nation_units(nation):
                 pool += [(0, 'move',   unit, c) for c in grid.get_valid_moves(unit)]
-                pool += [(0, 'attack', unit, c) for c in grid.get_valid_attacks(unit)]
+                for c in grid.get_valid_attacks(unit):
+                    # Never randomly attack an allied sovereign
+                    tq, tr = c
+                    allied_sovs = [s for s in grid.sovereigns.get((tq, tr), [])
+                                   if s.nation.ring_index in allied_ring_set
+                                   and unit.nation.is_enemy(s.nation)]
+                    if not allied_sovs:
+                        pool.append((0, 'attack', unit, c))
             for coord in grid.get_recruit_hexes(nation):
                 pool.append((0, 'recruit', nation, coord))
             for coord in grid.get_promote_hexes(nation):
@@ -572,10 +617,10 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
         pool = _adaptive_sovereign_adjustments(
             grid, pool, bot_ri, suspected_human_ri, turn_number,
             nation_list=nation_list)
-        # For random, still pick randomly but exclude strongly-penalised actions
-        best_score  = max(a[0] for a in pool)
-        if best_score > -500:
-            pool = [a for a in pool if a[0] > -500]
+        # For random, exclude disqualified actions (score < -1000)
+        valid_pool = [a for a in pool if a[0] > -1000]
+        if valid_pool:
+            pool = valid_pool
         chosen = random.choice(pool)
         return (*chosen, 'random')   # tag with path label
 

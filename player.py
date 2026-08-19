@@ -16,10 +16,11 @@ class Player:
                         that is in their cooldown list.
     """
 
-    def __init__(self, secret_nation, is_bot: bool = False):
+    def __init__(self, secret_nation, is_bot: bool = False, player_id: str = 'player1'):
         self.secret_nation = secret_nation
         self.is_bot        = is_bot
-        self.cooldown: list[int] = []   # at most 2 entries
+        self.player_id     = player_id    # 'player1' or 'player2'
+        self.cooldown: list[int] = []     # at most 2 entries
 
     # -----------------------------------------------------------------------
     # Cooldown management

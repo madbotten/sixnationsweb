@@ -14,8 +14,10 @@ Each nation owns 4 hexes:
   - 1 adjacent ring-2 hex        -- 1 Army
 """
 
+import os
 import pygame
 import settings
+import util
 from factions import NATIONS
 
 
@@ -471,6 +473,7 @@ class MapGrid:
                 if not atk_supp and self.is_supported(target):
                     return False, "Illegal: unsupported champion cannot attack a supported army.", []
                 self.remove_army(target); destroyed.append(target)
+                advance = True
                 messages.append("Enemy army destroyed.")
 
             elif target_type == 'champion':
@@ -504,6 +507,7 @@ class MapGrid:
                 if not sov_supp:
                     # Unsupported sovereign -- always legal
                     self.remove_sovereign(target); destroyed.append(target)
+                    advance = True
                     messages.append(f"{target.nation.color_name} sovereign destroyed!")
                 else:
                     # Attacker is supported, sovereign is supported
@@ -629,51 +633,28 @@ class MapGrid:
 
         if frozen:
             # White-circle "frozen" style: light disc + smaller symbol inside
-            radius  = size // 2
-            s       = int(size * 0.33)
+            radius = size // 2
+            s      = int(size * 0.33)
             pygame.draw.circle(screen, (225, 230, 242), (cx, cy), radius)
             pygame.draw.circle(screen, (150, 158, 180), (cx, cy), radius, 1)
-            outline = (130, 140, 165)
         else:
-            # Bare-symbol style: larger, directly on hex background
-            s       = int(size * 0.42)
-            outline = (10, 13, 22)
+            s = int(size * 0.42)
 
-        if unit_type == 'army':
-            sw  = int(s * 0.65)
-            pts = [
-                (cx - sw, cy - int(s * 0.72)),
-                (cx + sw, cy - int(s * 0.72)),
-                (cx + sw, cy + int(s * 0.10)),
-                (cx,      cy + s             ),
-                (cx - sw, cy + int(s * 0.10)),
-            ]
-            pygame.draw.polygon(screen, c, pts)
-            pygame.draw.polygon(screen, outline, pts, 2)
-
-        elif unit_type == 'champion':
-            bw = max(3, size // 11)
-            gw = int(s * 1.55)
-            gh = max(3, size // 11)
-            gy = cy + int(s * 0.40)
-            pygame.draw.rect(screen, c, (cx - bw//2, cy - s, bw, s * 2))
-            pygame.draw.rect(screen, c, (cx - gw//2, gy - gh//2, gw, gh))
-            pygame.draw.rect(screen, outline, (cx - bw//2, cy - s, bw, s * 2), 1)
-            pygame.draw.rect(screen, outline, (cx - gw//2, gy - gh//2, gw, gh), 1)
-
-        elif unit_type == 'sovereign':
-            base_y = cy + int(s * 0.44)
-            pts = [
-                (cx - s,          base_y              ),
-                (cx - s,          cy - int(s * 0.56)  ),
-                (cx - int(s*0.4), cy - int(s * 0.10)  ),
-                (cx,              cy - s               ),
-                (cx + int(s*0.4), cy - int(s * 0.10)  ),
-                (cx + s,          cy - int(s * 0.56)  ),
-                (cx + s,          base_y              ),
-            ]
-            pygame.draw.polygon(screen, c, pts)
-            pygame.draw.polygon(screen, outline, pts, 2)
+        # All unit types use tinted PNG sprites
+        scale = 3.2 if unit_type == 'champion' else 2.0
+        icon_h = int(s * scale)
+        sprite_name = {'army': 'army.png',
+                       'champion': 'champion.png',
+                       'sovereign': 'sovereign.png'}.get(unit_type)
+        if sprite_name is None:
+            return
+        template = util.load_image(sprite_name, alpha=True)
+        if template is None:
+            return
+        icon_w = int(icon_h * template.get_width() / template.get_height())
+        sprite = util.load_tinted_sprite(sprite_name, c, icon_w, icon_h)
+        if sprite is not None:
+            screen.blit(sprite, sprite.get_rect(center=(cx, cy)))
 
     def draw(self, screen: pygame.Surface,
              highlight_move=None, highlight_attack=None,

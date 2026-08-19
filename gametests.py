@@ -10,6 +10,7 @@ from map import MapGrid
 from armies import Army
 from champions import Champion, Sovereign
 from bot import BotMemory
+from moves import serialize_move, apply_serialized_move
 
 
 class TestSixNations(unittest.TestCase):
@@ -436,6 +437,207 @@ class TestSixNations(unittest.TestCase):
         # Bot is Green (1) -> guess should exclude 1 and pick Yellow (0)
         guess = mem.guess_faction(NATIONS, exclude_ring_indices=(1,))
         self.assertEqual(guess.ring_index, 0)
+
+    def test_25_bot_does_not_hand_human_victory(self):
+        """When human is 1 kill away from winning, bot completely suppresses attacks on remaining human targets."""
+        from bot import _adaptive_sovereign_adjustments
+        grid = MapGrid()
+        grid.generate_map()
+
+        # Human suspected = Cobalt (3), enemies = Yellow(0), Green(1), Crimson(5)
+        # Bot = Sky Blue (2), enemies = Cobalt(3), Magenta(4), Crimson(5)
+        # Green (1) is already a ghost -> human has 1 kill (1 away from winning)
+        NATIONS[1].is_ghost = True
+
+        # Candidate action: attack Yellow (0) sovereign with Sky Blue (2) army (enemy of Yellow)
+        yellow_sov = [s for sl in grid.sovereigns.values() for s in sl if s.nation.ring_index == 0][0]
+        attacker = Army(NATIONS[2], 0, -2) # Sky Blue army
+        actions = [(1020.0, 'attack', attacker, yellow_sov.hex_location)]
+
+        # Adjust actions with suspected human = 3
+        adjusted = _adaptive_sovereign_adjustments(grid, actions, bot_ri=2, suspected_human_ri=3,
+                                                   turn_number=30, nation_list=NATIONS)
+        self.assertEqual(len(adjusted), 1)
+        # Score must be <= -1000 (disqualified) so bot never executes it
+        self.assertTrue(adjusted[0][0] < -1000)
+
+    # -----------------------------------------------------------------------
+    # 12. Advance after combat
+    # -----------------------------------------------------------------------
+
+    def test_26_champion_advances_after_killing_army(self):
+        """Champion advances into hex after destroying an enemy army (hex clear)."""
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        champ = Champion(NATIONS[0], 0, 0)
+        enemy_army = Army(NATIONS[3], 1, 0)
+        grid.add_champion(champ)
+        grid.add_army(enemy_army)
+
+        success, msg, destroyed = grid.resolve_attack(champ, 1, 0)
+        self.assertTrue(success)
+        self.assertIn(enemy_army, destroyed)
+        self.assertEqual(champ.hex_location, (1, 0))
+
+    def test_27_champion_advances_after_killing_champion(self):
+        """Supported champion advances after destroying unsupported enemy champion."""
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        atk_champ = Champion(NATIONS[0], 0, 0)
+        support = Army(NATIONS[0], 0, 0)  # provides support
+        enemy_champ = Champion(NATIONS[3], 1, 0)
+        grid.add_champion(atk_champ)
+        grid.add_army(support)
+        grid.add_champion(enemy_champ)
+
+        success, msg, destroyed = grid.resolve_attack(atk_champ, 1, 0)
+        self.assertTrue(success)
+        self.assertIn(enemy_champ, destroyed)
+        self.assertEqual(atk_champ.hex_location, (1, 0))
+
+    def test_28_champion_advances_after_killing_sovereign(self):
+        """Champion advances after destroying an unsupported enemy sovereign."""
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        champ = Champion(NATIONS[0], 0, 0)
+        enemy_sov = Sovereign(NATIONS[3], 1, 0)
+        grid.add_champion(champ)
+        grid.add_sovereign(enemy_sov)
+
+        success, msg, destroyed = grid.resolve_attack(champ, 1, 0)
+        self.assertTrue(success)
+        self.assertIn(enemy_sov, destroyed)
+        self.assertEqual(champ.hex_location, (1, 0))
+
+    def test_29_champion_does_not_advance_when_enemies_remain(self):
+        """Champion kills one enemy but does NOT advance because another enemy remains."""
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        champ = Champion(NATIONS[0], 0, 0)
+        support = Army(NATIONS[0], 0, 0)      # supports champion
+        enemy_army1 = Army(NATIONS[3], 1, 0)
+        enemy_army2 = Army(NATIONS[3], 1, 0)   # second enemy in same hex
+        grid.add_champion(champ)
+        grid.add_army(support)
+        grid.add_army(enemy_army1)
+        grid.add_army(enemy_army2)
+
+        success, msg, destroyed = grid.resolve_attack(champ, 1, 0)
+        self.assertTrue(success)
+        # Champion should stay at origin because enemies remain
+        self.assertEqual(champ.hex_location, (0, 0))
+
+    def test_30_army_does_not_advance_when_army_present(self):
+        """Supported army kills enemy army but does NOT advance because a friendly army is already there."""
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        atk_army = Army(NATIONS[0], 0, 0)
+        support = Champion(NATIONS[0], 0, 0)  # provides support
+        friendly_army = Army(NATIONS[1], 1, 0)  # allied army already in target hex
+        enemy_army = Army(NATIONS[3], 1, 0)
+        grid.add_army(atk_army)
+        grid.add_champion(support)
+        grid.add_army(friendly_army)
+        grid.add_army(enemy_army)
+
+        success, msg, destroyed = grid.resolve_attack(atk_army, 1, 0)
+        self.assertTrue(success)
+        self.assertIn(enemy_army, destroyed)
+        # Army should NOT advance because another army is in the target hex
+        self.assertEqual(atk_army.hex_location, (0, 0))
+
+    def test_31_army_advances_into_clear_hex(self):
+        """Supported army kills lone enemy army and advances into the now-empty hex."""
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        atk_army = Army(NATIONS[0], 0, 0)
+        support = Champion(NATIONS[0], 0, 0)  # provides support
+        enemy_army = Army(NATIONS[3], 1, 0)
+        grid.add_army(atk_army)
+        grid.add_champion(support)
+        grid.add_army(enemy_army)
+
+        success, msg, destroyed = grid.resolve_attack(atk_army, 1, 0)
+        self.assertTrue(success)
+        self.assertIn(enemy_army, destroyed)
+        self.assertEqual(atk_army.hex_location, (1, 0))
+
+    # -----------------------------------------------------------------------
+    # 13. Move serialization round-trip
+    # -----------------------------------------------------------------------
+
+    def test_32_serialize_apply_move(self):
+        """Serialize a move action and apply it — unit should end up at target hex."""
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        army = Army(NATIONS[0], 0, 0)
+        grid.add_army(army)
+
+        # Serialize
+        move_data = serialize_move('move', 0, unit_type='army',
+                                  from_hex=(0, 0), to_hex=(1, 0))
+        self.assertEqual(move_data['type'], 'move')
+        self.assertEqual(move_data['nation_ri'], 0)
+        self.assertEqual(move_data['from'], [0, 0])
+        self.assertEqual(move_data['to'], [1, 0])
+
+        # Apply
+        success, msg, moved_nation, destroyed = apply_serialized_move(
+            grid, move_data, NATIONS)
+        self.assertTrue(success)
+        self.assertEqual(moved_nation.ring_index, 0)
+        self.assertEqual(army.hex_location, (1, 0))
+
+    def test_33_serialize_apply_attack(self):
+        """Serialize an attack and apply it — enemy should be destroyed."""
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        champ = Champion(NATIONS[0], 0, 0)
+        enemy = Army(NATIONS[3], 1, 0)
+        grid.add_champion(champ)
+        grid.add_army(enemy)
+
+        move_data = serialize_move('attack', 0, unit_type='champion',
+                                  from_hex=(0, 0), to_hex=(1, 0))
+        success, msg, moved_nation, destroyed = apply_serialized_move(
+            grid, move_data, NATIONS)
+        self.assertTrue(success)
+        self.assertIn(enemy, destroyed)
+
+    def test_34_serialize_apply_recruit(self):
+        """Serialize a recruit action and apply it — new army should appear."""
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        # Place a sovereign so the nation isn't a ghost
+        sov = Sovereign(NATIONS[0], 0, 0)
+        grid.add_sovereign(sov)
+
+        move_data = serialize_move('recruit', 0, to_hex=(1, 0))
+        success, msg, moved_nation, destroyed = apply_serialized_move(
+            grid, move_data, NATIONS)
+        self.assertTrue(success)
+        self.assertEqual(moved_nation.ring_index, 0)
+        armies_at = grid.armies.get((1, 0), [])
+        self.assertEqual(len(armies_at), 1)
+        self.assertEqual(armies_at[0].nation.ring_index, 0)
 
 
 if __name__ == '__main__':

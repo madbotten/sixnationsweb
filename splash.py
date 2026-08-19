@@ -151,7 +151,7 @@ def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None):
     Draw the splash screen.
     fonts    : dict with keys 'title','large','medium','small','btn'
     diplo_img: optional pre-scaled pygame.Surface for the Diplomacy Ring image
-    Returns (start_rect, instructions_rect).
+    Returns (bot_rect, human_rect, instructions_rect).
     """
     W  = settings.SCREEN_WIDTH
     H  = settings.SCREEN_HEIGHT
@@ -208,16 +208,23 @@ def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None):
     _draw_crown(screen, icon_x2, icon_y, 20, nc)
 
     # ── Buttons ────────────────────────────────────────────────────────────
-    bw, bh = 310, 56
-    start_rect = pygame.Rect(W // 2 - bw // 2, cy + 110, bw, bh)
-    inst_rect  = pygame.Rect(W // 2 - bw // 2, cy + 185, bw, bh)
+    bw, bh  = 230, 56
+    gap     = 20    # gap between the two mode buttons
+    total_w = bw * 2 + gap
+    left_x  = W // 2 - total_w // 2
 
-    _draw_button(screen, fonts['btn'], "START GAME",   start_rect, True,  nc,
-                 start_rect.collidepoint(mx, my))
-    _draw_button(screen, fonts['btn'], "INSTRUCTIONS", inst_rect,  False, nc,
+    bot_rect   = pygame.Rect(left_x,           cy + 110, bw, bh)
+    human_rect = pygame.Rect(left_x + bw + gap, cy + 110, bw, bh)
+    inst_rect  = pygame.Rect(W // 2 - 310 // 2, cy + 185, 310, bh)
+
+    _draw_button(screen, fonts['btn'], "PLAY vs BOT",   bot_rect,   True,  nc,
+                 bot_rect.collidepoint(mx, my))
+    _draw_button(screen, fonts['btn'], "PLAY vs HUMAN", human_rect, True,  nc,
+                 human_rect.collidepoint(mx, my))
+    _draw_button(screen, fonts['btn'], "INSTRUCTIONS",  inst_rect,  False, nc,
                  inst_rect.collidepoint(mx, my))
 
-    return start_rect, inst_rect
+    return bot_rect, human_rect, inst_rect
 
 
 def draw_instructions(screen, fonts, rules_surfs, scroll_y, mx, my):

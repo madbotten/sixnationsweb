@@ -6,12 +6,14 @@ Phase 4: human drag-and-drop UI, bot random move, turn management.
 import sys
 import os
 import random
+import asyncio
 import pygame
 
 import settings
 import util
 import bot as bot_ai
 import splash as splash_mod
+import moves as moves_mod
 from bot import BotMemory
 from map import MapGrid
 from factions import NATIONS
@@ -19,16 +21,83 @@ from player import Player
 
 
 # ---------------------------------------------------------------------------
+# Network layer — WebSocket send/receive via JS bridge (Pygbag) or stubs
+# ---------------------------------------------------------------------------
+game_mode_global = 'vs_bot'       # set at runtime; 'vs_bot' | 'vs_human' | 'network'
+my_role          = 'player1'      # 'player1' or 'player2'
+
+_incoming_moves = []              # queue of move dicts received from opponent
+
+def _is_wasm():
+    """True when running inside Pygbag / Emscripten."""
+    try:
+        import sys
+        return sys.platform == 'emscripten'
+    except Exception:
+        return False
+
+def _setup_network_receive():
+    """Install a JS callback to push incoming WebSocket messages into _incoming_moves."""
+    if not _is_wasm():
+        return
+    import platform
+    js = platform.window
+    # JS function: when a message arrives on gameSocket, push it onto Python's queue
+    js.eval("""
+        if (window.gameSocket) {
+            window.gameSocket.addEventListener('message', function(ev) {
+                var msg = JSON.parse(ev.data);
+                if (msg.type && msg.type !== 'START' && msg.type !== 'WAITING'
+                    && msg.type !== 'ERROR' && msg.type !== 'DISCONNECT') {
+                    // It's a game move — push to Python queue
+                    if (!window._pyMoveQueue) window._pyMoveQueue = [];
+                    window._pyMoveQueue.push(ev.data);
+                }
+            });
+        }
+    """)
+
+def on_local_move_made(move_data: dict):
+    """Send the serialized move to the opponent via WebSocket (network mode only)."""
+    if game_mode_global != 'network':
+        return
+    if not _is_wasm():
+        return
+    import platform, json
+    js = platform.window
+    payload = json.dumps(move_data)
+    js.eval(f"if (window.gameSocket) window.gameSocket.send('{payload}');")
+
+def on_network_move_received():
+    """Pop and return the next incoming move dict, or None."""
+    if _is_wasm():
+        import platform, json
+        js = platform.window
+        # Pull any messages JS has queued
+        raw = js.eval("(window._pyMoveQueue && window._pyMoveQueue.length) ? window._pyMoveQueue.shift() : ''")
+        if raw:
+            try:
+                return json.loads(raw)
+            except Exception:
+                pass
+    # Also check the Python-side queue (for desktop testing)
+    if _incoming_moves:
+        return _incoming_moves.pop(0)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # State machine constants
 # ---------------------------------------------------------------------------
 
-STATE_HUMAN_TURN     = 0
-STATE_BOT_THINKING   = 1
-STATE_GAME_OVER      = 2
-STATE_BOT_PRE_FLASH  = 3
-STATE_BOT_POST_FLASH = 4
-STATE_SPLASH         = 5   # pre-game splash
-STATE_INSTRUCTIONS   = 6   # scrollable rules screen
+STATE_HUMAN_TURN        = 0
+STATE_BOT_THINKING      = 1
+STATE_GAME_OVER         = 2
+STATE_BOT_PRE_FLASH     = 3
+STATE_BOT_POST_FLASH    = 4
+STATE_SPLASH            = 5   # pre-game splash
+STATE_INSTRUCTIONS      = 6   # scrollable rules screen
+STATE_WAITING_OPPONENT  = 7   # network mode: waiting for remote player's move
 
 BOT_THINK_MS = 900   # ms of "thinking" delay before bot acts
 BOT_FLASH_MS = 500   # ms of pre/post flash animation
@@ -51,13 +120,9 @@ UNIT_SPACING = 52
 # ---------------------------------------------------------------------------
 
 def load_diplo_ring(size: int) -> pygame.Surface:
-    path = os.path.join(os.path.dirname(__file__), "DiplomacyRing.jpg")
-    if os.path.exists(path):
-        try:
-            img = pygame.image.load(path).convert()
-            return pygame.transform.smoothscale(img, (size, size))
-        except pygame.error as e:
-            print(f"[Warning] Could not load DiplomacyRing.jpg: {e}")
+    img = util.load_image("DiplomacyRing.jpg", size=(size, size))
+    if img is not None:
+        return img
     surf = pygame.Surface((size, size))
     surf.fill((25, 30, 45))
     font = util.get_font(13, bold=True)
@@ -118,61 +183,43 @@ def draw_drag_ghost(screen, unit_type, nation_color, mx, my):
     ghost  = pygame.Surface((size, size), pygame.SRCALPHA)
     cx, cy = size // 2, size // 2
     s      = int(UNIT_SIZE * 0.42)
-    cr, cg, cb = nation_color
     fa     = 210   # fill alpha
-    oa     = 160   # outline alpha
 
-    if unit_type == 'army':
-        sw  = int(s * 0.65)
-        pts = [
-            (cx - sw, cy - int(s * 0.72)),
-            (cx + sw, cy - int(s * 0.72)),
-            (cx + sw, cy + int(s * 0.10)),
-            (cx,      cy + s             ),
-            (cx - sw, cy + int(s * 0.10)),
-        ]
-        pygame.draw.polygon(ghost, (cr, cg, cb, fa), pts)
-        pygame.draw.polygon(ghost, (10, 13, 22, oa), pts, 2)
-
-    elif unit_type == 'champion':
-        bw = max(3, UNIT_SIZE // 11)
-        gw = int(s * 1.55)
-        gh = max(3, UNIT_SIZE // 11)
-        gy = cy + int(s * 0.40)
-        pygame.draw.rect(ghost, (cr, cg, cb, fa), (cx - bw//2, cy - s, bw, s * 2))
-        pygame.draw.rect(ghost, (cr, cg, cb, fa), (cx - gw//2, gy - gh//2, gw, gh))
-        pygame.draw.rect(ghost, (10, 13, 22, oa), (cx - bw//2, cy - s, bw, s * 2), 1)
-        pygame.draw.rect(ghost, (10, 13, 22, oa), (cx - gw//2, gy - gh//2, gw, gh), 1)
-
-    elif unit_type == 'sovereign':
-        base_y = cy + int(s * 0.44)
-        pts = [
-            (cx - s,          base_y              ),
-            (cx - s,          cy - int(s * 0.56)  ),
-            (cx - int(s*0.4), cy - int(s * 0.10)  ),
-            (cx,              cy - s               ),
-            (cx + int(s*0.4), cy - int(s * 0.10)  ),
-            (cx + s,          cy - int(s * 0.56)  ),
-            (cx + s,          base_y              ),
-        ]
-        pygame.draw.polygon(ghost, (cr, cg, cb, fa), pts)
-        pygame.draw.polygon(ghost, (10, 13, 22, oa), pts, 2)
+    sprite_name = {'army': 'army.png',
+                   'champion': 'champion.png',
+                   'sovereign': 'sovereign.png'}.get(unit_type)
+    if sprite_name is not None:
+        scale = 3.2 if unit_type == 'champion' else 2.0
+        icon_h = int(s * scale)
+        template = util.load_image(sprite_name, alpha=True)
+        if template is not None:
+            icon_w = int(icon_h * template.get_width() / template.get_height())
+            sprite = util.load_tinted_sprite(sprite_name, nation_color,
+                                             icon_w, icon_h)
+            if sprite is not None:
+                tmp = sprite.copy()
+                tmp.set_alpha(fa)
+                ghost.blit(tmp, tmp.get_rect(center=(cx, cy)))
 
     screen.blit(ghost, (mx - cx, my - cy))
 
 
-def draw_top_bar(screen, font_large, font_small, human_player,
-                 current_player, turn_number, game_state):
+def draw_top_bar(screen, font_large, font_small, active_player,
+                 current_player, turn_number, game_state, game_mode='vs_bot'):
     bar = pygame.Rect(0, 0, settings.SCREEN_WIDTH, settings.TOP_BAR_HEIGHT)
     pygame.draw.rect(screen, settings.COLOR_TOP_BAR, bar)
     pygame.draw.line(screen, settings.COLOR_PANEL_BORDER,
                      (0, settings.TOP_BAR_HEIGHT - 1),
                      (settings.SCREEN_WIDTH, settings.TOP_BAR_HEIGHT - 1), 1)
 
-    nation = human_player.secret_nation
+    nation = active_player.secret_nation
     col    = nation.color_rgb
 
-    lbl = font_small.render("YOUR SECRET NATION:", True, settings.COLOR_TEXT_MUTED)
+    if game_mode == 'vs_human':
+        label_text = f"{active_player.player_id.upper()} SECRET NATION:"
+    else:
+        label_text = "YOUR SECRET NATION:"
+    lbl = font_small.render(label_text, True, settings.COLOR_TEXT_MUTED)
     screen.blit(lbl, lbl.get_rect(midleft=(20, settings.TOP_BAR_HEIGHT // 2 - 10)))
     bx, by = 22, settings.TOP_BAR_HEIGHT // 2 + 4
     pygame.draw.rect(screen, col, (bx, by, 28, 20), border_radius=4)
@@ -185,8 +232,16 @@ def draw_top_bar(screen, font_large, font_small, human_player,
     elif game_state == STATE_BOT_THINKING:
         centre_text = f"TURN {turn_number}  —  BOT IS THINKING…"
         centre_col  = settings.NATION_COLORS[1]   # green-ish pulse colour
+    elif game_state == STATE_WAITING_OPPONENT:
+        centre_text = f"TURN {turn_number}  —  WAITING FOR OPPONENT…"
+        centre_col  = settings.NATION_COLORS[2]   # sky-blue pulse
     else:
-        whose = "YOUR TURN" if not current_player.is_bot else "BOT'S TURN"
+        if game_mode == 'vs_human':
+            whose = current_player.player_id.upper() + "'S TURN"
+        elif game_mode == 'network':
+            whose = "YOUR TURN"
+        else:
+            whose = "YOUR TURN" if not current_player.is_bot else "BOT'S TURN"
         centre_text = f"TURN {turn_number}  —  {whose}"
         centre_col  = settings.COLOR_TEXT_PRIMARY
 
@@ -403,24 +458,25 @@ def draw_sidebar_buttons(screen, grid, buttons, action_pending, pending_nation, 
         sym_col = (255, 255, 255)
 
         if btype == 'recruit':
-            # Shield
-            sw  = int(s * 0.65)
-            pts = [
-                (bx - sw, by - int(s * 0.72)),
-                (bx + sw, by - int(s * 0.72)),
-                (bx + sw, by + int(s * 0.10)),
-                (bx,      by + s             ),
-                (bx - sw, by + int(s * 0.10)),
-            ]
-            pygame.draw.polygon(screen, sym_col, pts)
+            # Army shield sprite (white for sidebar button)
+            icon_h = int(s * 2.0)
+            sprite_name = 'army.png'
+            template = util.load_image(sprite_name, alpha=True)
+            if template is not None:
+                icon_w = int(icon_h * template.get_width() / template.get_height())
+                sprite = util.load_tinted_sprite(sprite_name, sym_col, icon_w, icon_h)
+                if sprite is not None:
+                    screen.blit(sprite, sprite.get_rect(center=(bx, by)))
         else:
-            # Champion sword
-            bw = max(2, size // 11)
-            gw = int(s * 1.55)
-            gh = max(2, size // 11)
-            gy = by + int(s * 0.40)
-            pygame.draw.rect(screen, sym_col, (bx - bw//2, by - s, bw, s * 2))
-            pygame.draw.rect(screen, sym_col, (bx - gw//2, gy - gh//2, gw, gh))
+            # Champion sword sprite (white for sidebar button)
+            icon_h = int(s * 2.0)
+            sprite_name = 'champion.png'
+            template = util.load_image(sprite_name, alpha=True)
+            if template is not None:
+                icon_w = int(icon_h * template.get_width() / template.get_height())
+                sprite = util.load_tinted_sprite(sprite_name, sym_col, icon_w, icon_h)
+                if sprite is not None:
+                    screen.blit(sprite, sprite.get_rect(center=(bx, by)))
 
         # Small label below
         label = "REC" if btype == 'recruit' else "PRO"
@@ -443,28 +499,28 @@ def _clear_action(state):
     """Return a cleared action-pending state tuple."""
     return None, None, set(), set()
 
-def check_all_end_conditions(grid, human_player, bot_player, nation_list):
+def check_all_end_conditions(grid, player1, player2, nation_list):
     """
     Run ghost detection then evaluate all win/loss/tie conditions.
     Returns a GAME_RESULT_* constant, or None if the game continues.
     Priority: tie > individual win > individual loss.
     """
     grid.check_ghost_nations(nation_list)
-    human_wins  = grid.check_win_condition(human_player, nation_list)
-    bot_wins    = grid.check_win_condition(bot_player,   nation_list)
-    human_loses = grid.check_loss_condition(human_player)
-    bot_loses   = grid.check_loss_condition(bot_player)
+    p1_wins  = grid.check_win_condition(player1, nation_list)
+    p2_wins  = grid.check_win_condition(player2, nation_list)
+    p1_loses = grid.check_loss_condition(player1)
+    p2_loses = grid.check_loss_condition(player2)
 
     # Simultaneous wins or simultaneous sovereign deaths → tie
-    if (human_wins and bot_wins) or (human_loses and bot_loses):
+    if (p1_wins and p2_wins) or (p1_loses and p2_loses):
         return GAME_RESULT_TIE
-    if human_wins:
+    if p1_wins:
         return GAME_RESULT_WIN_SCORE
-    if bot_loses:
+    if p2_loses:
         return GAME_RESULT_WIN_OPPONENT_DEAD
-    if bot_wins:
+    if p2_wins:
         return GAME_RESULT_LOSS_BOT_SCORE
-    if human_loses:
+    if p1_loses:
         return GAME_RESULT_LOSS_SOVEREIGN
     return None
 
@@ -473,7 +529,8 @@ def check_all_end_conditions(grid, human_player, bot_player, nation_list):
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+async def main():
+    global game_mode_global
     pygame.init()
     screen = pygame.display.set_mode((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT))
     pygame.display.set_caption(settings.WINDOW_TITLE)
@@ -484,17 +541,21 @@ def main():
 
     # --- Game state ----------------------------------------------------------
     nation_list  = list(NATIONS)
-    human_nation = random.choice(nation_list)
-    bot_nation   = random.choice([n for n in nation_list if n is not human_nation])
 
-    human_player = Player(secret_nation=human_nation, is_bot=False)
-    bot_player   = Player(secret_nation=bot_nation,   is_bot=True)
-    players      = [human_player, bot_player]
+    # Player objects — created after splash screen selects game_mode.
+    # Initialise with vs_bot defaults so the splash can show the secret nation.
+    p1_nation = random.choice(nation_list)
+    p2_nation = random.choice([n for n in nation_list if n is not p1_nation])
+
+    player1 = Player(secret_nation=p1_nation, is_bot=False, player_id='player1')
+    player2 = Player(secret_nation=p2_nation, is_bot=True,  player_id='player2')
+    players = [player1, player2]
 
     current_player_idx  = 0
     global_cooldown_idx = None
     turn_number         = 1
     game_state          = STATE_SPLASH
+    game_mode           = 'vs_bot'       # set by splash button click
     game_result         = GAME_RESULT_NONE
     bot_think_timer     = 0
 
@@ -551,7 +612,7 @@ def main():
     diplo_splash = pygame.transform.smoothscale(diplo_img, (140, 140)) if diplo_img else None
 
     print("=== Six Nations ===")
-    print(f"Human: {human_nation.color_name}  |  Bot: {bot_nation.color_name}")
+    print(f"Player1: {p1_nation.color_name}  |  Player2: {p2_nation.color_name}")
     print(f"Tiles: {len(grid.tiles)} | Armies: {sum(len(v) for v in grid.armies.values())} "
           f"| Champions: {sum(len(v) for v in grid.champions.values())} "
           f"| Sovereigns: {sum(len(v) for v in grid.sovereigns.values())}")
@@ -581,10 +642,20 @@ def main():
             elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                   and game_state == STATE_SPLASH):
                 mx, my = event.pos
-                s_rect, i_rect = splash_mod.draw_splash(
-                    screen, splash_fonts, human_nation, mx, my, diplo_splash)
-                if s_rect.collidepoint(mx, my):
-                    game_state = STATE_HUMAN_TURN
+                b_rect, h_rect, i_rect = splash_mod.draw_splash(
+                    screen, splash_fonts, p1_nation, mx, my, diplo_splash)
+                if b_rect.collidepoint(mx, my):
+                    game_mode      = 'vs_bot'
+                    player2.is_bot = True
+                    game_state     = STATE_HUMAN_TURN
+                    game_mode_global = game_mode
+                    print(f"[Mode] Playing vs Bot")
+                elif h_rect.collidepoint(mx, my):
+                    game_mode      = 'vs_human'
+                    player2.is_bot = False
+                    game_state     = STATE_HUMAN_TURN
+                    game_mode_global = game_mode
+                    print(f"[Mode] Playing vs Human (hot-seat)")
                 elif i_rect.collidepoint(mx, my):
                     game_state    = STATE_INSTRUCTIONS
                     inst_scroll   = 0
@@ -608,8 +679,9 @@ def main():
             elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                   and game_state == STATE_HUMAN_TURN):
                 mx, my = event.pos
+                active_player = players[current_player_idx]
                 eligible = get_eligible_nations(
-                    human_player, global_cooldown_idx, nation_list)
+                    active_player, global_cooldown_idx, nation_list)
 
                 # --- Sidebar button click? ---
                 btn = get_sidebar_button_at(sidebar_buttons, mx, my)
@@ -636,25 +708,37 @@ def main():
                     if (tq, tr) in highlight_muster:
                         grid.recruit_army(pending_nation, tq, tr)
                         moved_nation     = pending_nation
-                        bot_memory.record(turn_number, pending_nation,
-                                          None, None, (tq, tr), 'recruit')
+                        _move_data = moves_mod.serialize_move(
+                            'recruit', pending_nation.ring_index,
+                            to_hex=(tq, tr))
+                        on_local_move_made(_move_data)
+                        if game_mode == 'vs_bot':
+                            bot_memory.record(turn_number, pending_nation,
+                                              None, None, (tq, tr), 'recruit')
                         if settings.DEPLOYMENT == 'DEBUG':
-                            print(f"[Human recruit] T{turn_number} {pending_nation.color_name} at {(tq,tr)}")
-                        bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
+                            print(f"[{active_player.player_id} recruit] T{turn_number} {pending_nation.color_name} at {(tq,tr)}  {_move_data}")
+                        if game_mode == 'vs_bot':
+                            bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
                         action_pending   = pending_nation = None
                         highlight_muster = highlight_promo = set()
 
-                        human_player.add_to_cooldown(moved_nation)
+                        active_player.add_to_cooldown(moved_nation)
                         global_cooldown_idx = moved_nation.ring_index
                         end = check_all_end_conditions(
-                            grid, human_player, bot_player, nation_list)
+                            grid, player1, player2, nation_list)
                         if end is not None:
                             game_state = STATE_GAME_OVER
                             game_result = end
-                        else:
+                        elif game_mode == 'vs_bot':
                             game_state = STATE_BOT_THINKING
                             bot_think_timer = BOT_THINK_MS
                             current_player_idx = 1
+                        elif game_mode == 'network':
+                            game_state = STATE_WAITING_OPPONENT
+                            turn_number += 1
+                        else:
+                            current_player_idx = 1 - current_player_idx
+                            turn_number += 1
                     else:
                         # Click outside valid hexes → cancel
                         action_pending = pending_nation = None
@@ -669,25 +753,37 @@ def main():
                         if armies_here:
                             grid.promote_to_champion(armies_here[0])
                             moved_nation     = pending_nation
-                            bot_memory.record(turn_number, pending_nation,
-                                              None, (tq, tr), None, 'promote')
+                            _move_data = moves_mod.serialize_move(
+                                'promote', pending_nation.ring_index,
+                                to_hex=(tq, tr))
+                            on_local_move_made(_move_data)
+                            if game_mode == 'vs_bot':
+                                bot_memory.record(turn_number, pending_nation,
+                                                  None, (tq, tr), None, 'promote')
                             if settings.DEPLOYMENT == 'DEBUG':
-                                print(f"[Human promote] T{turn_number} {pending_nation.color_name} at {(tq,tr)}")
-                            bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
+                                print(f"[{active_player.player_id} promote] T{turn_number} {pending_nation.color_name} at {(tq,tr)}  {_move_data}")
+                            if game_mode == 'vs_bot':
+                                bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
                             action_pending   = pending_nation = None
                             highlight_muster = highlight_promo = set()
 
-                            human_player.add_to_cooldown(moved_nation)
+                            active_player.add_to_cooldown(moved_nation)
                             global_cooldown_idx = moved_nation.ring_index
                             end = check_all_end_conditions(
-                                grid, human_player, bot_player, nation_list)
+                                grid, player1, player2, nation_list)
                             if end is not None:
                                 game_state = STATE_GAME_OVER
                                 game_result = end
-                            else:
+                            elif game_mode == 'vs_bot':
                                 game_state = STATE_BOT_THINKING
                                 bot_think_timer = BOT_THINK_MS
                                 current_player_idx = 1
+                            elif game_mode == 'network':
+                                game_state = STATE_WAITING_OPPONENT
+                                turn_number += 1
+                            else:
+                                current_player_idx = 1 - current_player_idx
+                                turn_number += 1
                     else:
                         action_pending = pending_nation = None
                         highlight_muster = highlight_promo = set()
@@ -726,29 +822,33 @@ def main():
                     success, msg = grid.apply_move(drag_unit, tq, tr)
                     if success:
                         moved_nation = drag_unit.nation
-                        bot_memory.record(turn_number, drag_unit.nation,
-                                          drag_unit_type, from_hex, (tq, tr), 'move')
-                        # Scoring
+                        _move_data = moves_mod.serialize_move(
+                            'move', drag_unit.nation.ring_index,
+                            unit_type=_unit_type_snap,
+                            from_hex=from_hex, to_hex=(tq, tr))
+                        on_local_move_made(_move_data)
+                        if game_mode == 'vs_bot':
+                            bot_memory.record(turn_number, drag_unit.nation,
+                                              drag_unit_type, from_hex, (tq, tr), 'move')
+                        # Scoring (bot mode only)
                         ri = drag_unit.nation.ring_index
                         _nnames = settings.NATION_NAMES
                         if settings.DEPLOYMENT == 'DEBUG':
-                            print(f"[Human move] T{turn_number} {drag_unit.nation.color_name} {_unit_type_snap} {from_hex}->{(tq,tr)}")
-                        bot_memory.add_score(ri, 2, _nnames)
-                        if _unit_type_snap == 'champion' and grid.is_supported(_unit_snap):
-                            bot_memory.add_score(ri, 4, _nnames)
-                        elif _unit_type_snap == 'sovereign':
-                            if not grid.is_supported(_unit_snap):
-                                bot_memory.add_score(ri, -4, _nnames)
-                            # Center-proximity: moving a sovereign toward the center
-                            # suggests the player is NOT secretly allied with it
-                            # (a true ally would protect their sovereign, not advance it).
-                            fq, fr = from_hex
-                            old_d = max(abs(fq), abs(fr), abs(fq + fr))
-                            new_d = max(abs(tq), abs(tr), abs(tq + tr))
-                            if new_d <= 1:      # entered center 7 hexes
-                                bot_memory.add_score(ri, -3, _nnames)
-                            elif new_d < old_d: # moved closer to center, not yet center-7
-                                bot_memory.add_score(ri, -2, _nnames)
+                            print(f"[{active_player.player_id} move] T{turn_number} {drag_unit.nation.color_name} {_unit_type_snap} {from_hex}->{(tq,tr)}  {_move_data}")
+                        if game_mode == 'vs_bot':
+                            bot_memory.add_score(ri, 2, _nnames)
+                            if _unit_type_snap == 'champion' and grid.is_supported(_unit_snap):
+                                bot_memory.add_score(ri, 4, _nnames)
+                            elif _unit_type_snap == 'sovereign':
+                                if not grid.is_supported(_unit_snap):
+                                    bot_memory.add_score(ri, -4, _nnames)
+                                fq, fr = from_hex
+                                old_d = max(abs(fq), abs(fr), abs(fq + fr))
+                                new_d = max(abs(tq), abs(tr), abs(tq + tr))
+                                if new_d <= 1:
+                                    bot_memory.add_score(ri, -3, _nnames)
+                                elif new_d < old_d:
+                                    bot_memory.add_score(ri, -2, _nnames)
                     else:
                         error_message = msg; error_alpha = 255.0
 
@@ -768,14 +868,20 @@ def main():
                     success, msg, _ = grid.resolve_attack(drag_unit, tq, tr)
                     if success:
                         moved_nation = drag_unit.nation
-                        bot_memory.record(turn_number, drag_unit.nation,
-                                          drag_unit_type, from_hex, (tq, tr), 'attack')
-                        _nnames = settings.NATION_NAMES
+                        _move_data = moves_mod.serialize_move(
+                            'attack', drag_unit.nation.ring_index,
+                            unit_type=drag_unit_type,
+                            from_hex=from_hex, to_hex=(tq, tr))
+                        on_local_move_made(_move_data)
+                        if game_mode == 'vs_bot':
+                            bot_memory.record(turn_number, drag_unit.nation,
+                                              drag_unit_type, from_hex, (tq, tr), 'attack')
+                            _nnames = settings.NATION_NAMES
+                            bot_memory.add_score(drag_unit.nation.ring_index, 2, _nnames)
+                            for _ri in _target_ris:
+                                bot_memory.add_score(_ri, -4, _nnames)
                         if settings.DEPLOYMENT == 'DEBUG':
-                            print(f"[Human attack] T{turn_number} {drag_unit.nation.color_name} {from_hex}->{(tq,tr)}")
-                        bot_memory.add_score(drag_unit.nation.ring_index, 2, _nnames)
-                        for _ri in _target_ris:
-                            bot_memory.add_score(_ri, -4, _nnames)
+                            print(f"[{active_player.player_id} attack] T{turn_number} {drag_unit.nation.color_name} {from_hex}->{(tq,tr)}  {_move_data}")
                     else:
                         error_message = msg; error_alpha = 255.0
 
@@ -789,19 +895,48 @@ def main():
                 highlight_move   = set()
                 highlight_attack = set()
 
-                # After a successful human move ---
+                # After a successful move ---
                 if moved_nation:
-                    human_player.add_to_cooldown(moved_nation)
+                    active_player = players[current_player_idx]
+                    active_player.add_to_cooldown(moved_nation)
                     global_cooldown_idx = moved_nation.ring_index
                     end = check_all_end_conditions(
-                        grid, human_player, bot_player, nation_list)
+                        grid, player1, player2, nation_list)
+                    if end is not None:
+                        game_state  = STATE_GAME_OVER
+                        game_result = end
+                    elif game_mode == 'vs_bot':
+                        game_state      = STATE_BOT_THINKING
+                        bot_think_timer = BOT_THINK_MS
+                        current_player_idx = 1
+                    elif game_mode == 'network':
+                        game_state = STATE_WAITING_OPPONENT
+                        turn_number += 1
+                    else:
+                        current_player_idx = 1 - current_player_idx
+                        turn_number += 1
+
+        # ── Network: poll for opponent's move ──────────────────────────────
+        if game_state == STATE_WAITING_OPPONENT:
+            incoming = on_network_move_received()
+            if incoming:
+                success, msg, moved_nation, destroyed = moves_mod.apply_serialized_move(
+                    grid, incoming, nation_list)
+                if success and moved_nation:
+                    # Opponent is always player2 in our local model
+                    player2.add_to_cooldown(moved_nation)
+                    global_cooldown_idx = moved_nation.ring_index
+                    if settings.DEPLOYMENT == 'DEBUG':
+                        print(f"[Network] Received move: {incoming}")
+                    end = check_all_end_conditions(
+                        grid, player1, player2, nation_list)
                     if end is not None:
                         game_state  = STATE_GAME_OVER
                         game_result = end
                     else:
-                        game_state      = STATE_BOT_THINKING
-                        bot_think_timer = BOT_THINK_MS
-                        current_player_idx = 1
+                        game_state = STATE_HUMAN_TURN
+                elif settings.DEPLOYMENT == 'DEBUG':
+                    print(f"[Network] Bad move from opponent: {msg}")
 
         # ── Bot thinking countdown ─────────────────────────────────────────
         if game_state == STATE_BOT_THINKING:
@@ -810,10 +945,10 @@ def main():
                 # Compute the action (don't execute yet — animate first)
                 _suspected = bot_memory.guess_faction(
                     nation_list,
-                    exclude_ring_indices=(bot_nation.ring_index,))
+                    exclude_ring_indices=(p2_nation.ring_index,))
                 _suspected_ri = _suspected.ring_index if _suspected else None
                 bot_pending_action = bot_ai.compute_bot_action(
-                    grid, bot_player, global_cooldown_idx, nation_list,
+                    grid, player2, global_cooldown_idx, nation_list,
                     turn_number, suspected_human_ri=_suspected_ri)
                 if bot_pending_action is None:
                     # No legal move at all; skip straight to human turn
@@ -822,13 +957,12 @@ def main():
                     turn_number       += 1
                 else:
                     _, atype, *payload = bot_pending_action
+                    actor, coord = payload[0], payload[1]
                     if atype in ('move', 'attack'):
-                        unit, _coord = payload
-                        bot_flash_hex = (unit.q, unit.r)
+                        bot_flash_hex = (actor.q, actor.r)
                         bot_flash_button_key = None
                     else:   # recruit / promote
-                        nation, coord = payload
-                        ri = nation.ring_index
+                        ri = actor.ring_index
                         bot_flash_hex = None
                         bot_flash_button_key = (atype if atype == 'recruit' else 'promote', ri)
                     bot_flash_timer = BOT_FLASH_MS
@@ -845,19 +979,14 @@ def main():
                     print(f"[Bot] {bot_msg}")
 
                 if moved_nation:
-                    bot_player.add_to_cooldown(moved_nation)
+                    player2.add_to_cooldown(moved_nation)
                     global_cooldown_idx = moved_nation.ring_index
 
                 # Determine post-flash hex (destination)
                 _, atype, *payload = bot_pending_action
-                if atype in ('move', 'attack'):
-                    _unit, coord = payload
-                    bot_flash_hex = coord
-                    bot_flash_button_key = None
-                else:   # recruit / promote
-                    _nation, coord = payload
-                    bot_flash_hex = coord
-                    bot_flash_button_key = None
+                actor, coord = payload[0], payload[1]
+                bot_flash_hex = coord
+                bot_flash_button_key = None
 
                 bot_flash_timer = BOT_FLASH_MS
                 game_state = STATE_BOT_POST_FLASH
@@ -871,7 +1000,7 @@ def main():
                 bot_flash_button_key = None
 
                 end = check_all_end_conditions(
-                    grid, human_player, bot_player, nation_list)
+                    grid, player1, player2, nation_list)
                 if end is not None:
                     game_state  = STATE_GAME_OVER
                     game_result = end
@@ -890,7 +1019,7 @@ def main():
         splash_mx, splash_my = pygame.mouse.get_pos()
 
         if game_state == STATE_SPLASH:
-            splash_mod.draw_splash(screen, splash_fonts, human_nation,
+            splash_mod.draw_splash(screen, splash_fonts, p1_nation,
                                    splash_mx, splash_my, diplo_splash)
 
         elif game_state == STATE_INSTRUCTIONS:
@@ -901,8 +1030,9 @@ def main():
         else:
             screen.fill(settings.COLOR_BACKGROUND)
 
-            # Nations the human cannot move right now → rendered as frozen
-            eligible_now      = get_eligible_nations(human_player, global_cooldown_idx, nation_list)
+            # Nations the active player cannot move right now → rendered as frozen
+            active_player = players[current_player_idx]
+            eligible_now      = get_eligible_nations(active_player, global_cooldown_idx, nation_list)
             eligible_ring_idx = {n.ring_index for n in eligible_now}
             frozen_ring_idx   = {n.ring_index for n in nation_list
                                  if n.ring_index not in eligible_ring_idx}
@@ -932,16 +1062,17 @@ def main():
 
             current_player = players[current_player_idx]
             draw_top_bar(screen, font_large, font_small,
-                         human_player, current_player, turn_number, game_state)
+                         active_player, current_player, turn_number,
+                         game_state, game_mode)
             draw_diplo_panel(screen, diplo_img, font_small)
             draw_cooldown_panel(screen, font_small, players, global_cooldown_idx)
             draw_error(screen, font_small, error_message, error_alpha)
 
             # Debug: bot faction guess (top-left, below top bar) — DEBUG mode only
-            if settings.DEPLOYMENT == 'DEBUG':
+            if settings.DEPLOYMENT == 'DEBUG' and game_mode == 'vs_bot':
                 _guess = bot_memory.guess_faction(
                     nation_list,
-                    exclude_ring_indices=(bot_nation.ring_index,))
+                    exclude_ring_indices=(p2_nation.ring_index,))
                 if _guess:
                     _gt = f"Bot guess for player: {_guess.color_name}"
                     _gs = font_small.render(_gt, True, _guess.color_rgb)
@@ -984,10 +1115,11 @@ def main():
                 draw_game_over(screen, font_large, font_small, game_result)
 
         pygame.display.flip()
+        await asyncio.sleep(0)
 
     pygame.quit()
     sys.exit()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
