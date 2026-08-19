@@ -30,5 +30,8 @@ MANIFEST
 .DS_Store
 Thumbs.db
 
+# Virtual environment
+.venv/
+
 # Screenshots and captures
 screenshots/

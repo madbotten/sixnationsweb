@@ -639,6 +639,131 @@ class TestSixNations(unittest.TestCase):
         self.assertEqual(len(armies_at), 1)
         self.assertEqual(armies_at[0].nation.ring_index, 0)
 
+    # -----------------------------------------------------------------------
+    # 14. Bot sovereign protection — never kill own secret nation's sovereign
+    # -----------------------------------------------------------------------
+
+    def test_35_score_attack_forbids_allied_sovereign(self):
+        """_score_attack returns -9999 when targeting the bot's allied sovereign."""
+        from bot import _score_attack
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        # Bot's secret nation is NATIONS[0] (Yellow).
+        # Allied nations: 0 (Yellow), 1 (Green), 5 (Crimson).
+        # Enemy nations:  2 (Sky Blue), 3 (Cobalt), 4 (Magenta).
+        bot_secret = NATIONS[0]
+        allied_ring_set = {n.ring_index for n in NATIONS if not bot_secret.is_enemy(n)}
+        enemy_ring_set  = {n.ring_index for n in bot_secret.enemy_nations(NATIONS)}
+
+        # Place an enemy champion (Nation 3, Cobalt) adjacent to allied sovereign (Nation 1, Green)
+        attacker = Champion(NATIONS[3], 0, 0)
+        allied_sov = Sovereign(NATIONS[1], 1, 0)
+        grid.add_champion(attacker)
+        grid.add_sovereign(allied_sov)
+
+        # Nation 3 IS enemy of Nation 1 per diplomacy, so the attack is "legal"
+        self.assertTrue(NATIONS[3].is_enemy(NATIONS[1]))
+
+        score = _score_attack(grid, attacker, 1, 0, enemy_ring_set,
+                              allied_ring_set=allied_ring_set)
+        self.assertEqual(score, -9999.0,
+            "Attack on allied sovereign must be scored -9999")
+
+    def test_36_score_attack_allows_enemy_sovereign(self):
+        """_score_attack scores positively when targeting an enemy sovereign."""
+        from bot import _score_attack
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        bot_secret = NATIONS[0]
+        allied_ring_set = {n.ring_index for n in NATIONS if not bot_secret.is_enemy(n)}
+        enemy_ring_set  = {n.ring_index for n in bot_secret.enemy_nations(NATIONS)}
+
+        # Place an allied champion (Nation 1, Green) adjacent to enemy sovereign (Nation 3, Cobalt)
+        attacker = Champion(NATIONS[1], 0, 0)
+        enemy_sov = Sovereign(NATIONS[3], 1, 0)
+        grid.add_champion(attacker)
+        grid.add_sovereign(enemy_sov)
+
+        self.assertTrue(NATIONS[1].is_enemy(NATIONS[3]))
+
+        score = _score_attack(grid, attacker, 1, 0, enemy_ring_set,
+                              allied_ring_set=allied_ring_set)
+        self.assertGreater(score, 0,
+            "Attack on enemy sovereign must score positively")
+
+    def test_37_compute_bot_action_never_targets_allied_sovereign(self):
+        """compute_bot_action must never return an attack on an allied sovereign."""
+        from bot import compute_bot_action
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        # Bot is Nation 0 (Yellow). Allies: 0, 1, 5.
+        bot_player = Player(secret_nation=NATIONS[0], is_bot=True)
+        allied_ring_set = {n.ring_index for n in NATIONS if not NATIONS[0].is_enemy(n)}
+
+        # Place all 6 sovereigns in their home hexes
+        for nation in NATIONS:
+            home = grid.NATION_HEXES[nation.ring_index][0]
+            grid.add_sovereign(Sovereign(nation, *home))
+
+        # Place a champion from Nation 3 (enemy of Nation 1) next to Nation 1's sovereign
+        # so there's a "legal" attack available
+        n1_home = grid.NATION_HEXES[1][0]
+        neighbors = grid.get_neighbors(*n1_home)
+        if neighbors:
+            adj = neighbors[0]
+            grid.add_champion(Champion(NATIONS[3], *adj))
+
+        # Run compute_bot_action many times to check random path too
+        for i in range(50):
+            action = compute_bot_action(
+                grid, bot_player, None, NATIONS, turn_number=1)
+            if action is None:
+                continue
+            # action format: (score, atype, *payload, path_label)
+            score, atype = action[0], action[1]
+            if atype == 'attack':
+                unit, coord = action[2], action[3]
+                tq, tr = coord
+                # Check no allied sovereign is at the target hex
+                for sov in grid.sovereigns.get((tq, tr), []):
+                    if sov.nation.ring_index in allied_ring_set:
+                        self.fail(
+                            f"Iteration {i}: Bot chose to attack allied sovereign "
+                            f"{sov.nation.color_name} at {coord}")
+
+    def test_38_bot_never_attacks_own_secret_sovereign(self):
+        """Bot must never attack a sovereign of its own secret nation specifically."""
+        from bot import _score_attack
+        grid = MapGrid()
+        grid.generate_map()
+        grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
+
+        # Bot's secret nation is NATIONS[2] (Sky Blue).
+        # Enemies of Sky Blue: 5 (Crimson), 0 (Yellow), 1 (Green)
+        bot_secret = NATIONS[2]
+        allied_ring_set = {n.ring_index for n in NATIONS if not bot_secret.is_enemy(n)}
+        enemy_ring_set  = {n.ring_index for n in bot_secret.enemy_nations(NATIONS)}
+
+        # Nation 5 (Crimson) IS enemy of Nation 2 (Sky Blue) per the ring
+        self.assertTrue(NATIONS[5].is_enemy(NATIONS[2]))
+
+        # Place Nation 5's champion attacking Nation 2's (bot's OWN) sovereign
+        attacker = Champion(NATIONS[5], 0, 0)
+        own_sov  = Sovereign(NATIONS[2], 1, 0)
+        grid.add_champion(attacker)
+        grid.add_sovereign(own_sov)
+
+        score = _score_attack(grid, attacker, 1, 0, enemy_ring_set,
+                              allied_ring_set=allied_ring_set)
+        self.assertEqual(score, -9999.0,
+            "Attack on bot's OWN secret sovereign must be -9999")
+
 
 if __name__ == '__main__':
     unittest.main()
