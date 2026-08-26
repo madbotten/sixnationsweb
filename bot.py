@@ -1,12 +1,21 @@
 """
 Six Nations — Bot AI  (Phase 6)
 
-Blend (controlled by settings.BOT_INITIAL_RANDOM):
-  Turn  1 → (1 - BOT_INITIAL_RANDOM) intent  [default 40% intent / 60% random]
-  Turn 50 → ~90% intent, 10% random
-  (linear interpolation, capped at each end)
+ORIGINAL BOT (Play vs BOT):
+  Uses a blend of random and intent moves controlled by
+  settings.BOT_INITIAL_RANDOM:
+    Turn  1 → (1 - BOT_INITIAL_RANDOM) intent  [default 40% intent / 60% random]
+    Turn 50 → ~90% intent, 10% random
+    (linear interpolation, capped at each end)
 
-Intent priority scores (approximate):
+EVOLVED BOT (Play vs EVOLVED BOT):
+  Uses evolved weights that multiply the base scores below, AND
+  a custom random/deceptive/intent blend controlled by the evolved
+  config's w_random and w_deceptive genes.  For example, the first
+  generation of evolved bots converged on w_random=0.0 and
+  w_deceptive=0.0 (pure intent, no random moves at all).
+
+Base intent priority scores (approximate):
   1000+  Kill an enemy sovereign (bot's 3 target enemies)
    400   Kill an enemy champion  (same targets)
    150   Kill an enemy army      (same targets)
@@ -22,7 +31,14 @@ Intent priority scores (approximate):
     40   Move enemy champion off a supported hex
      5   Any other legal move (random tie-break within same score)
 
-The bot also keeps a BotMemory record of every human move for future analysis.
+WEIGHT MULTIPLIERS:  The scoring functions accept an optional `weights`
+dict whose keys multiply the base scores above.  For example, if
+weights = {'kill_enemy': 2.5, 'muster_promote': 0.0}, killing an enemy
+sovereign scores 1000 × 2.5 = 2500, and recruit/promote are zeroed out.
+When weights is None (default), all multipliers are 1.0.  See
+evolution.py and BotConfig for the full set of weight genes.
+
+The bot also keeps a BotMemory record of every opponent move for analysis.
 """
 
 import random
@@ -257,10 +273,17 @@ def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri,
     return result
 
 
-def _score_attack(grid, attacker, tq, tr, enemy_ring_set, allied_ring_set=None) -> float:
-    """Score for attacker targeting hex (tq, tr)."""
+def _score_attack(grid, attacker, tq, tr, enemy_ring_set, allied_ring_set=None,
+                   weights=None) -> float:
+    """Score for attacker targeting hex (tq, tr).
+
+    weights: optional dict with 'kill_enemy' multiplier.  When None every
+    multiplier defaults to 1.0 (original hardcoded behaviour).
+    """
     from armies    import Army
     from champions import Champion, Sovereign
+
+    w_kill = (weights or {}).get('kill_enemy', 1.0)
 
     nation   = attacker.nation
     e_sovs   = [s for s in grid.sovereigns.get((tq, tr), []) if nation.is_enemy(s.nation)]
@@ -272,13 +295,13 @@ def _score_attack(grid, attacker, tq, tr, enemy_ring_set, allied_ring_set=None) 
         # NEVER attack the bot's own secret nation's sovereign
         if allied_ring_set and ri in allied_ring_set:
             return -9999.0
-        score = 1000 if ri in enemy_ring_set else 250
+        score = (1000 if ri in enemy_ring_set else 250) * w_kill
     elif e_champs:
         ri    = e_champs[0].nation.ring_index
-        score = 400  if ri in enemy_ring_set else 100
+        score = (400  if ri in enemy_ring_set else 100) * w_kill
     elif e_armies:
         ri    = e_armies[0].nation.ring_index
-        score = 150  if ri in enemy_ring_set else 50
+        score = (150  if ri in enemy_ring_set else 50) * w_kill
     else:
         score = 0
 
@@ -288,10 +311,27 @@ def _score_attack(grid, attacker, tq, tr, enemy_ring_set, allied_ring_set=None) 
     return float(score)
 
 
-def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set) -> float:
-    """Score for moving unit to (tq, tr)."""
+def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
+                weights=None) -> float:
+    """Score for moving unit to (tq, tr).
+
+    weights: optional dict with multiplier keys:
+      'advance_allied'       — moving allied armies/champions toward enemy
+      'protect_sovereign'    — protecting allied sovereigns
+      'champion_support'     — keeping allied champions on supported hexes
+      'endanger_enemy_sov'   — pushing enemy sovereigns toward danger
+      'unsupport_enemy_champ'— moving enemy champions off supported hexes
+    When None every multiplier defaults to 1.0 (original hardcoded behaviour).
+    """
     from armies    import Army
     from champions import Champion, Sovereign
+
+    w = weights or {}
+    w_advance   = w.get('advance_allied', 1.0)
+    w_protect   = w.get('protect_sovereign', 1.0)
+    w_champ_sup = w.get('champion_support', 1.0)
+    w_danger    = w.get('endanger_enemy_sov', 1.0)
+    w_unsup_ch  = w.get('unsupport_enemy_champ', 1.0)
 
     nation    = unit.nation
     is_allied = nation.ring_index in allied_ring_set
@@ -300,13 +340,13 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set) -> float:
     if isinstance(unit, Sovereign):
         if is_allied:
             if grid.is_trapped(unit):
-                score += 350
+                score += 350 * w_protect
             elif not grid.is_supported(unit):
                 allies_here = sum(
                     1 for lst in grid.get_units_at(tq, tr).values()
                     for u in lst if not u.nation.is_enemy(nation) and u is not unit
                 )
-                score += 250 if allies_here > 0 else 25
+                score += (250 if allies_here > 0 else 25) * w_protect
         else:
             # Non-allied (target) sovereign — push toward center & threats
             curr_threats = sum(
@@ -318,7 +358,7 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set) -> float:
                 if grid._has_enemy_unit_at(nq, nr, nation)
             )
             if new_threats > curr_threats:
-                score += 80 + (new_threats - curr_threats) * 20
+                score += (80 + (new_threats - curr_threats) * 20) * w_danger
             else:
                 score += 5
 
@@ -327,23 +367,23 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set) -> float:
             new_d = max(abs(tq), abs(tr), abs(tq + tr))
             if new_d < old_d:
                 # Bigger bonus for getting closer to center
-                score += 60 + (old_d - new_d) * 30
+                score += (60 + (old_d - new_d) * 30) * w_danger
                 # Extra bonus for reaching the inner ring
                 if new_d <= 1:
-                    score += 30
+                    score += 30 * w_danger
 
     elif isinstance(unit, Champion):
         if is_allied:
             old_d = _nearest_enemy_sov_dist(grid, unit.q, unit.r, enemy_ring_set)
             new_d = _nearest_enemy_sov_dist(grid, tq, tr, enemy_ring_set)
             if new_d < old_d:
-                score += 90 + (old_d - new_d) * 10
+                score += (90 + (old_d - new_d) * 10) * w_advance
             allies_at = sum(
                 1 for lst in grid.get_units_at(tq, tr).values()
                 for u in lst if not u.nation.is_enemy(nation) and u is not unit
             )
             if allies_at > 0:
-                score += 50
+                score += 50 * w_champ_sup
         else:
             if grid.is_supported(unit):
                 allies_at = sum(
@@ -351,14 +391,14 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set) -> float:
                     for u in lst if not u.nation.is_enemy(nation)
                 )
                 if allies_at == 0:
-                    score += 40
+                    score += 40 * w_unsup_ch
 
     elif isinstance(unit, Army):
         if is_allied:
             old_d = _nearest_enemy_sov_dist(grid, unit.q, unit.r, enemy_ring_set)
             new_d = _nearest_enemy_sov_dist(grid, tq, tr, enemy_ring_set)
             if new_d < old_d:
-                score += 80 + (old_d - new_d) * 10
+                score += (80 + (old_d - new_d) * 10) * w_advance
             else:
                 score += 5
         else:
@@ -373,17 +413,23 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set) -> float:
 # ---------------------------------------------------------------------------
 
 def _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
-                    suspected_human_ri=None, turn_number=0):
+                    suspected_human_ri=None, turn_number=0, weights=None):
     """
     Build a scored list of all legal bot actions.
     Returns list of (score, action_type, *payload).
     Applies adaptive sovereign strategy after BOT_ADAPTIVE_TURN.
+
+    weights: optional dict of score-category multipliers (see _score_attack,
+    _score_move).  Also supports 'muster_promote' key for recruit/promote.
+    When None, original hardcoded scores are used.
     """
     eligible        = _eligible_nations(bot_player, global_cooldown_idx, nation_list)
     bot_secret      = bot_player.secret_nation
     bot_ri          = bot_secret.ring_index
     enemy_ring_set  = {n.ring_index for n in bot_secret.enemy_nations(nation_list)}
     allied_ring_set = {n.ring_index for n in nation_list if not bot_secret.is_enemy(n)}
+
+    w_muster = (weights or {}).get('muster_promote', 1.0)
 
     actions = []
 
@@ -394,19 +440,21 @@ def _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
         for unit in units:
             for coord in grid.get_valid_attacks(unit):
                 s = _score_attack(grid, unit, *coord, enemy_ring_set,
-                                  allied_ring_set=allied_ring_set)
+                                  allied_ring_set=allied_ring_set,
+                                  weights=weights)
                 actions.append((s, 'attack', unit, coord))
 
-            for coord in grid.get_valid_moves(unit):
-                s = _score_move(grid, unit, *coord, enemy_ring_set, allied_ring_set)
+            for coord in grid.get_valid_moves(unit, mover_secret_nation=bot_secret):
+                s = _score_move(grid, unit, *coord, enemy_ring_set,
+                                allied_ring_set, weights=weights)
                 actions.append((s, 'move', unit, coord))
 
         for coord in grid.get_recruit_hexes(nation):
-            s = 60.0 if is_allied else 15.0
+            s = (60.0 if is_allied else 15.0) * w_muster
             actions.append((s, 'recruit', nation, coord))
 
         for coord in grid.get_promote_hexes(nation):
-            s = 70.0 if is_allied else 20.0
+            s = (70.0 if is_allied else 20.0) * w_muster
             actions.append((s, 'promote', nation, coord))
 
     # Apply adaptive sovereign intelligence
@@ -428,7 +476,7 @@ def _execute(grid, action):
     """
     score, atype, *rest = action
     # Last element may be a path label; everything before it is payload
-    if rest and isinstance(rest[-1], str) and rest[-1] in ('intent', 'random'):
+    if rest and isinstance(rest[-1], str) and rest[-1] in ('intent', 'random', 'deceptive'):
         payload, path = rest[:-1], rest[-1]
         tag = f"[Bot-{path}]"
     else:
@@ -498,7 +546,7 @@ def _turn_random(grid, bot_player, global_cooldown_idx, nation_list):
     pool = []
     for nation in eligible:
         for unit in grid.get_all_nation_units(nation):
-            pool += [('move',   unit, c) for c in grid.get_valid_moves(unit)]
+            pool += [('move',   unit, c) for c in grid.get_valid_moves(unit, mover_secret_nation=bot_secret)]
             for c in grid.get_valid_attacks(unit):
                 # Never randomly attack an allied sovereign
                 tq, tr = c
@@ -559,7 +607,7 @@ def do_bot_turn(grid, bot_player, global_cooldown_idx, nation_list, turn_number)
 # ---------------------------------------------------------------------------
 
 def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_number,
-                       suspected_human_ri=None):
+                       suspected_human_ri=None, weights=None, evolved_config=None):
     """
     Select the bot's next action WITHOUT executing it.
 
@@ -571,13 +619,24 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
 
     suspected_human_ri: ring_index of the bot's best guess for the human's
     secret faction (or None if unknown). Used for adaptive sovereign strategy.
+
+    weights: optional dict of score-category multipliers (from an evolved
+    BotConfig).  When None, original hardcoded scores are used.
+
+    evolved_config: optional BotConfig.  When provided, the random/intent
+    blend uses the config's intent_probability() instead of _intent_prob().
+    This allows evolved bots with w_random=0.0 to play pure intent in-game.
     """
-    use_intent = random.random() < _intent_prob(turn_number)
+    if evolved_config is not None:
+        use_intent = random.random() < evolved_config.intent_probability(turn_number)
+    else:
+        use_intent = random.random() < _intent_prob(turn_number)
 
     if use_intent:
         actions = _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
                                   suspected_human_ri=suspected_human_ri,
-                                  turn_number=turn_number)
+                                  turn_number=turn_number,
+                                  weights=weights)
         if not actions:
             return None
         # Discard any disqualified actions (score < -1000)
@@ -599,7 +658,7 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
         pool = []
         for nation in eligible:
             for unit in grid.get_all_nation_units(nation):
-                pool += [(0, 'move',   unit, c) for c in grid.get_valid_moves(unit)]
+                pool += [(0, 'move',   unit, c) for c in grid.get_valid_moves(unit, mover_secret_nation=bot_player.secret_nation)]
                 for c in grid.get_valid_attacks(unit):
                     # Never randomly attack an allied sovereign
                     tq, tr = c

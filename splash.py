@@ -146,12 +146,14 @@ def build_rules_surfaces(raw_text, font_h, font_b, max_width):
 # Public drawing functions
 # ---------------------------------------------------------------------------
 
-def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None):
+def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None,
+                evolved_available=False):
     """
     Draw the splash screen.
     fonts    : dict with keys 'title','large','medium','small','btn'
     diplo_img: optional pre-scaled pygame.Surface for the Diplomacy Ring image
-    Returns (bot_rect, human_rect, instructions_rect).
+    evolved_available: if True, show a third mode button "EVOLVED BOT"
+    Returns (bot_rect, human_rect, instructions_rect, evolved_rect_or_None).
     """
     W  = settings.SCREEN_WIDTH
     H  = settings.SCREEN_HEIGHT
@@ -171,7 +173,7 @@ def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None):
     _draw_crown(wm_surf, W // 2, cy - 30, 210, wm_color)
     screen.blit(wm_surf, (0, 0))
 
-    # ── Title ──────────────────────────────────────────────────────────────
+    # -- Title --
     title_surf = fonts['title'].render("SIX NATIONS", True, (230, 236, 255))
     title_rect = title_surf.get_rect(center=(W // 2, cy - 100))
     screen.blit(title_surf, title_rect)
@@ -193,7 +195,7 @@ def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None):
                      (W // 2 - line_w // 2, cy - 48, line_w, 3),
                      border_radius=2)
 
-    # ── Faction reveal ─────────────────────────────────────────────────────
+    # -- Faction reveal --
     sub = fonts['medium'].render("Your secret faction is", True, (145, 158, 190))
     screen.blit(sub, sub.get_rect(center=(W // 2, cy)))
 
@@ -207,24 +209,42 @@ def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None):
     _draw_crown(screen, icon_x,  icon_y, 20, nc)
     _draw_crown(screen, icon_x2, icon_y, 20, nc)
 
-    # ── Buttons ────────────────────────────────────────────────────────────
+    # -- Buttons --
     bw, bh  = 230, 56
-    gap     = 20    # gap between the two mode buttons
-    total_w = bw * 2 + gap
-    left_x  = W // 2 - total_w // 2
+    gap     = 20    # gap between mode buttons
 
-    bot_rect   = pygame.Rect(left_x,           cy + 110, bw, bh)
-    human_rect = pygame.Rect(left_x + bw + gap, cy + 110, bw, bh)
+    evolved_rect = None
+
+    if evolved_available:
+        # Three mode buttons
+        n_btns  = 3
+        total_w = bw * n_btns + gap * (n_btns - 1)
+        left_x  = W // 2 - total_w // 2
+
+        bot_rect     = pygame.Rect(left_x,                   cy + 110, bw, bh)
+        evolved_rect = pygame.Rect(left_x + bw + gap,        cy + 110, bw, bh)
+        human_rect   = pygame.Rect(left_x + 2 * (bw + gap),  cy + 110, bw, bh)
+    else:
+        # Two mode buttons (original layout)
+        total_w = bw * 2 + gap
+        left_x  = W // 2 - total_w // 2
+
+        bot_rect   = pygame.Rect(left_x,           cy + 110, bw, bh)
+        human_rect = pygame.Rect(left_x + bw + gap, cy + 110, bw, bh)
+
     inst_rect  = pygame.Rect(W // 2 - 310 // 2, cy + 185, 310, bh)
 
     _draw_button(screen, fonts['btn'], "PLAY vs BOT",   bot_rect,   True,  nc,
                  bot_rect.collidepoint(mx, my))
+    if evolved_available and evolved_rect:
+        _draw_button(screen, fonts['btn'], "EVOLVED BOT", evolved_rect, True, nc,
+                     evolved_rect.collidepoint(mx, my))
     _draw_button(screen, fonts['btn'], "PLAY vs HUMAN", human_rect, True,  nc,
                  human_rect.collidepoint(mx, my))
     _draw_button(screen, fonts['btn'], "INSTRUCTIONS",  inst_rect,  False, nc,
                  inst_rect.collidepoint(mx, my))
 
-    return bot_rect, human_rect, inst_rect
+    return bot_rect, human_rect, inst_rect, evolved_rect
 
 
 def draw_instructions(screen, fonts, rules_surfs, scroll_y, mx, my):

@@ -765,5 +765,85 @@ class TestSixNations(unittest.TestCase):
             "Attack on bot's OWN secret sovereign must be -9999")
 
 
+class TestSovereignHomelandRestriction(unittest.TestCase):
+    """Tests for the sovereign homeland restriction rule."""
+
+    def setUp(self):
+        for nation in NATIONS:
+            nation.is_ghost = False
+        self.grid = MapGrid()
+        # Only generate tiles (not full units) — we place units manually
+        self.grid.generate_map()
+        # Clear all units so we can set up precise scenarios
+        self.grid.armies.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+    def test_sovereign_starts_with_has_left_home_false(self):
+        """Sovereign's has_left_home flag starts False."""
+        sov = Sovereign(NATIONS[0], 0, -3)
+        self.assertFalse(sov.has_left_home)
+
+    def test_enemy_cannot_move_sovereign_out_of_home(self):
+        """An enemy player cannot move a sovereign outside its 4 home hexes."""
+        # Yellow (0) sovereign at (0, -3) — a home hex
+        sov = Sovereign(NATIONS[0], 0, -3)
+        self.grid.add_sovereign(sov)
+
+        # Cobalt (3) is enemy of Yellow (0)
+        mover_secret = NATIONS[3]
+        self.assertTrue(mover_secret.is_enemy(NATIONS[0]))
+
+        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
+
+        # All valid destinations must be within Yellow's 4 home hexes
+        home_hexes = set(MapGrid.NATION_HEXES[0])
+        for coord in valid:
+            self.assertIn(coord, home_hexes,
+                f"Enemy should not be able to move sovereign to {coord} "
+                f"(outside home hexes {home_hexes})")
+
+    def test_ally_can_move_sovereign_out_of_home_and_sets_flag(self):
+        """An allied player can move a sovereign outside its home hexes,
+        which sets has_left_home = True."""
+        # Yellow (0) sovereign at (0, -2) — a home hex with neighbor (0, -1) outside
+        sov = Sovereign(NATIONS[0], 0, -2)
+        self.grid.add_sovereign(sov)
+
+        # Green (1) is ally of Yellow (0)
+        mover_secret = NATIONS[1]
+        self.assertFalse(mover_secret.is_enemy(NATIONS[0]))
+
+        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
+        home_hexes = set(MapGrid.NATION_HEXES[0])
+        outside = [c for c in valid if c not in home_hexes]
+        self.assertTrue(len(outside) > 0,
+            "Allied player should be able to reach hexes outside home territory")
+
+        # Move to an outside hex
+        target = outside[0]
+        self.grid.apply_move(sov, *target, mover_secret_nation=mover_secret)
+        self.assertTrue(sov.has_left_home,
+            "Sovereign should have has_left_home=True after moving outside home hexes")
+
+    def test_enemy_can_move_sovereign_after_has_left_home(self):
+        """After has_left_home is set, enemy players can move the sovereign anywhere."""
+        # Yellow (0) sovereign at (0, -1) — outside home hexes, flag already set
+        sov = Sovereign(NATIONS[0], 0, -1)
+        sov.has_left_home = True
+        self.grid.add_sovereign(sov)
+
+        # Cobalt (3) is enemy of Yellow (0)
+        mover_secret = NATIONS[3]
+        self.assertTrue(mover_secret.is_enemy(NATIONS[0]))
+
+        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
+
+        # Should get unrestricted moves (same as without mover_secret_nation)
+        unrestricted = self.grid.get_valid_moves(sov)
+        self.assertEqual(set(valid), set(unrestricted),
+            "Sovereign with has_left_home=True should have no homeland restriction")
+
+
 if __name__ == '__main__':
     unittest.main()

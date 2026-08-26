@@ -27,6 +27,7 @@ class Sovereign:
         self.nation = nation   # factions.Nation
         self.q      = q
         self.r      = r
+        self.has_left_home = False   # True once sovereign leaves its 4 home hexes
 
     @property
     def hex_location(self):

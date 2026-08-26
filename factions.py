@@ -37,3 +37,12 @@ class Nation:
 
 # The six predefined nation singletons, shared across the whole game.
 NATIONS: list = [Nation(i) for i in range(6)]
+
+
+def create_nations() -> list:
+    """Create an independent set of 6 Nation objects (not the shared singletons).
+
+    Use this for headless / bot-vs-bot games so that mutable state (e.g.
+    is_ghost) does not leak between concurrent game instances.
+    """
+    return [Nation(i) for i in range(6)]

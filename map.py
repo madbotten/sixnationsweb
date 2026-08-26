@@ -289,11 +289,21 @@ class MapGrid:
     # Game Logic -- valid move / attack queries
     # =======================================================================
 
-    def get_valid_moves(self, unit) -> list:
+    @staticmethod
+    def _sovereign_home_hexes(nation):
+        """Return the set of 4 home hex coords for a nation."""
+        return set(MapGrid.NATION_HEXES[nation.ring_index])
+
+    def get_valid_moves(self, unit, mover_secret_nation=None) -> list:
         """
         Return list of (q,r) hexes the unit can move to (non-attack moves only).
         Army   : adjacent hex with no army AND no enemy units.
         Champion/Sovereign: adjacent hex with no enemy units.
+
+        mover_secret_nation: the secret nation of the player making the move.
+        If provided and the unit is an enemy Sovereign that hasn't left home,
+        valid destinations are restricted to the sovereign's 4 home hexes.
+        When None, no homeland restriction is applied (backward compatible).
         """
         from armies    import Army
         from champions import Champion, Sovereign
@@ -308,6 +318,17 @@ class MapGrid:
             if isinstance(unit, Army) and self.armies.get((nq, nr)):
                 continue          # only one army per hex
             valid.append((nq, nr))
+
+        # Sovereign homeland restriction:
+        # If the mover is an enemy of this sovereign AND the sovereign
+        # hasn't left home yet, restrict moves to home hexes only.
+        if (mover_secret_nation is not None
+                and isinstance(unit, Sovereign)
+                and not unit.has_left_home
+                and mover_secret_nation.is_enemy(nation)):
+            home = self._sovereign_home_hexes(nation)
+            valid = [coord for coord in valid if coord in home]
+
         return valid
 
     def get_valid_attacks(self, unit) -> list:
@@ -378,13 +399,21 @@ class MapGrid:
             self.remove_champion(unit); unit.q, unit.r = tq, tr; self.add_champion(unit)
         elif isinstance(unit, Sovereign):
             self.remove_sovereign(unit);unit.q, unit.r = tq, tr; self.add_sovereign(unit)
+            # Set has_left_home if sovereign moved outside its home hexes
+            if not unit.has_left_home:
+                home = self._sovereign_home_hexes(unit.nation)
+                if (tq, tr) not in home:
+                    unit.has_left_home = True
 
-    def apply_move(self, unit, tq, tr):
+    def apply_move(self, unit, tq, tr, mover_secret_nation=None):
         """
         Validate and apply a non-attack move.
         Returns (success: bool, message: str).
+
+        mover_secret_nation: passed through to get_valid_moves for
+        sovereign homeland restriction.  None skips the check.
         """
-        if (tq, tr) not in self.get_valid_moves(unit):
+        if (tq, tr) not in self.get_valid_moves(unit, mover_secret_nation=mover_secret_nation):
             return False, "That move is not legal."
         self._move_unit(unit, tq, tr)
         return True, "Move applied."

@@ -19,6 +19,13 @@ from map import MapGrid
 from factions import NATIONS
 from player import Player
 
+# Evolution module — optional, only needed for "Play vs Evolved Bot"
+try:
+    from evolution import load_top_configs, BotConfig, EvolvableBot
+    _HAS_EVOLUTION = True
+except ImportError:
+    _HAS_EVOLUTION = False
+
 
 # ---------------------------------------------------------------------------
 # Network layer — WebSocket send/receive via JS bridge (Pygbag) or stubs
@@ -531,6 +538,11 @@ def check_all_end_conditions(grid, player1, player2, nation_list):
 
 async def main():
     global game_mode_global
+    try:
+        random.seed(os.urandom(16))
+    except Exception:
+        import time
+        random.seed(int(time.time() * 1000))
     pygame.init()
     screen = pygame.display.set_mode((settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT))
     pygame.display.set_caption(settings.WINDOW_TITLE)
@@ -558,6 +570,13 @@ async def main():
     game_mode           = 'vs_bot'       # set by splash button click
     game_result         = GAME_RESULT_NONE
     bot_think_timer     = 0
+
+    # Evolved bot config — loaded if bot_configs.json exists
+    evolved_bot_config  = None           # BotConfig or None
+    evolved_bot_weights = None           # dict or None
+    _evolved_configs_path = os.path.join(os.path.dirname(__file__), 'bot_configs.json')
+    has_evolved_configs = (_HAS_EVOLUTION
+                          and os.path.exists(_evolved_configs_path))
 
     error_message = ""
     error_alpha   = 0.0
@@ -642,17 +661,40 @@ async def main():
             elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                   and game_state == STATE_SPLASH):
                 mx, my = event.pos
-                b_rect, h_rect, i_rect = splash_mod.draw_splash(
-                    screen, splash_fonts, p1_nation, mx, my, diplo_splash)
+                b_rect, h_rect, i_rect, e_rect = splash_mod.draw_splash(
+                    screen, splash_fonts, p1_nation, mx, my, diplo_splash,
+                    evolved_available=has_evolved_configs)
                 if b_rect.collidepoint(mx, my):
+                    game_mode      = 'vs_bot'
+                    player2.is_bot = True
+                    evolved_bot_config  = None
+                    evolved_bot_weights = None
+                    game_state     = STATE_HUMAN_TURN
+                    game_mode_global = game_mode
+                    print(f"[Mode] Playing vs Bot")
+                elif e_rect and e_rect.collidepoint(mx, my):
                     game_mode      = 'vs_bot'
                     player2.is_bot = True
                     game_state     = STATE_HUMAN_TURN
                     game_mode_global = game_mode
-                    print(f"[Mode] Playing vs Bot")
+                    # Load a random evolved config
+                    _loaded = load_top_configs(_evolved_configs_path)
+                    if _loaded:
+                        evolved_bot_config  = random.choice(_loaded)
+                        evolved_bot_weights = evolved_bot_config.to_weights_dict()
+                        print(f"[Mode] Playing vs Evolved Bot  "
+                              f"(kill={evolved_bot_config.w_kill_enemy:.2f}  "
+                              f"rnd={evolved_bot_config.w_random:.2f}  "
+                              f"dec={evolved_bot_config.w_deceptive:.2f})")
+                    else:
+                        evolved_bot_config  = None
+                        evolved_bot_weights = None
+                        print(f"[Mode] Playing vs Bot (no evolved configs found)")
                 elif h_rect.collidepoint(mx, my):
                     game_mode      = 'vs_human'
                     player2.is_bot = False
+                    evolved_bot_config  = None
+                    evolved_bot_weights = None
                     game_state     = STATE_HUMAN_TURN
                     game_mode_global = game_mode
                     print(f"[Mode] Playing vs Human (hot-seat)")
@@ -795,7 +837,7 @@ async def main():
                         if unit.nation in eligible:
                             drag_unit        = unit
                             drag_unit_type   = utype
-                            highlight_move   = set(grid.get_valid_moves(unit))
+                            highlight_move   = set(grid.get_valid_moves(unit, mover_secret_nation=active_player.secret_nation))
                             highlight_attack  = set(grid.get_valid_attacks(unit))
                             drag_mouse_pos   = (mx, my)
                         else:
@@ -819,7 +861,7 @@ async def main():
                     from_hex = (drag_unit.q, drag_unit.r)
                     _unit_type_snap = drag_unit_type  # capture before drag clears
                     _unit_snap      = drag_unit        # capture before apply_move moves it
-                    success, msg = grid.apply_move(drag_unit, tq, tr)
+                    success, msg = grid.apply_move(drag_unit, tq, tr, mover_secret_nation=active_player.secret_nation)
                     if success:
                         moved_nation = drag_unit.nation
                         _move_data = moves_mod.serialize_move(
@@ -949,7 +991,9 @@ async def main():
                 _suspected_ri = _suspected.ring_index if _suspected else None
                 bot_pending_action = bot_ai.compute_bot_action(
                     grid, player2, global_cooldown_idx, nation_list,
-                    turn_number, suspected_human_ri=_suspected_ri)
+                    turn_number, suspected_human_ri=_suspected_ri,
+                    weights=evolved_bot_weights,
+                    evolved_config=evolved_bot_config)
                 if bot_pending_action is None:
                     # No legal move at all; skip straight to human turn
                     game_state         = STATE_HUMAN_TURN
@@ -1020,7 +1064,8 @@ async def main():
 
         if game_state == STATE_SPLASH:
             splash_mod.draw_splash(screen, splash_fonts, p1_nation,
-                                   splash_mx, splash_my, diplo_splash)
+                                   splash_mx, splash_my, diplo_splash,
+                                   evolved_available=has_evolved_configs)
 
         elif game_state == STATE_INSTRUCTIONS:
             _, inst_max_scroll = splash_mod.draw_instructions(
@@ -1061,8 +1106,10 @@ async def main():
                                  action_pending, pending_nation, font_tiny)
 
             current_player = players[current_player_idx]
+            # In vs_bot, always show the human's secret nation (player1)
+            display_player = player1 if game_mode == 'vs_bot' else active_player
             draw_top_bar(screen, font_large, font_small,
-                         active_player, current_player, turn_number,
+                         display_player, current_player, turn_number,
                          game_state, game_mode)
             draw_diplo_panel(screen, diplo_img, font_small)
             draw_cooldown_panel(screen, font_small, players, global_cooldown_idx)
