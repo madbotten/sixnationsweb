@@ -117,7 +117,7 @@ def build_rules_surfaces(raw_text, font_h, font_b, max_width):
             continue
 
         if _is_section_header(line):
-            surf = font_h.render(line, True, (200, 215, 255))
+            surf = font_h.render(line, True, (255, 255, 255))
             result.append((surf, 22))
             # underline gap
             result.append((None, 2))
@@ -132,11 +132,11 @@ def build_rules_surfaces(raw_text, font_h, font_b, max_width):
                 cur.append(word)
             else:
                 if cur:
-                    s = font_b.render(' '.join(cur), True, (175, 185, 215))
+                    s = font_b.render(' '.join(cur), True, (255, 255, 255))
                     result.append((s, 0))
                 cur = [word]
         if cur:
-            s = font_b.render(' '.join(cur), True, (175, 185, 215))
+            s = font_b.render(' '.join(cur), True, (255, 255, 255))
             result.append((s, 0))
 
     return result
@@ -257,8 +257,7 @@ def draw_instructions(screen, fonts, rules_surfs, scroll_y, mx, my):
     H  = settings.SCREEN_HEIGHT
     nc = (130, 145, 200)   # neutral accent color for instructions
 
-    screen.fill(settings.COLOR_BACKGROUND)
-    _draw_hex_bg(screen, nc, W, H)
+    screen.fill((0, 0, 0))
 
     # ── Header ─────────────────────────────────────────────────────────────
     HEADER_H = 90
@@ -324,7 +323,7 @@ def draw_instructions(screen, fonts, rules_surfs, scroll_y, mx, my):
         for i in range(32):
             alpha = int(255 * (1 - i / 32))
             fade  = pygame.Surface((TEXT_W + 80, 1), pygame.SRCALPHA)
-            fade.fill((22, 28, 48, alpha))
+            fade.fill((0, 0, 0, alpha))
             screen.blit(fade, (TEXT_X - 20, grad_y + i * direction))
 
     return start_rect, max_scroll

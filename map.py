@@ -494,9 +494,9 @@ class MapGrid:
                 for ek in e_knights:
                     if atk_supp or not self.is_supported(ek):
                         valid.add((nq, nr)); break
-                # vs trapped+unsupported sovereign
+                # vs unsupported sovereign (no trap required for knights)
                 for es in e_sovs:
-                    if not self.is_supported(es) and self.is_trapped(es):
+                    if not self.is_supported(es):
                         valid.add((nq, nr)); break
 
             elif isinstance(unit, Champion):
@@ -532,6 +532,7 @@ class MapGrid:
         """Update hex control at (tq, tr) when unit moves or advances there.
         - If unclaimed (None) -> claimed by unit.nation
         - If owned by an enemy -> seized by unit.nation if unit is Army, Knight, or Champion
+        - If owned by a ghost nation -> treated as unclaimed; seized by any Army/Knight/Champion
         - If owned by an ally -> original owner keeps control ('first come keeps it')
         """
         from armies    import Army
@@ -544,8 +545,8 @@ class MapGrid:
             self.tile_control[(tq, tr)] = unit_ri
         elif curr_ri != unit_ri:
             owner_nation = NATIONS[curr_ri]
-            if unit.nation.is_enemy(owner_nation):
-                # Enemy seizure (Armies, Knights, and Champions seize enemy territory)
+            if unit.nation.is_enemy(owner_nation) or owner_nation.is_ghost:
+                # Enemy seizure or ghost-owned tile (Armies, Knights, and Champions claim it)
                 if isinstance(unit, (Army, Knight, Champion)):
                     self.tile_control[(tq, tr)] = unit_ri
 
@@ -720,8 +721,8 @@ class MapGrid:
                 if not e_sovs:
                     return False, "No enemy sovereign in that hex.", []
                 target = e_sovs[0]
-                if self.is_supported(target) or not self.is_trapped(target):
-                    return False, "Illegal: knight can only attack an unsupported, trapped sovereign.", []
+                if self.is_supported(target):
+                    return False, "Illegal: knight can only attack an unsupported sovereign.", []
                 self.remove_sovereign(target); destroyed.append(target)
                 advance = True
                 messages.append(f"{target.nation.color_name} sovereign destroyed!")
@@ -934,13 +935,47 @@ class MapGrid:
     # =======================================================================
 
     def check_ghost_nations(self, all_nations):
-        """Mark any nation missing its sovereign as a ghost nation."""
+        """Mark any nation missing its sovereign as a ghost nation.
+
+        On the turn a nation first becomes a ghost, release its territory so
+        tiles resolve to their occupier (or neutral if contested/empty).
+        """
         living_sov_nations = {
             s.nation.ring_index
             for slist in self.sovereigns.values() for s in slist
         }
         for nation in all_nations:
+            was_ghost = nation.is_ghost
             nation.is_ghost = nation.ring_index not in living_sov_nations
+            if nation.is_ghost and not was_ghost:
+                # Nation just collapsed this turn — release its territory
+                self.release_ghost_territory(nation)
+
+    def release_ghost_territory(self, nation):
+        """Release all tiles owned by a newly-collapsed ghost nation.
+
+        Each tile resolves to:
+        - The single occupying nation if exactly one nation has units there
+        - Neutral (None) if empty or contested by 2+ nations
+        """
+        ri = nation.ring_index
+        for coord, owner_ri in list(self.tile_control.items()):
+            if owner_ri != ri:
+                continue
+            # Collect all nations with units on this hex
+            occupiers = set()
+            for unit_list in (
+                self.armies.get(coord, []),
+                self.knights.get(coord, []),
+                self.champions.get(coord, []),
+                self.sovereigns.get(coord, []),
+            ):
+                for u in unit_list:
+                    occupiers.add(u.nation.ring_index)
+            if len(occupiers) == 1:
+                self.tile_control[coord] = next(iter(occupiers))
+            else:
+                self.tile_control[coord] = None  # empty or contested → neutral
 
     def check_win_condition(self, player, all_nations) -> bool:
         """

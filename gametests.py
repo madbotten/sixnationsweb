@@ -1465,6 +1465,120 @@ class TestKnightMechanics(unittest.TestCase):
         self.assertNotIn((0, 1), valid_moves, "Knight cannot move onto hex occupied by army")
 
 
+class TestGhostNationTerritory(unittest.TestCase):
+    """Tests for territory release when a nation loses its sovereign."""
+
+    def setUp(self):
+        for nation in NATIONS:
+            nation.is_ghost = False
+        self.grid = MapGrid()
+        self.grid.generate_map()
+
+    def test_ghost_nation_empty_tiles_become_neutral(self):
+        """When a nation collapses, its empty tiles revert to neutral."""
+        # Cobalt (3) owns its 4 home hexes at start; clear units so they're empty
+        cobalt_hexes = [coord for coord, ri in self.grid.tile_control.items() if ri == 3]
+        self.assertTrue(len(cobalt_hexes) > 0, "Cobalt should own tiles at start")
+
+        # Remove Cobalt's sovereign to trigger collapse
+        cobalt_sovs = [s for sl in self.grid.sovereigns.values() for s in sl
+                       if s.nation.ring_index == 3]
+        for s in cobalt_sovs:
+            self.grid.remove_sovereign(s)
+        # Also clear all Cobalt units from its hexes so they're empty
+        for coord in cobalt_hexes:
+            self.grid.armies[coord] = [a for a in self.grid.armies.get(coord, [])
+                                       if a.nation.ring_index != 3]
+            self.grid.champions[coord] = [c for c in self.grid.champions.get(coord, [])
+                                          if c.nation.ring_index != 3]
+
+        self.grid.check_ghost_nations(NATIONS)
+        self.assertTrue(NATIONS[3].is_ghost)
+
+        for coord in cobalt_hexes:
+            self.assertIsNone(
+                self.grid.tile_control.get(coord),
+                f"Empty collapsed tile {coord} should be neutral, not Cobalt's")
+
+    def test_ghost_nation_occupied_tile_goes_to_single_occupier(self):
+        """A collapsed nation's tile with one occupying unit goes to that unit's nation."""
+        # Place a Yellow army on one of Cobalt's home hexes
+        cobalt_hex = [coord for coord, ri in self.grid.tile_control.items() if ri == 3][0]
+        yellow_army = Army(NATIONS[0], *cobalt_hex)
+        self.grid.armies[cobalt_hex] = [yellow_army]
+        self.grid.champions[cobalt_hex] = []
+
+        # Collapse Cobalt
+        cobalt_sovs = [s for sl in self.grid.sovereigns.values() for s in sl
+                       if s.nation.ring_index == 3]
+        for s in cobalt_sovs:
+            self.grid.remove_sovereign(s)
+
+        self.grid.check_ghost_nations(NATIONS)
+        self.assertTrue(NATIONS[3].is_ghost)
+        self.assertEqual(
+            self.grid.tile_control.get(cobalt_hex), 0,
+            "Tile with lone Yellow army should transfer to Yellow on Cobalt collapse")
+
+    def test_ghost_nation_contested_tile_becomes_neutral(self):
+        """A collapsed nation's tile with units from 2+ nations stays neutral."""
+        cobalt_hex = [coord for coord, ri in self.grid.tile_control.items() if ri == 3][0]
+        # Place Yellow army and Green champion on same hex
+        self.grid.armies[cobalt_hex] = [Army(NATIONS[0], *cobalt_hex)]
+        self.grid.champions[cobalt_hex] = [Champion(NATIONS[1], *cobalt_hex)]
+
+        # Collapse Cobalt
+        cobalt_sovs = [s for sl in self.grid.sovereigns.values() for s in sl
+                       if s.nation.ring_index == 3]
+        for s in cobalt_sovs:
+            self.grid.remove_sovereign(s)
+
+        self.grid.check_ghost_nations(NATIONS)
+        self.assertTrue(NATIONS[3].is_ghost)
+        self.assertIsNone(
+            self.grid.tile_control.get(cobalt_hex),
+            "Contested collapsed tile should be neutral")
+
+    def test_move_into_ghost_territory_claims_hex(self):
+        """Moving an army into a former ghost nation's neutral tile claims it."""
+        # Find a Cobalt hex adjacent to a neutral hex
+        cobalt_hex = None
+        target_hex = None
+        for coord, ri in self.grid.tile_control.items():
+            if ri == 3:
+                for nq, nr in self.grid.get_neighbors(*coord):
+                    if self.grid.tile_control.get((nq, nr)) is None and self.grid.get_tile(nq, nr):
+                        cobalt_hex = coord
+                        target_hex = (nq, nr)
+                        break
+            if cobalt_hex:
+                break
+
+        if cobalt_hex is None:
+            self.skipTest("No Cobalt hex adjacent to a neutral tile in this layout")
+
+        # Collapse Cobalt, leaving cobalt_hex empty → becomes neutral
+        cobalt_sovs = [s for sl in self.grid.sovereigns.values() for s in sl
+                       if s.nation.ring_index == 3]
+        for s in cobalt_sovs:
+            self.grid.remove_sovereign(s)
+        self.grid.armies[cobalt_hex] = []
+        self.grid.champions[cobalt_hex] = []
+        self.grid.check_ghost_nations(NATIONS)
+        self.assertIsNone(self.grid.tile_control.get(cobalt_hex),
+                          "Cobalt hex should be neutral after collapse")
+
+        # Place a Yellow army on the neutral cobalt_hex and move to target_hex
+        yellow_army = Army(NATIONS[0], *cobalt_hex)
+        self.grid.armies[cobalt_hex] = [yellow_army]
+        # target_hex must be clear and on board
+        self.grid.armies[target_hex] = []
+        self.grid.apply_move(yellow_army, *target_hex)
+        self.assertEqual(
+            self.grid.tile_control.get(target_hex), 0,
+            "Yellow army moving into neutral territory should claim it")
+
+
 if __name__ == '__main__':
     unittest.main()
 

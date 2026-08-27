@@ -627,10 +627,11 @@ async def main():
     rules_raw    = open(rules_path).read() if os.path.exists(rules_path) else ''
     rules_surfs  = splash_mod.build_rules_surfaces(
         rules_raw,
-        util.get_font(17, bold=True),
-        util.get_font(15),
+        util.get_font(22, bold=True),
+        util.get_font(19),
         settings.SCREEN_WIDTH - 280,
     )
+
     inst_scroll  = 0
     inst_max_scroll = 0
     splash_mx, splash_my = 0, 0

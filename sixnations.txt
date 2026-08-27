@@ -15,7 +15,7 @@ The board is composed of a hex map of 37 hexes (1 center hex + 3 surrounding rin
 
 SUMMARY
 
-This is a game for 2-3 players.
+This is currently a game for 2 players. One player can be controlled by a bot. The game may be expanded to 3 players in the future.
 
 Players seek to push their randomly assigned Nation (and its close allies) to power. The goal is to defeat 2 of the 3 nations opposite them on the hex map by killing their sovereigns.
  
@@ -33,6 +33,14 @@ A nation can never have more than 3 armies. A nation can never have more than 1 
 TERM DEFINITIONS
 
 Unit - An Army, Champion, or Sovereign.
+
+Army - A unit used for combat. Only one army or knight unit can occupy a hex at one time.
+
+Knight - A slightly improved combat unit.
+
+Champion - A very effective offensive unit.
+
+Sovereign - A defensive unit that cannot attack but provides support. It is the main target of the game.
 
 Allied Unit - A unit is allied with another unit if it belongs to the same nation, or an adjacent nation on the diplomatic ring.
 
@@ -56,22 +64,23 @@ There are three types of units on the map: Champions, Armies, and Sovereigns.
 Each turn, a player can make one move of a unit of ANY nation, except they may not move any nation on their cooldown list or the global cooldown. A counter of the given color is placed to show what the last two nations any player has moved recently. 
 
 A game turn move is any one of the following:
-An army can move from one hex into an adjacent hex that has no army and no enemy units. 
-An army may qualify to attack one adjacent hex with a non-allied unit in it.
-A sovereign can move from its current hex into an adjacent hex that does not have an enemy unit in it.
-A champion can move from its current hex into any adjacent hex that does not have an enemy unit in it.
-A champion may qualify to attack any hex adjacent to it with enemy units in it.
-Replacing one of the 3 armies: if a non-ghost nation no longer has 3 armies, then as a move, one new army may be placed on one of the four nation starting hexes, only if there is a hex with no other armies and no enemy units on it.
-Promotion: if a non-ghost nation has lost its champion, one army in one of the four starting hexes of that nation may be promoted to a new champion.
+1. An army can move from one hex into an adjacent hex that has no army and no enemy units. 
+2. An army may qualify to attack one adjacent hex with a non-allied unit in it.
+3. A sovereign can move from its current hex into an adjacent hex that does not have an enemy unit in it. However, sovereigns of enemy nations cannot be moved to a hex where they would not have support.
+4. A champion can move from its current hex into any adjacent hex that does not have an enemy unit in it.
+5. A champion may qualify to attack any hex adjacent to it with enemy units in it.
+6. Army Replacement: If a non-ghost nation no longer has 3 armies, then as a move, one new army may be placed on any hex with no other armies and no enemy units on it, that belongs to that nation.
+7. Champion Promotion: If a non-ghost nation has lost its champion, one army in a hex controlled by that nation may be promoted to a new champion.
+8. Knight Promotion: An army in a hex controlled by a nation may be promoted to a knight, but nations can only have one knight at a time.
 
 Note that armies can NEVER share hexes. Only champions and sovereigns may share hexes with armies, and only with allied armies, champions, or sovereigns. Thus, the maximum number of units that can coexist in a hex is 5: one army, two allied sovereigns, and two allied champions.
 
 ATTACKS
 
-Only Armies and Champions can attack.
-Armies and Champions cannot attack allied units.
+Only Armies, Knights, and Champions can attack.
+Armies, Knights, and Champions cannot attack allied units.
 The current player states the unit attacking, and the adjacent target hex, the target nation, and the target unit type.
-A unit must move forward after an attack, unless it violates other rules (only one army per hex, and cannot enter a hex with enemy units in it).
+A unit must move forward after an attack, unless it violates other rules (only one army or knight per hex, and cannot enter a hex with enemy units in it).
 
 An army can attack an adjacent enemy army. The result depends on support:
 If an unsupported army attacks an enemy unsupported army: both armies are destroyed.
@@ -79,7 +88,23 @@ An unsupported army may not attack an enemy supported army: this is not a legal 
 If a supported army attacks an enemy unsupported army: the enemy unsupported army is destroyed.
 If a supported army attacks an enemy supported army: both armies are destroyed.
 An army may not attack a champion.
+An unsupported army may not attack a knight. A supported army may attack a knight:
+If the knight is unsupported: the knight is destroyed and the army advances.
+If the knight is supported: both units are destroyed.
 An army may not attack a sovereign, unless the sovereign is unsupported and trapped. If the army attacks an unsupported, trapped sovereign, the sovereign is destroyed and the army moves forward.
+
+A knight can attack an adjacent enemy army:
+If an unsupported knight attacks an unsupported army: both are destroyed.
+An unsupported knight may not attack a supported army: this is not a legal move.
+If a supported knight attacks an unsupported army: the army is destroyed and the knight advances.
+If a supported knight attacks a supported army: both are destroyed.
+A knight can attack an adjacent enemy knight:
+If an unsupported knight attacks an unsupported knight: both knights are destroyed.
+An unsupported knight may not attack a supported knight: this is not a legal move.
+If a supported knight attacks an unsupported knight: the enemy knight is destroyed and the attacker advances.
+If a supported knight attacks a supported knight: both knights are destroyed.
+A knight may not attack a champion.
+A knight may attack any unsupported sovereign (trapped or not): the sovereign is destroyed and the knight advances.
 
 If an army destroys another army or sovereign, if the attacking army survives, it must move into the hex unless there is another army or enemy unit in that hex.
 
@@ -87,6 +112,12 @@ A champion can attack an adjacent enemy army. The result depends on support:
 If an unsupported champion attacks an enemy unsupported army: the army is destroyed.
 An unsupported champion may not attack a supported army, this is an illegal move.
 If a supported champion attacks a supported army, that army is destroyed.
+
+A champion can attack an adjacent enemy knight:
+If an unsupported champion attacks an enemy unsupported knight: the knight is destroyed.
+An unsupported champion may not attack a supported knight: this is an illegal move.
+If a supported champion attacks an unsupported knight: the knight is destroyed and the champion advances.
+If a supported champion attacks a supported knight: the knight is destroyed.
 
 A champion can attack an adjacent enemy champion.
 If an unsupported champion attacks an enemy unsupported champion: both champions are destroyed.
@@ -109,7 +140,47 @@ A player wins for their secret Nation assignment by destroying the Sovereigns of
 
 Nations that lose their sovereign become ghost nations. They can no longer recruit new armies or promote champions. Their pieces remain in play, should a player still want to use them as their move. Ghost nations lose their coloration on the map as a reminder they have been decapitated.
 
+When a nation's sovereign is destroyed, all hexes that nation controlled are immediately released:
+- A hex occupied by a single nation's unit is claimed by that nation.
+- A hex occupied by units from two or more nations, or an empty hex, reverts to neutral.
+After this release, any unit that moves into a formerly ghost nation's neutral hex may claim it normally.
+
 A player loses immediately if their secret assigned Nation loses its sovereign.
 
 It is possible for two players to win at the same time, resulting in a tie: if they started out with adjacent nations, they will share 2 of their three target sovereigns.
 
+
+TERRITORY CONTROL
+
+Each hex on the board has a controlling nation (or is neutral). Hexes begin the game either controlled by their starting nation or neutral.
+
+CLAIMING TERRITORY
+
+A unit claims a hex by moving into it or advancing into it after a successful attack.
+
+An Army, Knight, or Champion that moves into a neutral hex claims it for their nation.
+An Army, Knight, or Champion that moves into a hex owned by an enemy nation seizes control of it.
+Moving into a hex owned by an allied nation does not change ownership ("first come keeps it").
+A Sovereign moving into a hex does not change ownership.
+
+ARMY CAPACITY
+
+A nation's maximum army size grows with its territory. A nation may field:
+- 3 armies as a base.
+- 1 additional army for every 3 hexes controlled beyond 4.
+
+For example, a nation controlling 7 hexes may field 4 armies; controlling 10 hexes allows 5.
+
+MUSTERING (RECRUITING)
+
+As a turn, a player may muster (place) a new army for any non-ghost nation, provided:
+- The nation has not reached its army cap.
+- There is a hex controlled by that nation that contains no army and is not adjacent to any enemy piece.
+The new army is placed on one of those eligible controlled hexes.
+
+GHOST NATION TERRITORY RELEASE
+
+When a nation's sovereign is destroyed and it becomes a ghost, all hexes it controlled are immediately released at the moment of collapse:
+- A hex occupied by exactly one nation's units transfers to that nation.
+- A hex that is empty or occupied by units of two or more nations reverts to neutral.
+Any unit moving into a released neutral hex may claim it on that move or any future move.
