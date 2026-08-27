@@ -433,7 +433,7 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
                 elif curr_owner in enemy_ring_set:
                     score += 30.0 * w_territory
 
-    score += random.uniform(0, 2)
+    score += random.uniform(0, 0.01)  # tiny tie-break only; was uniform(0,2) which corrupted beam ordering
     return score
 
 
@@ -533,7 +533,7 @@ def _lookahead_best(grid, bot_player, global_cooldown_idx, nation_list,
     Returns an action tuple (final_score, atype, *payload) or None.
     """
     from player import Player
-    from evaluator import evaluate_position
+    from evaluator import evaluate_position, _derive_ghost_set
 
     bot_secret = bot_player.secret_nation
 
@@ -581,7 +581,8 @@ def _lookahead_best(grid, bot_player, global_cooldown_idx, nation_list,
 
         # If depth == 0 with hybrid evaluation (evaluate position immediately without opponent counter)
         if depth <= 0:
-            pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights)
+            pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights,
+                                          ghost_ri_set=_derive_ghost_set(snap))
             net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * pos_score
             if net > best_net:
                 best_net = net
@@ -598,7 +599,8 @@ def _lookahead_best(grid, bot_player, global_cooldown_idx, nation_list,
 
         if opp_nation is None:
             # No guess — evaluate our immediate position
-            pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights)
+            pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights,
+                                          ghost_ri_set=_derive_ghost_set(snap))
             if mode == 'action':
                 net = my_move_score
             else:
@@ -614,10 +616,11 @@ def _lookahead_best(grid, bot_player, global_cooldown_idx, nation_list,
                 snap, fake_opp, new_gci, nation_list,
                 suspected_human_ri=opp_suspected_us,
                 turn_number=turn_number + 1,
-                weights=None)
+                weights=weights)
 
             if not opp_actions:
-                pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights)
+                pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights,
+                                              ghost_ri_set=_derive_ghost_set(snap))
             else:
                 opp_valid = [a for a in opp_actions if a[0] > -1000]
                 if opp_valid:
@@ -663,7 +666,7 @@ def _lookahead_best(grid, bot_player, global_cooldown_idx, nation_list,
                                     opp_snap, fake_opp, our_moved.ring_index, nation_list,
                                     suspected_human_ri=opp_suspected_us,
                                     turn_number=turn_number + 3,
-                                    weights=None)
+                                    weights=weights)
                                 if opp_followups:
                                     opp_f_valid = [a for a in opp_followups if a[0] > -1000]
                                     if opp_f_valid:
@@ -671,7 +674,8 @@ def _lookahead_best(grid, bot_player, global_cooldown_idx, nation_list,
                                     opp_followups.sort(key=lambda a: a[0], reverse=True)
                                     _execute(opp_snap, opp_followups[0])
 
-                    branch_pos = evaluate_position(opp_snap, bot_secret, nation_list, weights=eval_weights)
+                    branch_pos = evaluate_position(opp_snap, bot_secret, nation_list, weights=eval_weights,
+                                                    ghost_ri_set=_derive_ghost_set(opp_snap))
                     if branch_pos < worst_pos_score:
                         worst_pos_score = branch_pos
 
@@ -692,7 +696,7 @@ def _lookahead_best(grid, bot_player, global_cooldown_idx, nation_list,
                 snap, fake_opp, new_gci, nation_list,
                 suspected_human_ri=opp_suspected_us,
                 turn_number=turn_number + 1,
-                weights=None)
+                weights=weights)
             if opp_actions:
                 opp_valid = [a for a in opp_actions if a[0] > -1000]
                 if opp_valid:

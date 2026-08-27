@@ -65,7 +65,23 @@ EVAL_WEIGHT_KEYS = list(DEFAULT_EVAL_WEIGHTS.keys())
 # Main evaluation function
 # ---------------------------------------------------------------------------
 
-def evaluate_position(grid, secret_nation, nation_list, weights=None):
+def _derive_ghost_set(grid):
+    """Return a set of ring_indices whose sovereign is absent from a snapshot grid.
+
+    Used by lookahead code to derive ghost state from a snapshot without
+    touching the shared Nation singleton flags (which live on the real game).
+    """
+    surviving = set()
+    for sov_list in grid.sovereigns.values():
+        for sov in sov_list:
+            surviving.add(sov.nation.ring_index)
+    # All ring indices that have no sovereign present are effectively ghost
+    all_ri = set(range(6))
+    return all_ri - surviving
+
+
+def evaluate_position(grid, secret_nation, nation_list, weights=None,
+                      ghost_ri_set=None):
     """Score the board position from the perspective of secret_nation.
 
     Parameters:
@@ -74,6 +90,10 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None):
         nation_list: list of all 6 Nation objects.
         weights: optional dict of weight overrides. Missing keys fall back
                  to DEFAULT_EVAL_WEIGHTS.
+        ghost_ri_set: optional set of ring_index values to treat as ghost
+                 (sovereign already dead). When provided, overrides n.is_ghost
+                 on the Nation singletons. Use this in lookahead snapshots where
+                 Nation.is_ghost hasn't been updated.
 
     Returns:
         float score — higher is better for the secret_nation player.
@@ -91,18 +111,23 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None):
     enemy_ri_set = {n.ring_index for n in enemy_nations}
     allied_ri_set = {n.ring_index for n in allied_nations}
 
+    def _is_ghost(nation):
+        if ghost_ri_set is not None:
+            return nation.ring_index in ghost_ri_set
+        return nation.is_ghost
+
     # -----------------------------------------------------------------------
     # 1. Win / loss progress  (ghost nations = sovereigns already killed)
     # -----------------------------------------------------------------------
     for n in enemy_nations:
-        if n.is_ghost:
+        if _is_ghost(n):
             score += w['ghost_enemy']
 
-    if secret_nation.is_ghost:
+    if _is_ghost(secret_nation):
         return w['own_sov_dead']  # game over, nothing else matters
 
     for n in allied_nations:
-        if n is not secret_nation and n.is_ghost:
+        if n is not secret_nation and _is_ghost(n):
             score += w['ally_sov_dead']
 
     # -----------------------------------------------------------------------

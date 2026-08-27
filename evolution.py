@@ -751,6 +751,7 @@ _GENE_RANGES = {
     'w_deceptive':          (0.0, 1.0),
     'random_early_turns':   (0, 30),
     'deceptive_early_turns': (0, 25),
+    'adaptive_turn':         (10, 40),
      # Architectural genes (evolvable depth, beam, and hybrid evaluation)
     'lookahead_depth':      (1, 4),
     'lookahead_beam':       (1, 4),
