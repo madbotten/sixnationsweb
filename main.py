@@ -571,12 +571,13 @@ async def main():
     game_result         = GAME_RESULT_NONE
     bot_think_timer     = 0
 
-    # Evolved bot config — loaded if bot_configs.json exists
+    # Evolved bot config — loaded if bot_configs_stable.json or bot_configs.json exists
     evolved_bot_config  = None           # BotConfig or None
     evolved_bot_weights = None           # dict or None
-    _evolved_configs_path = os.path.join(os.path.dirname(__file__), 'bot_configs.json')
-    has_evolved_configs = (_HAS_EVOLUTION
-                          and os.path.exists(_evolved_configs_path))
+    _stable_path = os.path.join(os.path.dirname(__file__), 'bot_configs_stable.json')
+    _default_path = os.path.join(os.path.dirname(__file__), 'bot_configs.json')
+    _evolved_configs_path = _stable_path if os.path.exists(_stable_path) else _default_path
+    has_evolved_configs = (_HAS_EVOLUTION and os.path.exists(_evolved_configs_path))
 
     error_message = ""
     error_alpha   = 0.0
@@ -677,15 +678,17 @@ async def main():
                     player2.is_bot = True
                     game_state     = STATE_HUMAN_TURN
                     game_mode_global = game_mode
-                    # Load a random evolved config
+                    # Load #1 champion evolved config
                     _loaded = load_top_configs(_evolved_configs_path)
                     if _loaded:
-                        evolved_bot_config  = random.choice(_loaded)
+                        evolved_bot_config  = _loaded[0]  # #1 Champion bot
                         evolved_bot_weights = evolved_bot_config.to_weights_dict()
-                        print(f"[Mode] Playing vs Evolved Bot  "
-                              f"(kill={evolved_bot_config.w_kill_enemy:.2f}  "
-                              f"rnd={evolved_bot_config.w_random:.2f}  "
-                              f"dec={evolved_bot_config.w_deceptive:.2f})")
+                        print(f"\n[Mode] Playing vs Champion Evolved Bot (#{1} from {_evolved_configs_path})")
+                        try:
+                            from evolution import describe_bot
+                            print(describe_bot(evolved_bot_config, rank=1))
+                        except Exception:
+                            pass
                     else:
                         evolved_bot_config  = None
                         evolved_bot_weights = None
@@ -993,7 +996,11 @@ async def main():
                     grid, player2, global_cooldown_idx, nation_list,
                     turn_number, suspected_human_ri=_suspected_ri,
                     weights=evolved_bot_weights,
-                    evolved_config=evolved_bot_config)
+                    evolved_config=evolved_bot_config,
+                    lookahead_depth=evolved_bot_config.lookahead_depth if evolved_bot_config else None,
+                    lookahead_beam=evolved_bot_config.lookahead_beam if evolved_bot_config else None,
+                    lookahead_mode=evolved_bot_config.lookahead_mode if evolved_bot_config else None,
+                    eval_weights=evolved_bot_config.to_evaluator_weights() if evolved_bot_config else None)
                 if bot_pending_action is None:
                     # No legal move at all; skip straight to human turn
                     game_state         = STATE_HUMAN_TURN

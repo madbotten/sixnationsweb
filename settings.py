@@ -69,4 +69,22 @@ BOT_INITIAL_RANDOM = 0.60   # 60% random at start → 40% intent
 # -- Deployment mode ----------------------------------------------------------
 # 'DEBUG'  : show developer overlays (bot faction guess, etc.)
 # 'EXPORT' : clean release build — no debug overlays shown
-DEPLOYMENT = 'DEBUG'
+DEPLOYMENT = 'EXPORT'
+
+# -- Evolution chamber --------------------------------------------------------
+# Default parameters for evolution.py (overridable via CLI flags).
+EVO_POPULATION       = 24     # bots per generation
+EVO_GENERATIONS      = 50     # number of generations to evolve
+EVO_GAMES_PER_PAIR   = 2      # games per matchup in round-robin
+EVO_MAX_TURNS        = 200    # turn limit per headless game
+EVO_ELITE_COUNT      = 4      # top N configs carried forward unchanged
+EVO_MUTATION_RATE    = 0.15   # probability of mutating each gene
+EVO_MUTATION_RESET   = 0.05   # probability of full-random reset (vs gaussian)
+EVO_TOP_N_PERSIST    = 4      # number of top configs saved to bot_configs.json
+
+# -- Bot lookahead ------------------------------------------------------------
+# Multi-ply search depth. 1 = current behaviour (score one move).
+# 2+ = look ahead N plies (my move, opponent response, my response, ...).
+BOT_LOOKAHEAD_DEPTH  = 1      # default plies (1 = no lookahead)
+BOT_LOOKAHEAD_BEAM   = 3      # top-K candidates to evaluate at each deeper ply
+BOT_LOOKAHEAD_MODE   = 'action'  # 'action' (score subtraction) or 'position' (board eval)

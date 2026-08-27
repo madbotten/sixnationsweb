@@ -198,11 +198,11 @@ def _enemy_set(ring_index):
 
 
 def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri,
-                                    turn_number, nation_list=None):
+                                    turn_number, nation_list=None, adaptive_turn=None):
     """
     Apply sovereign-targeting intelligence based on the suspected human faction:
 
-    Rule 1 — Hunt the suspected human sovereign (after BOT_ADAPTIVE_TURN):
+    Rule 1 — Hunt the suspected human sovereign (after adaptive_turn):
       If a legal attack would kill a sovereign of the suspected human faction,
       give that action top priority (+2000).
 
@@ -237,7 +237,8 @@ def _adaptive_sovereign_adjustments(grid, actions, bot_ri, suspected_human_ri,
     # If bot also has 1 kill, killing a shared target gives a tie — that's acceptable
     bot_one_away   = (bot_kills_so_far >= 1)
 
-    is_adaptive_phase = (turn_number >= settings.BOT_ADAPTIVE_TURN)
+    cutoff = adaptive_turn if adaptive_turn is not None else settings.BOT_ADAPTIVE_TURN
+    is_adaptive_phase = (turn_number >= cutoff)
 
     result = []
     for action in actions:
@@ -332,6 +333,7 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
     w_champ_sup = w.get('champion_support', 1.0)
     w_danger    = w.get('endanger_enemy_sov', 1.0)
     w_unsup_ch  = w.get('unsupport_enemy_champ', 1.0)
+    w_territory = w.get('claim_territory', 1.0)
 
     nation    = unit.nation
     is_allied = nation.ring_index in allied_ring_set
@@ -404,6 +406,27 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
         else:
             score += 2
 
+    # Territory-claiming bonus (capturing neutral or seizing enemy hexes)
+    if hasattr(grid, 'tile_control'):
+        curr_owner = grid.tile_control.get((tq, tr))
+        unit_ri = nation.ring_index
+        if curr_owner is None:
+            # Claiming neutral territory
+            if is_allied:
+                score += 40.0 * w_territory
+            else:
+                score += 10.0 * w_territory
+        elif curr_owner != unit_ri:
+            from factions import NATIONS
+            owner_ri = curr_owner.ring_index if hasattr(curr_owner, 'ring_index') else curr_owner
+            owner_nation = NATIONS[owner_ri]
+            if nation.is_enemy(owner_nation) and isinstance(unit, (Army, Champion)):
+                # Seizing enemy territory
+                if is_allied:
+                    score += 70.0 * w_territory
+                elif curr_owner in enemy_ring_set:
+                    score += 30.0 * w_territory
+
     score += random.uniform(0, 2)
     return score
 
@@ -458,15 +481,228 @@ def _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
             actions.append((s, 'promote', nation, coord))
 
     # Apply adaptive sovereign intelligence
+    adaptive_t = weights.get('adaptive_turn') if weights else None
     actions = _adaptive_sovereign_adjustments(
         grid, actions, bot_ri, suspected_human_ri, turn_number,
-        nation_list=nation_list)
+        nation_list=nation_list, adaptive_turn=adaptive_t)
 
     return actions
 
 
 # ---------------------------------------------------------------------------
+# Multi-ply lookahead (beam-search negamax)
 # ---------------------------------------------------------------------------
+
+def _map_action_to_snapshot(action, unit_map):
+    """Remap an action's unit references from the original grid to a snapshot.
+
+    action is (score, atype, unit_or_nation, coord[, ...]).
+    For 'move'/'attack': payload[0] is a unit (Army/Champion/Sovereign).
+    For 'recruit'/'promote': payload[0] is a Nation — no remapping needed.
+    """
+    score, atype, *rest = action
+    if atype in ('move', 'attack'):
+        original_unit = rest[0]
+        mapped_unit = unit_map.get(id(original_unit), original_unit)
+        return (score, atype, mapped_unit, *rest[1:])
+    return action
+
+
+def _lookahead_best(grid, bot_player, global_cooldown_idx, nation_list,
+                    turn_number, suspected_opp_ri, weights,
+                    depth, beam_width, mode='position', eval_weights=None,
+                    hybrid_ratio=1.0):
+    """Beam-search negamax / hybrid lookahead.
+
+    depth: remaining plies to search (0 = evaluate immediate moves, 1 = 1 opponent counter, 2 = 2 counters).
+    beam_width: how many top candidates to explore at deeper plies.
+    mode: 'action' (score subtraction) or 'position' (board evaluation).
+    hybrid_ratio: 0.0 = 100% move score, 1.0 = 100% positional board eval,
+                  0.3..0.7 = blended hybrid scoring.
+
+    Returns an action tuple (final_score, atype, *payload) or None.
+    """
+    from player import Player
+    from evaluator import evaluate_position
+
+    bot_secret = bot_player.secret_nation
+
+    # Gather and score all actions (1-ply move scoring)
+    actions = _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
+                              suspected_human_ri=suspected_opp_ri,
+                              turn_number=turn_number,
+                              weights=weights)
+    if not actions:
+        return None
+
+    # Filter disqualified
+    valid = [a for a in actions if a[0] > -1000]
+    if valid:
+        actions = valid
+
+    # If depth 0 and pure move scoring, return best immediately
+    if depth <= 0 and (mode == 'action' or hybrid_ratio <= 0.0):
+        best = max(a[0] for a in actions)
+        threshold = (best * 0.85) if best > 0 else (best - 50)
+        top_tier = [a for a in actions if a[0] >= threshold]
+        return random.choice(top_tier)
+
+    # Sort by 1-ply score, take top beam_width candidates
+    actions.sort(key=lambda a: a[0], reverse=True)
+    candidates = actions[:beam_width]
+
+    best_net = float('-inf')
+    best_action = None
+
+    for action in candidates:
+        my_move_score = action[0]
+
+        # Snapshot the grid and remap the action
+        snap, unit_map = grid.snapshot()
+        mapped_action = _map_action_to_snapshot(action, unit_map)
+
+        # Execute on the snapshot
+        moved_nation, _, _ = _execute(snap, mapped_action)
+        if moved_nation is None:
+            continue
+
+        # Simulate cooldown
+        new_gci = moved_nation.ring_index
+
+        # If depth == 0 with hybrid evaluation (evaluate position immediately without opponent counter)
+        if depth <= 0:
+            pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights)
+            net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * pos_score
+            if net > best_net:
+                best_net = net
+                best_action = action
+            continue
+
+        # Depth >= 1: Simulate opponent response
+        opp_nation = None
+        if suspected_opp_ri is not None:
+            for n in nation_list:
+                if n.ring_index == suspected_opp_ri:
+                    opp_nation = n
+                    break
+
+        if opp_nation is None:
+            # No guess — evaluate our immediate position
+            pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights)
+            if mode == 'action':
+                net = my_move_score
+            else:
+                net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * pos_score
+        elif mode == 'position' or hybrid_ratio > 0.0:
+            # 2-STAGE TAPERED BEAM MINIMAX:
+            # Round 1 (Plies 1 & 2): Full beam width (test top opponent counters against our move)
+            # Round 2 (Plies 3 & 4): Tapered to 1 (principal variation follow-up sequence)
+            fake_opp = Player(opp_nation, is_bot=True, player_id='lookahead_opp')
+            opp_suspected_us = bot_secret.ring_index
+
+            opp_actions = _gather_actions(
+                snap, fake_opp, new_gci, nation_list,
+                suspected_human_ri=opp_suspected_us,
+                turn_number=turn_number + 1,
+                weights=None)
+
+            if not opp_actions:
+                pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights)
+            else:
+                opp_valid = [a for a in opp_actions if a[0] > -1000]
+                if opp_valid:
+                    opp_actions = opp_valid
+                opp_actions.sort(key=lambda a: a[0], reverse=True)
+
+                # Round 1 (Ply 2): explore top countermoves up to beam_width
+                opp_beam = min(beam_width, len(opp_actions))
+                if depth >= 3:
+                    opp_beam = min(3, opp_beam)  # cap at 3 for 4-ply
+
+                worst_pos_score = float('inf')
+
+                for opp_idx in range(opp_beam):
+                    best_opp_action = opp_actions[opp_idx]
+
+                    if opp_beam == 1:
+                        opp_snap = snap
+                        opp_mapped_action = best_opp_action
+                    else:
+                        opp_snap, opp_unit_map = snap.snapshot()
+                        opp_mapped_action = _map_action_to_snapshot(best_opp_action, opp_unit_map)
+
+                    opp_moved, _, _ = _execute(opp_snap, opp_mapped_action)
+
+                    if depth > 1 and opp_moved is not None:
+                        # Round 2 - Ply 3: Tapered follow-up (our single best reply)
+                        our_followups = _gather_actions(
+                            opp_snap, bot_player, opp_moved.ring_index, nation_list,
+                            suspected_human_ri=suspected_opp_ri,
+                            turn_number=turn_number + 2,
+                            weights=weights)
+                        if our_followups:
+                            our_valid = [a for a in our_followups if a[0] > -1000]
+                            if our_valid:
+                                our_followups = our_valid
+                            our_followups.sort(key=lambda a: a[0], reverse=True)
+                            our_moved, _, _ = _execute(opp_snap, our_followups[0])
+
+                            if depth > 2 and our_moved is not None:
+                                # Round 2 - Ply 4: Tapered follow-up (opponent's single best reply)
+                                opp_followups = _gather_actions(
+                                    opp_snap, fake_opp, our_moved.ring_index, nation_list,
+                                    suspected_human_ri=opp_suspected_us,
+                                    turn_number=turn_number + 3,
+                                    weights=None)
+                                if opp_followups:
+                                    opp_f_valid = [a for a in opp_followups if a[0] > -1000]
+                                    if opp_f_valid:
+                                        opp_followups = opp_f_valid
+                                    opp_followups.sort(key=lambda a: a[0], reverse=True)
+                                    _execute(opp_snap, opp_followups[0])
+
+                    branch_pos = evaluate_position(opp_snap, bot_secret, nation_list, weights=eval_weights)
+                    if branch_pos < worst_pos_score:
+                        worst_pos_score = branch_pos
+
+                pos_score = worst_pos_score
+
+            if hybrid_ratio >= 1.0:
+                net = pos_score
+            elif hybrid_ratio <= 0.0:
+                net = my_move_score
+            else:
+                net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * pos_score
+        else:
+            # ACTION MODE: net = my_score - opponent_best_score
+            fake_opp = Player(opp_nation, is_bot=True, player_id='lookahead_opp')
+            opp_suspected_us = bot_secret.ring_index
+
+            opp_actions = _gather_actions(
+                snap, fake_opp, new_gci, nation_list,
+                suspected_human_ri=opp_suspected_us,
+                turn_number=turn_number + 1,
+                weights=None)
+            if opp_actions:
+                opp_valid = [a for a in opp_actions if a[0] > -1000]
+                if opp_valid:
+                    opp_actions = opp_valid
+                opp_best_score = max(a[0] for a in opp_actions)
+            else:
+                opp_best_score = 0
+
+            net = my_move_score - opp_best_score
+
+        if net > best_net:
+            best_net = net
+            best_action = action  # return original action
+
+    if best_action is None:
+        return None
+
+    return (best_net, *best_action[1:])
+
+
 
 def _execute(grid, action):
     """
@@ -607,7 +843,9 @@ def do_bot_turn(grid, bot_player, global_cooldown_idx, nation_list, turn_number)
 # ---------------------------------------------------------------------------
 
 def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_number,
-                       suspected_human_ri=None, weights=None, evolved_config=None):
+                       suspected_human_ri=None, weights=None, evolved_config=None,
+                       lookahead_depth=None, lookahead_beam=None, lookahead_mode=None,
+                       eval_weights=None, hybrid_ratio=None):
     """
     Select the bot's next action WITHOUT executing it.
 
@@ -625,29 +863,74 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
 
     evolved_config: optional BotConfig.  When provided, the random/intent
     blend uses the config's intent_probability() instead of _intent_prob().
-    This allows evolved bots with w_random=0.0 to play pure intent in-game.
+
+    lookahead_depth: how many plies to search (1 = current 1-ply, 2+ = multi-ply).
+    Defaults to settings.BOT_LOOKAHEAD_DEPTH.
+
+    lookahead_beam: how many top candidates to explore at deeper plies.
+    Defaults to settings.BOT_LOOKAHEAD_BEAM.
+
+    lookahead_mode: 'action' (score subtraction) or 'position' (board eval).
+    Defaults to settings.BOT_LOOKAHEAD_MODE.
+
+    eval_weights: optional dict of evaluator weight overrides for position mode.
+
+    hybrid_ratio: float 0.0 to 1.0 (blends move score and position eval).
     """
     if evolved_config is not None:
+        if lookahead_depth is None:
+            lookahead_depth = getattr(evolved_config, 'lookahead_depth', 1)
+        if lookahead_beam is None:
+            lookahead_beam = getattr(evolved_config, 'lookahead_beam', 3)
+        if lookahead_mode is None:
+            lookahead_mode = getattr(evolved_config, 'lookahead_mode', 'position')
+        if weights is None:
+            weights = evolved_config.to_weights_dict()
+        if eval_weights is None:
+            eval_weights = evolved_config.to_evaluator_weights()
+        if hybrid_ratio is None:
+            hybrid_ratio = getattr(evolved_config, 'hybrid_ratio', 0.5)
         use_intent = random.random() < evolved_config.intent_probability(turn_number)
     else:
+        if lookahead_depth is None:
+            lookahead_depth = settings.BOT_LOOKAHEAD_DEPTH
+        if lookahead_beam is None:
+            lookahead_beam = settings.BOT_LOOKAHEAD_BEAM
+        if lookahead_mode is None:
+            lookahead_mode = settings.BOT_LOOKAHEAD_MODE
+        if hybrid_ratio is None:
+            hybrid_ratio = 1.0 if lookahead_mode == 'position' else 0.0
         use_intent = random.random() < _intent_prob(turn_number)
 
     if use_intent:
-        actions = _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
-                                  suspected_human_ri=suspected_human_ri,
-                                  turn_number=turn_number,
-                                  weights=weights)
-        if not actions:
-            return None
-        # Discard any disqualified actions (score < -1000)
-        valid_actions = [a for a in actions if a[0] > -1000]
-        if valid_actions:
-            actions = valid_actions
-        best      = max(a[0] for a in actions)
-        threshold = (best * 0.85) if best > 0 else (best - 50)
-        top_tier  = [a for a in actions if a[0] >= threshold]
-        chosen = random.choice(top_tier)
-        return (*chosen, 'intent')   # tag with path label
+        if lookahead_depth > 1 or hybrid_ratio > 0.0:
+            # Multi-ply lookahead / hybrid evaluation
+            chosen = _lookahead_best(
+                grid, bot_player, global_cooldown_idx, nation_list,
+                turn_number, suspected_human_ri, weights,
+                depth=lookahead_depth - 1, beam_width=lookahead_beam,
+                mode=lookahead_mode, eval_weights=eval_weights,
+                hybrid_ratio=hybrid_ratio)
+            if chosen is None:
+                return None
+            return (*chosen, 'intent')   # tag with path label
+        else:
+            # Original 1-ply move scoring
+            actions = _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
+                                      suspected_human_ri=suspected_human_ri,
+                                      turn_number=turn_number,
+                                      weights=weights)
+            if not actions:
+                return None
+            # Discard any disqualified actions (score < -1000)
+            valid_actions = [a for a in actions if a[0] > -1000]
+            if valid_actions:
+                actions = valid_actions
+            best      = max(a[0] for a in actions)
+            threshold = (best * 0.85) if best > 0 else (best - 50)
+            top_tier  = [a for a in actions if a[0] >= threshold]
+            chosen = random.choice(top_tier)
+            return (*chosen, 'intent')   # tag with path label
 
     else:
         # Build random pool — also apply adaptive sovereign rules

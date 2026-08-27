@@ -765,85 +765,443 @@ class TestSixNations(unittest.TestCase):
             "Attack on bot's OWN secret sovereign must be -9999")
 
 
-class TestSovereignHomelandRestriction(unittest.TestCase):
-    """Tests for the sovereign homeland restriction rule."""
+class TestSovereignEnemyMoveRestriction(unittest.TestCase):
+    """Tests for the rule: enemy players can only move a sovereign to a hex where it would be supported."""
 
     def setUp(self):
         for nation in NATIONS:
             nation.is_ghost = False
         self.grid = MapGrid()
-        # Only generate tiles (not full units) — we place units manually
         self.grid.generate_map()
-        # Clear all units so we can set up precise scenarios
         self.grid.armies.clear()
         self.grid.champions.clear()
         self.grid.sovereigns.clear()
 
-    def test_sovereign_starts_with_has_left_home_false(self):
-        """Sovereign's has_left_home flag starts False."""
-        sov = Sovereign(NATIONS[0], 0, -3)
-        self.assertFalse(sov.has_left_home)
-
-    def test_enemy_cannot_move_sovereign_out_of_home(self):
-        """An enemy player cannot move a sovereign outside its 4 home hexes."""
-        # Yellow (0) sovereign at (0, -3) — a home hex
-        sov = Sovereign(NATIONS[0], 0, -3)
-        self.grid.add_sovereign(sov)
-
-        # Cobalt (3) is enemy of Yellow (0)
-        mover_secret = NATIONS[3]
-        self.assertTrue(mover_secret.is_enemy(NATIONS[0]))
-
-        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
-
-        # All valid destinations must be within Yellow's 4 home hexes
-        home_hexes = set(MapGrid.NATION_HEXES[0])
-        for coord in valid:
-            self.assertIn(coord, home_hexes,
-                f"Enemy should not be able to move sovereign to {coord} "
-                f"(outside home hexes {home_hexes})")
-
-    def test_ally_can_move_sovereign_out_of_home_and_sets_flag(self):
-        """An allied player can move a sovereign outside its home hexes,
-        which sets has_left_home = True."""
-        # Yellow (0) sovereign at (0, -2) — a home hex with neighbor (0, -1) outside
+    def test_enemy_cannot_move_sovereign_to_unsupported_hex(self):
+        """An enemy player cannot move a sovereign to an empty/unsupported hex."""
         sov = Sovereign(NATIONS[0], 0, -2)
         self.grid.add_sovereign(sov)
 
-        # Green (1) is ally of Yellow (0)
-        mover_secret = NATIONS[1]
-        self.assertFalse(mover_secret.is_enemy(NATIONS[0]))
-
-        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
-        home_hexes = set(MapGrid.NATION_HEXES[0])
-        outside = [c for c in valid if c not in home_hexes]
-        self.assertTrue(len(outside) > 0,
-            "Allied player should be able to reach hexes outside home territory")
-
-        # Move to an outside hex
-        target = outside[0]
-        self.grid.apply_move(sov, *target, mover_secret_nation=mover_secret)
-        self.assertTrue(sov.has_left_home,
-            "Sovereign should have has_left_home=True after moving outside home hexes")
-
-    def test_enemy_can_move_sovereign_after_has_left_home(self):
-        """After has_left_home is set, enemy players can move the sovereign anywhere."""
-        # Yellow (0) sovereign at (0, -1) — outside home hexes, flag already set
-        sov = Sovereign(NATIONS[0], 0, -1)
-        sov.has_left_home = True
-        self.grid.add_sovereign(sov)
-
         # Cobalt (3) is enemy of Yellow (0)
         mover_secret = NATIONS[3]
         self.assertTrue(mover_secret.is_enemy(NATIONS[0]))
 
+        # With no friendly/allied pieces around, enemy cannot move the sovereign anywhere
+        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
+        self.assertEqual(len(valid), 0,
+            "Enemy should not be able to move a sovereign to any hex where it would be unsupported")
+
+    def test_enemy_can_move_sovereign_to_supported_hex(self):
+        """An enemy player CAN move a sovereign to a hex where an allied/friendly piece is present."""
+        sov = Sovereign(NATIONS[0], 0, -2)
+        self.grid.add_sovereign(sov)
+
+        # Place a Yellow army at neighbor (0, -1) and a Green (ally of Yellow) champion at (1, -2)
+        army = Army(NATIONS[0], 0, -1)
+        champ = Champion(NATIONS[1], 1, -2)
+        self.grid.add_army(army)
+        self.grid.add_champion(champ)
+
+        mover_secret = NATIONS[3]  # Enemy
         valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
 
-        # Should get unrestricted moves (same as without mover_secret_nation)
-        unrestricted = self.grid.get_valid_moves(sov)
-        self.assertEqual(set(valid), set(unrestricted),
-            "Sovereign with has_left_home=True should have no homeland restriction")
+        self.assertIn((0, -1), valid, "Enemy should be able to move sovereign to hex with same-color army")
+        self.assertIn((1, -2), valid, "Enemy should be able to move sovereign to hex with allied champion")
 
+    def test_ally_can_move_sovereign_to_unsupported_hex(self):
+        """The sovereign's owner or ally CAN move the sovereign to an unsupported hex."""
+        sov = Sovereign(NATIONS[0], 0, -2)
+        self.grid.add_sovereign(sov)
+
+        mover_secret = NATIONS[0]  # Owner (Yellow)
+        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
+        self.assertTrue(len(valid) > 0,
+            "Owner should be able to move sovereign freely to empty neighboring hexes")
+
+
+class TestHexControlAndMuster(unittest.TestCase):
+    """Tests for the Hex Control territory system, dynamic army caps, and updated muster rules."""
+
+    def setUp(self):
+        for nation in NATIONS:
+            nation.is_ghost = False
+        self.grid = MapGrid()
+        self.grid.generate_map()
+
+    def test_initial_hex_control_setup(self):
+        """24 homeland hexes are owned by their respective nations; 13 center hexes start neutral."""
+        owned_count = 0
+        neutral_count = 0
+        for coord, owner_ri in self.grid.tile_control.items():
+            if owner_ri is None:
+                neutral_count += 1
+            else:
+                owned_count += 1
+                self.assertIn(owner_ri, range(6))
+
+        self.assertEqual(owned_count, 24, "24 homeland hexes must start owned")
+        self.assertEqual(neutral_count, 13, "13 center hexes must start neutral (None)")
+        for n in NATIONS:
+            self.assertEqual(self.grid.get_controlled_hex_count(n), 4, "Each nation starts with 4 hexes")
+            self.assertEqual(self.grid.get_max_army_cap(n), 3, "4 hexes = baseline 3 army cap")
+
+    def test_neutral_hex_claimed_on_entry(self):
+        """When any unit enters an unowned neutral hex, it claims control for its nation."""
+        self.assertIsNone(self.grid.tile_control.get((0, 0)))
+        army = Army(NATIONS[0], 0, -1)
+        self.grid.add_army(army)
+        self.grid.apply_move(army, 0, 0)
+        self.assertEqual(self.grid.tile_control.get((0, 0)), 0,
+            "Entering neutral hex should claim it for mover's nation")
+
+    def test_allied_unit_does_not_steal_control(self):
+        """An allied unit moving into your territory does NOT seize control (first come keeps it)."""
+        # Yellow (0) owns (0, -2)
+        self.assertEqual(self.grid.tile_control.get((0, -2)), 0)
+        # Clear units from destination (0, -2) so it's a vacant move destination
+        self.grid.armies.pop((0, -2), None)
+
+        # Green (1) is ally of Yellow (0)
+        green_army = Army(NATIONS[1], 0, -1)
+        self.grid.add_army(green_army)
+        # Move green army to (0, -2)
+        success, msg = self.grid.apply_move(green_army, 0, -2)
+        self.assertTrue(success, f"Move failed: {msg}")
+        self.assertEqual(self.grid.tile_control.get((0, -2)), 0,
+            "Allied unit should not seize territory from an ally")
+
+    def test_enemy_unit_seizes_control(self):
+        """An enemy Army or Champion moving into your territory SEIZES control."""
+        # Yellow (0) owns (0, -2)
+        self.assertEqual(self.grid.tile_control.get((0, -2)), 0)
+        # Clear units from destination (0, -2) so it's a vacant move destination
+        self.grid.armies.pop((0, -2), None)
+
+        # Cobalt (3) is enemy of Yellow (0)
+        cobalt_army = Army(NATIONS[3], 0, -1)
+        self.grid.add_army(cobalt_army)
+        success, msg = self.grid.apply_move(cobalt_army, 0, -2)
+        self.assertTrue(success, f"Move failed: {msg}")
+        self.assertEqual(self.grid.tile_control.get((0, -2)), 3,
+            "Enemy army must seize territory upon entering")
+
+    def test_army_cap_progression(self):
+        """Cap is 3 base (4 hexes), and increases by +1 for every 3 additional hexes."""
+        n0 = NATIONS[0]
+        self.assertEqual(self.grid.get_max_army_cap(n0), 3)
+
+        # Give n0 2 extra hexes (total 6) -> cap still 3
+        self.grid.tile_control[(0, 0)] = 0
+        self.grid.tile_control[(0, 1)] = 0
+        self.assertEqual(self.grid.get_controlled_hex_count(n0), 6)
+        self.assertEqual(self.grid.get_max_army_cap(n0), 3)
+
+        # Give 1 more hex (total 7, +3 over base) -> cap becomes 4
+        self.grid.tile_control[(1, 0)] = 0
+        self.assertEqual(self.grid.get_controlled_hex_count(n0), 7)
+        self.assertEqual(self.grid.get_max_army_cap(n0), 4)
+
+        # Total 10 hexes (+6 over base) -> cap becomes 5
+        self.grid.tile_control[(1, 1)] = 0
+        self.grid.tile_control[(-1, 0)] = 0
+        self.grid.tile_control[(-1, 1)] = 0
+        self.assertEqual(self.grid.get_controlled_hex_count(n0), 10)
+        self.assertEqual(self.grid.get_max_army_cap(n0), 5)
+
+    def test_muster_hex_requires_no_enemy_adjacency(self):
+        """Muster is only legal on controlled hexes that are NOT adjacent to any enemy unit."""
+        n0 = NATIONS[0]
+        # Remove an army so can_muster_army is True
+        armies = [u for u in self.grid.get_all_nation_units(n0) if isinstance(u, Army)]
+        self.grid.remove_army(armies[0])
+
+        valid_muster = self.grid.get_valid_muster_hexes(n0)
+        self.assertTrue(len(valid_muster) > 0)
+
+        # Place an enemy adjacent to one of the valid muster hexes
+        target_hex = valid_muster[0]
+        nbrs = self.grid.get_neighbors(*target_hex)
+        enemy_army = Army(NATIONS[3], *nbrs[0])
+        self.grid.add_army(enemy_army)
+
+        new_valid_muster = self.grid.get_valid_muster_hexes(n0)
+        self.assertNotIn(target_hex, new_valid_muster,
+            "Hex adjacent to an enemy unit must be blocked from mustering")
+
+    def test_sovereign_cannot_enter_enemy_territory(self):
+        """A Sovereign cannot move into territory controlled by an enemy nation."""
+        # Yellow (0) sovereign at (0, -2)
+        sov = Sovereign(NATIONS[0], 0, -2)
+        self.grid.add_sovereign(sov)
+
+        # Set neighbor (0, -1) as owned by Cobalt (3, enemy of Yellow)
+        self.grid.tile_control[(0, -1)] = 3
+        # Set neighbor (1, -2) as neutral (None)
+        self.grid.tile_control[(1, -2)] = None
+
+        valid = self.grid.get_valid_moves(sov, mover_secret_nation=NATIONS[0])
+        self.assertNotIn((0, -1), valid, "Sovereign must NOT be allowed to enter enemy territory")
+        self.assertIn((1, -2), valid, "Sovereign should be allowed to enter neutral territory")
+
+
+class TestPositionalEvaluator(unittest.TestCase):
+    """Tests for the positional board evaluator."""
+
+    def setUp(self):
+        for nation in NATIONS:
+            nation.is_ghost = False
+        self.grid = MapGrid()
+        self.grid.generate_map()
+        self.nation_list = list(NATIONS)
+
+    def tearDown(self):
+        for nation in NATIONS:
+            nation.is_ghost = False
+
+    def test_ghost_enemy_boosts_score(self):
+        """Killing an enemy sovereign (ghost nation) should raise our score."""
+        from evaluator import evaluate_position
+        secret = self.nation_list[0]  # nation 0
+        enemies = secret.enemy_nations(self.nation_list)
+
+        score_before = evaluate_position(self.grid, secret, self.nation_list)
+
+        # Mark one enemy as ghost
+        enemies[0].is_ghost = True
+        score_after = evaluate_position(self.grid, secret, self.nation_list)
+
+        self.assertGreater(score_after, score_before,
+            "Score should increase when an enemy sovereign is killed (ghost)")
+
+    def test_own_sov_dead_catastrophic(self):
+        """If our own sovereign is dead, score should be extremely negative."""
+        from evaluator import evaluate_position
+        secret = self.nation_list[0]
+
+        score_alive = evaluate_position(self.grid, secret, self.nation_list)
+
+        secret.is_ghost = True
+        score_dead = evaluate_position(self.grid, secret, self.nation_list)
+
+        self.assertLess(score_dead, -5000,
+            "Score should be catastrophically negative when own sovereign is dead")
+        self.assertLess(score_dead, score_alive,
+            "Dead sovereign score must be lower than alive score")
+
+    def test_trapped_unsupported_enemy_scores_higher(self):
+        """An enemy sovereign that is trapped+unsupported should yield a higher
+        position score than one that is safe."""
+        from evaluator import evaluate_position
+
+        # Create a minimal grid with a controllable scenario
+        grid = MapGrid()
+        grid.generate_map()
+        secret = self.nation_list[0]
+        enemies = secret.enemy_nations(self.nation_list)
+        target_enemy = enemies[0]
+
+        # Baseline score
+        score_baseline = evaluate_position(grid, secret, self.nation_list)
+
+        # Now create a scenario where the enemy sovereign is trapped:
+        # Remove the enemy sovereign, place it somewhere surrounded by enemies
+        # Remove all enemy sovs first
+        for coord in list(grid.sovereigns.keys()):
+            grid.sovereigns[coord] = [
+                s for s in grid.sovereigns[coord]
+                if s.nation.ring_index != target_enemy.ring_index
+            ]
+            if not grid.sovereigns[coord]:
+                del grid.sovereigns[coord]
+
+        # Place enemy sovereign at a hex and surround with allied armies
+        center = (0, 0)
+        enemy_sov = Sovereign(target_enemy, center[0], center[1])
+        grid.sovereigns.setdefault(center, []).append(enemy_sov)
+
+        neighbors = grid.get_neighbors(center[0], center[1])
+        # Place allied armies at opposing neighbors to create a trap
+        allied_nation = self.nation_list[0]
+        for i in [0, 3]:  # opposite neighbors
+            nq, nr = neighbors[i]
+            # Clear any existing armies
+            grid.armies.pop((nq, nr), None)
+            trap_army = Army(allied_nation, nq, nr)
+            grid.armies.setdefault((nq, nr), []).append(trap_army)
+
+        score_trapped = evaluate_position(grid, secret, self.nation_list)
+        self.assertGreater(score_trapped, score_baseline,
+            "Score should be higher when enemy sovereign is trapped+unsupported")
+
+    def test_material_advantage(self):
+        """Having more allied pieces should yield a higher score."""
+        from evaluator import evaluate_position
+
+        grid1 = MapGrid()
+        grid1.generate_map()
+        secret = self.nation_list[0]
+
+        score1 = evaluate_position(grid1, secret, self.nation_list)
+
+        # Add extra allied armies
+        grid2 = MapGrid()
+        grid2.generate_map()
+        allied = [n for n in self.nation_list if not secret.is_enemy(n)]
+        bonus_nation = allied[0]
+        # Find a free hex and add an army
+        for q in range(-2, 3):
+            for r in range(-2, 3):
+                if (q, r) in grid2.tiles and (q, r) not in grid2.armies:
+                    grid2.armies[(q, r)] = [Army(bonus_nation, q, r)]
+                    break
+            else:
+                continue
+            break
+
+        score2 = evaluate_position(grid2, secret, self.nation_list)
+        self.assertGreater(score2, score1,
+            "Score should increase with more allied material")
+
+    def test_perspective_symmetry(self):
+        """Evaluating from two opposing factions should give different scores;
+        a position good for one should be worse for the other."""
+        from evaluator import evaluate_position
+
+        secret_a = self.nation_list[0]
+        enemies_of_a = secret_a.enemy_nations(self.nation_list)
+        secret_b = enemies_of_a[0]  # pick an enemy
+
+        # Make an enemy of A a ghost — good for A, bad-ish for B
+        enemies_of_a[1].is_ghost = True
+
+        score_a = evaluate_position(self.grid, secret_a, self.nation_list)
+        score_b = evaluate_position(self.grid, secret_b, self.nation_list)
+
+        # A should benefit more than B from killing B's potential ally/target
+        self.assertGreater(score_a, score_b,
+            "The player who benefits from the ghost should have a higher score")
+
+    def test_territory_control_evaluation(self):
+        """Controlling more territory should increase the positional evaluation score."""
+        from evaluator import evaluate_position
+
+        secret = self.nation_list[0]
+        score_base = evaluate_position(self.grid, secret, self.nation_list)
+
+        # Flip 3 neutral hexes to Nation 0
+        self.grid.tile_control[(0, 0)] = 0
+        self.grid.tile_control[(0, 1)] = 0
+        self.grid.tile_control[(1, 0)] = 0
+
+        score_expanded = evaluate_position(self.grid, secret, self.nation_list)
+        self.assertGreater(score_expanded, score_base,
+            "Score should increase when controlling additional hexes")
+
+    def test_territory_move_scoring(self):
+        """Moves that claim neutral or enemy territory should receive higher tactical move scores."""
+        from bot import _score_move
+        n0 = self.nation_list[0]
+        army = Army(n0, 0, -1)
+        self.grid.add_army(army)
+
+        allied_ris = {0, 1, 5}
+        enemy_ris = {2, 3, 4}
+
+        # Move into neutral hex (0, 0)
+        self.grid.tile_control[(0, 0)] = None
+        score_high_claim = _score_move(self.grid, army, 0, 0, enemy_ris, allied_ris,
+                                       weights={'claim_territory': 3.0})
+        score_low_claim = _score_move(self.grid, army, 0, 0, enemy_ris, allied_ris,
+                                      weights={'claim_territory': 0.0})
+
+        self.assertGreater(score_high_claim, score_low_claim + 50.0,
+            "Higher claim_territory weight should yield higher move score when claiming territory")
+
+    def test_custom_eval_weights(self):
+        """Custom eval weights passed as dict or from BotConfig should override defaults."""
+        from evaluator import evaluate_position
+        from evolution import BotConfig
+
+        secret = self.nation_list[0]
+        config = BotConfig(ev_allied_army=500.0)
+        custom_weights = config.to_evaluator_weights()
+
+        score_default = evaluate_position(self.grid, secret, self.nation_list)
+        score_custom = evaluate_position(self.grid, secret, self.nation_list, weights=custom_weights)
+
+        # Because allied armies are present on the board and their weight went from 15.0 to 500.0,
+        # the custom score should be significantly higher.
+        self.assertGreater(score_custom, score_default + 100.0,
+            "Custom evaluator weights should be used in position evaluation")
+
+    def test_describe_bot_generates_narrative(self):
+        """describe_bot should output a human-readable profile with archetype and key stats."""
+        from evolution import BotConfig, describe_bot
+
+        config = BotConfig(
+            lookahead_depth=2,
+            lookahead_beam=3,
+            hybrid_ratio=0.70,
+            w_endanger_enemy_sov=4.0,
+            w_protect_sovereign=0.2,
+            fitness=75.0
+        )
+        desc = describe_bot(config, rank=1)
+        self.assertIn("BOT #1", desc)
+        self.assertIn("Fitness: 75.0", desc)
+        self.assertIn("2-Ply Lookahead", desc)
+        self.assertIn("70% Positional Board Eval", desc)
+        self.assertIn("Offense-First", desc)
+
+    def test_archetype_generation(self):
+        """random_config should generate valid configs for all archetype presets."""
+        from evolution import BotConfig
+
+        for arch in ['speedster', 'positional', 'hybrid', 'deep', 'wild']:
+            c = BotConfig.random_config(archetype=arch)
+            self.assertGreaterEqual(c.lookahead_depth, 1)
+            self.assertLessEqual(c.lookahead_depth, 4)
+            self.assertGreaterEqual(c.hybrid_ratio, 0.0)
+            self.assertLessEqual(c.hybrid_ratio, 1.0)
+            self.assertGreaterEqual(c.lookahead_beam, 1)
+            if c.lookahead_depth >= 4:
+                self.assertLessEqual(c.lookahead_beam, 3, "4-ply bots must have max beam of 3")
+
+    def test_hybrid_scoring_execution(self):
+        """compute_bot_action with hybrid_ratio should compute legal action."""
+        import bot
+        from player import Player
+        from evolution import BotConfig
+
+        bot_player = Player(self.nation_list[0], is_bot=True, player_id='test_bot')
+        config = BotConfig(lookahead_depth=2, lookahead_beam=2, hybrid_ratio=0.5,
+                           w_random=0.0, w_deceptive=0.0)
+
+        action = bot.compute_bot_action(
+            self.grid, bot_player, global_cooldown_idx=None, nation_list=self.nation_list,
+            turn_number=5, suspected_human_ri=self.nation_list[3].ring_index,
+            evolved_config=config)
+
+        self.assertIsNotNone(action, "Bot should compute a valid action with hybrid scoring")
+        self.assertEqual(action[-1], 'intent')
+
+    def test_4ply_lookahead_execution(self):
+        """compute_bot_action with 4-ply lookahead should compute legal action."""
+        import bot
+        from player import Player
+        from evolution import BotConfig
+
+        bot_player = Player(self.nation_list[0], is_bot=True, player_id='test_bot_4ply')
+        config = BotConfig(lookahead_depth=4, lookahead_beam=2, hybrid_ratio=0.7,
+                           w_random=0.0, w_deceptive=0.0)
+
+        action = bot.compute_bot_action(
+            self.grid, bot_player, global_cooldown_idx=None, nation_list=self.nation_list,
+            turn_number=5, suspected_human_ri=self.nation_list[3].ring_index,
+            evolved_config=config)
+
+        self.assertIsNotNone(action, "4-ply bot should compute a valid action")
+        self.assertEqual(action[-1], 'intent')
 
 if __name__ == '__main__':
     unittest.main()

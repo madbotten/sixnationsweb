@@ -19,6 +19,8 @@ import pygame
 import settings
 import util
 from factions import NATIONS
+from armies import Army
+from champions import Champion, Sovereign
 
 
 # ---------------------------------------------------------------------------
@@ -60,23 +62,25 @@ class MapGrid:
     ]
 
     def __init__(self):
-        self.tiles      = {}   # (q,r) -> Tile
-        self.armies     = {}   # (q,r) -> [Army, ...]
-        self.champions  = {}   # (q,r) -> [Champion, ...]
-        self.sovereigns = {}   # (q,r) -> [Sovereign, ...]
-        self.hex_width  = settings.HEX_WIDTH
-        self.hex_height = settings.HEX_HEIGHT
+        self.tiles        = {}   # (q,r) -> Tile
+        self.tile_control = {}   # (q,r) -> Optional[int] (nation ring_index or None)
+        self.armies       = {}   # (q,r) -> [Army, ...]
+        self.champions    = {}   # (q,r) -> [Champion, ...]
+        self.sovereigns   = {}   # (q,r) -> [Sovereign, ...]
+        self.hex_width    = settings.HEX_WIDTH
+        self.hex_height   = settings.HEX_HEIGHT
 
     # =======================================================================
     # Map generation
     # =======================================================================
 
     def generate_map(self):
-        """Place all 37 hex tiles and starting units."""
+        """Place all 37 hex tiles, starting control, and starting units."""
         from armies    import Army
         from champions import Champion, Sovereign
 
         self.tiles.clear()
+        self.tile_control.clear()
         self.armies.clear()
         self.champions.clear()
         self.sovereigns.clear()
@@ -88,6 +92,7 @@ class MapGrid:
                       + self.get_ring_coords(2)):
             if coord not in nation_coords:
                 self.tiles[coord] = Tile(coord[0], coord[1], owner=None)
+                self.tile_control[coord] = None
 
         for nation_idx, hexes in enumerate(self.NATION_HEXES):
             nation = NATIONS[nation_idx]
@@ -98,11 +103,62 @@ class MapGrid:
                 if coord == corner:
                     t.is_corner = True
                 self.tiles[coord] = t
+                self.tile_control[coord] = nation_idx
                 if i == 0:
                     self.add_sovereign(Sovereign(nation, q, r))
                     self.add_champion(Champion(nation, q, r))
                 else:
                     self.add_army(Army(nation, q, r))
+
+    # =======================================================================
+    # Snapshot (lightweight deep copy for lookahead simulation)
+    # =======================================================================
+
+    def snapshot(self):
+        """Return an independent copy of the grid for lookahead simulation.
+
+        Tiles are shared (read-only during play). All units are cloned.
+        tile_control is shallow copied.
+        Returns (clone_grid, unit_map) where unit_map maps
+        id(original_unit) -> cloned_unit, allowing actions scored on the
+        original grid to be replayed on the clone.
+        """
+        clone = MapGrid.__new__(MapGrid)
+        clone.tiles        = self.tiles       # shared — never mutated mid-game
+        clone.tile_control = dict(self.tile_control)
+        clone.hex_width    = self.hex_width
+        clone.hex_height   = self.hex_height
+
+        unit_map = {}
+
+        clone.armies = {}
+        for coord, army_list in self.armies.items():
+            cloned = []
+            for a in army_list:
+                c = Army(a.nation, a.q, a.r)
+                unit_map[id(a)] = c
+                cloned.append(c)
+            clone.armies[coord] = cloned
+
+        clone.champions = {}
+        for coord, champ_list in self.champions.items():
+            cloned = []
+            for ch in champ_list:
+                c = Champion(ch.nation, ch.q, ch.r)
+                unit_map[id(ch)] = c
+                cloned.append(c)
+            clone.champions[coord] = cloned
+
+        clone.sovereigns = {}
+        for coord, sov_list in self.sovereigns.items():
+            cloned = []
+            for s in sov_list:
+                c = Sovereign(s.nation, s.q, s.r)
+                unit_map[id(s)] = c
+                cloned.append(c)
+            clone.sovereigns[coord] = cloned
+
+        return clone, unit_map
 
     # =======================================================================
     # Unit management
@@ -289,10 +345,18 @@ class MapGrid:
     # Game Logic -- valid move / attack queries
     # =======================================================================
 
-    @staticmethod
-    def _sovereign_home_hexes(nation):
-        """Return the set of 4 home hex coords for a nation."""
-        return set(MapGrid.NATION_HEXES[nation.ring_index])
+    def _would_be_supported_at(self, nation, nq, nr) -> bool:
+        """True if moving a unit of nation to (nq, nr) would place it in a hex with an allied/same-color piece."""
+        for sov in self.sovereigns.get((nq, nr), []):
+            if self._are_allied(nation, sov.nation):
+                return True
+        for champ in self.champions.get((nq, nr), []):
+            if self._are_allied(nation, champ.nation):
+                return True
+        for army in self.armies.get((nq, nr), []):
+            if self._are_allied(nation, army.nation):
+                return True
+        return False
 
     def get_valid_moves(self, unit, mover_secret_nation=None) -> list:
         """
@@ -301,9 +365,10 @@ class MapGrid:
         Champion/Sovereign: adjacent hex with no enemy units.
 
         mover_secret_nation: the secret nation of the player making the move.
-        If provided and the unit is an enemy Sovereign that hasn't left home,
-        valid destinations are restricted to the sovereign's 4 home hexes.
-        When None, no homeland restriction is applied (backward compatible).
+        If provided and the unit is an enemy Sovereign, destination hexes are
+        restricted to those where the sovereign would be supported (by a piece
+        of its color or an allied piece).
+        When None, no enemy restriction is applied (backward compatible).
         """
         from armies    import Army
         from champions import Champion, Sovereign
@@ -319,15 +384,24 @@ class MapGrid:
                 continue          # only one army per hex
             valid.append((nq, nr))
 
-        # Sovereign homeland restriction:
-        # If the mover is an enemy of this sovereign AND the sovereign
-        # hasn't left home yet, restrict moves to home hexes only.
-        if (mover_secret_nation is not None
-                and isinstance(unit, Sovereign)
-                and not unit.has_left_home
-                and mover_secret_nation.is_enemy(nation)):
-            home = self._sovereign_home_hexes(nation)
-            valid = [coord for coord in valid if coord in home]
+        # Sovereign movement restrictions:
+        if isinstance(unit, Sovereign):
+            # 1. Sovereign cannot enter enemy-controlled territory
+            def _is_legal_sov_dest(coord):
+                owner_ri = self.tile_control.get(coord)
+                if owner_ri is None:
+                    return True  # neutral / unclaimed
+                owner_nation = NATIONS[owner_ri]
+                return not nation.is_enemy(owner_nation)  # False if enemy territory
+
+            valid = [coord for coord in valid if _is_legal_sov_dest(coord)]
+
+            # 2. Sovereign enemy mover restriction:
+            # An enemy player cannot move a sovereign to a hex where it would not be supported
+            # (by a piece of its color or an allied piece).
+            if (mover_secret_nation is not None
+                    and mover_secret_nation.is_enemy(nation)):
+                valid = [coord for coord in valid if self._would_be_supported_at(nation, *coord)]
 
         return valid
 
@@ -389,8 +463,28 @@ class MapGrid:
     # Game Logic -- applying moves and attacks
     # =======================================================================
 
+    def update_hex_control(self, unit, tq, tr):
+        """Update hex control at (tq, tr) when unit moves or advances there.
+        - If unclaimed (None) -> claimed by unit.nation
+        - If owned by an enemy -> seized by unit.nation if unit is Army or Champion
+        - If owned by an ally -> original owner keeps control ('first come keeps it')
+        """
+        from armies    import Army
+        from champions import Champion, Sovereign
+
+        curr_ri = self.tile_control.get((tq, tr))
+        unit_ri = unit.nation.ring_index
+        if curr_ri is None:
+            self.tile_control[(tq, tr)] = unit_ri
+        elif curr_ri != unit_ri:
+            owner_nation = NATIONS[curr_ri]
+            if unit.nation.is_enemy(owner_nation):
+                # Enemy seizure (Armies and Champions seize enemy territory)
+                if isinstance(unit, (Army, Champion)):
+                    self.tile_control[(tq, tr)] = unit_ri
+
     def _move_unit(self, unit, tq, tr):
-        """Unconditionally relocate unit to (tq, tr)."""
+        """Unconditionally relocate unit to (tq, tr) and update territory control."""
         from armies    import Army
         from champions import Champion, Sovereign
         if isinstance(unit, Army):
@@ -398,12 +492,8 @@ class MapGrid:
         elif isinstance(unit, Champion):
             self.remove_champion(unit); unit.q, unit.r = tq, tr; self.add_champion(unit)
         elif isinstance(unit, Sovereign):
-            self.remove_sovereign(unit);unit.q, unit.r = tq, tr; self.add_sovereign(unit)
-            # Set has_left_home if sovereign moved outside its home hexes
-            if not unit.has_left_home:
-                home = self._sovereign_home_hexes(unit.nation)
-                if (tq, tr) not in home:
-                    unit.has_left_home = True
+            self.remove_sovereign(unit); unit.q, unit.r = tq, tr; self.add_sovereign(unit)
+        self.update_hex_control(unit, tq, tr)
 
     def apply_move(self, unit, tq, tr, mover_secret_nation=None):
         """
@@ -571,22 +661,58 @@ class MapGrid:
         return True, " ".join(messages), destroyed
 
     # =======================================================================
-    # Game Logic -- recruitment & promotion
+    # Game Logic -- territory, army capacity, recruitment & promotion
     # =======================================================================
 
-    def get_recruit_hexes(self, nation) -> list:
+    def get_controlled_hex_count(self, nation) -> int:
+        """Return total number of hexes currently controlled by nation."""
+        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
+        return sum(1 for owner_ri in self.tile_control.values() if owner_ri == ri)
+
+    def get_max_army_cap(self, nation) -> int:
+        """Return maximum armies fieldable by nation: 3 base + 1 for every 3 additional hexes over 4."""
+        controlled = self.get_controlled_hex_count(nation)
+        extra = max(0, controlled - 4)
+        return 3 + (extra // 3)
+
+    def can_muster_army(self, nation) -> bool:
+        """True if nation has fewer active armies on the board than its current max cap."""
+        return self._army_count(nation) < self.get_max_army_cap(nation)
+
+    def get_valid_muster_hexes(self, nation) -> list:
         """
-        Return starting hexes where a new army may be placed.
-        Conditions: nation not ghost, fewer than 3 armies, hex has no army
-        and no enemy units.
+        Return hexes where a new army may be mustered for nation.
+        Conditions:
+        1. Nation is not a ghost.
+        2. Nation has not reached its max army cap.
+        3. Hex is controlled by nation.
+        4. Hex does not already contain an army.
+        5. Hex is not adjacent to any enemy piece.
         """
-        if nation.is_ghost or self._army_count(nation) >= 3:
+        if nation.is_ghost or not self.can_muster_army(nation):
             return []
-        return [
-            coord for coord in self.NATION_HEXES[nation.ring_index]
-            if not self.armies.get(coord)
-            and not self._has_enemy_unit_at(*coord, nation)
-        ]
+
+        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
+        valid = []
+        for coord, owner_ri in self.tile_control.items():
+            if owner_ri != ri:
+                continue
+            if self.armies.get(coord):
+                continue  # already has an army
+            q, r = coord
+            # Check adjacency to any enemy piece
+            has_adjacent_enemy = False
+            for nq, nr in self.get_neighbors(q, r):
+                if self._has_enemy_unit_at(nq, nr, nation):
+                    has_adjacent_enemy = True
+                    break
+            if not has_adjacent_enemy:
+                valid.append(coord)
+        return valid
+
+    def get_recruit_hexes(self, nation) -> list:
+        """Alias for get_valid_muster_hexes for backward compatibility."""
+        return self.get_valid_muster_hexes(nation)
 
     def recruit_army(self, nation, q, r):
         """Place a new Army for nation at (q,r). Returns the new Army."""
@@ -702,9 +828,11 @@ class MapGrid:
         for (q, r), tile in self.tiles.items():
             cx, cy = self.screen_pos(q, r)
 
-            if tile.owner is not None and tile.owner.ring_index not in _ghost_ri:
-                fill   = tile.owner.color_light
-                border = tile.owner.color_rgb
+            owner_ri = self.tile_control.get((q, r))
+            if owner_ri is not None and owner_ri not in _ghost_ri:
+                owner_nation = NATIONS[owner_ri]
+                fill   = owner_nation.color_light
+                border = owner_nation.color_rgb
                 bwidth = 3 if tile.is_corner else 2
             else:
                 fill   = settings.COLOR_HEX_NEUTRAL

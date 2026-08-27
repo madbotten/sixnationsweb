@@ -4,10 +4,10 @@ Six Nations — Evolution Chamber
 Headless bot-vs-bot genetic algorithm tournament.  No UI / pygame required.
 
 Usage:
-    python evolution.py                          # default: 24 pop, 50 gens
-    python evolution.py --population 32 --generations 100
-    python evolution.py --resume                 # seed from bot_configs.json
-    python evolution.py --resume --generations 20  # 20 more gens on top
+    python evolution.py                          # evolves and resumes from bot_configs.json if present
+    python evolution.py --generations 20         # 20 more gens accumulating on top
+    python evolution.py --freshstart             # wipes/ignores previous and starts fresh
+    python evolution.py --freshstart --generations 25 --output arena.json
 
 Persists the top 4 evolved configs to bot_configs.json for the main game.
 """
@@ -23,12 +23,8 @@ import time
 from dataclasses import dataclass, field, asdict
 
 # ---------------------------------------------------------------------------
-# Imports from the game engine (no pygame needed)
+# Imports from the game engine
 # ---------------------------------------------------------------------------
-
-# Prevent pygame from trying to open a display window when imported
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
 
 from factions import create_nations
 from map import MapGrid
@@ -73,6 +69,7 @@ class BotConfig:
     w_champion_support:   float = 1.0   # 5. Keeping champions supported
     w_endanger_enemy_sov: float = 1.0   # 6. Pushing enemy sovs to danger
     w_unsupport_enemy_ch: float = 1.0   # 7. Moving enemy champs off support
+    w_claim_territory:    float = 1.0   # 8. Capturing neutral or enemy territory
 
     # --- Move-type weights (2 genes) ---
     w_random:             float = 0.30  # 8. Weight for random moves
@@ -85,6 +82,31 @@ class BotConfig:
 
     # --- Adaptive behaviour ---
     adaptive_turn:         int  = 25    # when to start using opponent intel
+
+    # --- Evaluator weights (16 genes for position-mode lookahead) ---
+    ev_ghost_enemy:        float = 500.0
+    ev_own_sov_dead:       float = -10000.0
+    ev_ally_sov_dead:      float = -50.0
+    ev_enemy_killable:     float = 200.0
+    ev_enemy_trapped:      float = 80.0
+    ev_enemy_unsupported:  float = 40.0
+    ev_own_sov_killable:   float = -300.0
+    ev_own_sov_trapped:    float = -100.0
+    ev_allied_army:        float = 15.0
+    ev_allied_champion:    float = 25.0
+    ev_enemy_army:         float = -10.0
+    ev_enemy_champion:     float = -20.0
+    ev_allied_champ_sup:   float = 30.0
+    ev_enemy_champ_unsup:  float = 20.0
+    ev_adjacent_enemy_sov: float = 25.0
+    ev_champion_approach:  float = 5.0
+    ev_territory_control:  float = 2.0
+
+    # --- Architectural Genes (evolved) ---
+    lookahead_depth:       int   = 2     # 1 = 1-ply, 2 = 2-ply minimax, 3 = 3-ply
+    lookahead_beam:        int   = 3     # 1 to 4 candidate moves per ply
+    hybrid_ratio:          float = 0.5   # 0.0 = 100% move score, 1.0 = 100% pos eval
+    lookahead_mode:        str   = 'position'  # 'position' or 'action'
 
     # --- Runtime (not part of genome, not persisted) ---
     fitness:               float = 0.0
@@ -99,6 +121,30 @@ class BotConfig:
             'champion_support':     self.w_champion_support,
             'endanger_enemy_sov':   self.w_endanger_enemy_sov,
             'unsupport_enemy_champ': self.w_unsupport_enemy_ch,
+            'claim_territory':      self.w_claim_territory,
+            'adaptive_turn':        self.adaptive_turn,
+        }
+
+    def to_evaluator_weights(self):
+        """Return the dict expected by evaluator.evaluate_position()."""
+        return {
+            'ghost_enemy':       self.ev_ghost_enemy,
+            'own_sov_dead':      self.ev_own_sov_dead,
+            'ally_sov_dead':     self.ev_ally_sov_dead,
+            'enemy_killable':    self.ev_enemy_killable,
+            'enemy_trapped':     self.ev_enemy_trapped,
+            'enemy_unsupported': self.ev_enemy_unsupported,
+            'own_sov_killable':  self.ev_own_sov_killable,
+            'own_sov_trapped':   self.ev_own_sov_trapped,
+            'allied_army':       self.ev_allied_army,
+            'allied_champion':   self.ev_allied_champion,
+            'enemy_army':        self.ev_enemy_army,
+            'enemy_champion':    self.ev_enemy_champion,
+            'allied_champ_sup':  self.ev_allied_champ_sup,
+            'enemy_champ_unsup': self.ev_enemy_champ_unsup,
+            'adjacent_enemy_sov': self.ev_adjacent_enemy_sov,
+            'champion_approach': self.ev_champion_approach,
+            'territory_control': self.ev_territory_control,
         }
 
     def intent_probability(self, turn_number):
@@ -135,9 +181,12 @@ class BotConfig:
         return self.w_random / total, self.w_deceptive / total
 
     @staticmethod
-    def random_config():
-        """Create a fully random BotConfig."""
-        return BotConfig(
+    def random_config(archetype=None):
+        """Create a diverse BotConfig according to an archetype or randomized."""
+        if archetype is None:
+            archetype = random.choice(['speedster', 'positional', 'hybrid', 'deep', 'wild'])
+
+        c = BotConfig(
             w_kill_enemy=random.uniform(0.2, 3.0),
             w_advance_allied=random.uniform(0.2, 3.0),
             w_protect_sovereign=random.uniform(0.2, 3.0),
@@ -145,12 +194,148 @@ class BotConfig:
             w_champion_support=random.uniform(0.2, 3.0),
             w_endanger_enemy_sov=random.uniform(0.2, 3.0),
             w_unsupport_enemy_ch=random.uniform(0.2, 3.0),
-            w_random=random.uniform(0.0, 0.6),
-            w_deceptive=random.uniform(0.0, 0.4),
-            random_early_turns=random.randint(0, 20),
-            deceptive_early_turns=random.randint(0, 15),
+            w_claim_territory=random.uniform(0.2, 3.0),
+            w_random=random.uniform(0.0, 0.4),
+            w_deceptive=random.uniform(0.0, 0.3),
+            random_early_turns=random.randint(0, 15),
+            deceptive_early_turns=random.randint(0, 12),
             adaptive_turn=random.randint(10, 40),
+            # Evaluator weights — randomize around defaults
+            ev_ghost_enemy=random.uniform(200, 800),
+            ev_own_sov_dead=random.uniform(-15000, -5000),
+            ev_ally_sov_dead=random.uniform(-200, 0),
+            ev_enemy_killable=random.uniform(50, 500),
+            ev_enemy_trapped=random.uniform(20, 200),
+            ev_enemy_unsupported=random.uniform(10, 100),
+            ev_own_sov_killable=random.uniform(-600, -100),
+            ev_own_sov_trapped=random.uniform(-300, -20),
+            ev_allied_army=random.uniform(5, 50),
+            ev_allied_champion=random.uniform(10, 80),
+            ev_enemy_army=random.uniform(-40, -2),
+            ev_enemy_champion=random.uniform(-60, -5),
+            ev_allied_champ_sup=random.uniform(10, 80),
+            ev_enemy_champ_unsup=random.uniform(5, 60),
+            ev_adjacent_enemy_sov=random.uniform(10, 80),
+            ev_champion_approach=random.uniform(1, 20),
+            ev_territory_control=random.uniform(0.5, 10.0),
         )
+
+        if archetype == 'speedster':
+            c.lookahead_depth = 1
+            c.lookahead_beam = random.randint(2, 4)
+            c.hybrid_ratio = random.uniform(0.0, 0.2)
+        elif archetype == 'positional':
+            c.lookahead_depth = 2
+            c.lookahead_beam = random.randint(2, 3)
+            c.hybrid_ratio = random.uniform(0.8, 1.0)
+        elif archetype == 'hybrid':
+            c.lookahead_depth = 2
+            c.lookahead_beam = random.randint(2, 3)
+            c.hybrid_ratio = random.uniform(0.35, 0.65)
+        elif archetype == 'deep':
+            c.lookahead_depth = random.choice([3, 4])
+            c.lookahead_beam = random.randint(1, 3)
+            c.hybrid_ratio = random.uniform(0.5, 1.0)
+        else:  # wild
+            c.lookahead_depth = random.randint(1, 4)
+            c.lookahead_beam = random.randint(1, 3) if c.lookahead_depth >= 4 else random.randint(1, 4)
+            c.hybrid_ratio = random.uniform(0.0, 1.0)
+
+        # 4-ply bots can only have a maximum beam width of 3
+        if c.lookahead_depth >= 4:
+            c.lookahead_beam = min(3, c.lookahead_beam)
+
+        return c
+
+    def explain_personality(self, rank=None) -> str:
+        """Return a human-readable explanation of this bot's personality and tactics."""
+        return describe_bot(self, rank=rank)
+
+
+# ---------------------------------------------------------------------------
+# Human-Readable Strategy Explainer
+# ---------------------------------------------------------------------------
+
+def describe_bot(config: BotConfig, rank=None) -> str:
+    """Generate a rich, human-readable narrative explanation of a bot's personality and tactics."""
+    title = f"BOT #{rank}" if rank is not None else "BOT PROFILE"
+    if hasattr(config, 'fitness') and config.fitness > 0:
+        title += f" (Fitness: {config.fitness:.1f})"
+
+    # 1. Determine Archetype & Title
+    depth = getattr(config, 'lookahead_depth', 1)
+    beam = getattr(config, 'lookahead_beam', 3)
+    hratio = getattr(config, 'hybrid_ratio', 0.5)
+
+    if depth >= 4:
+        archetype_name = "Deep Horizon Mastermind"
+    elif hratio >= 0.75 and depth >= 2:
+        archetype_name = "Positional Grandmaster"
+    elif hratio <= 0.25 and depth == 1:
+        archetype_name = "Tactical Blitz Striker"
+    elif depth >= 3:
+        archetype_name = "Deep Horizon Strategist"
+    elif 0.35 <= hratio <= 0.65:
+        archetype_name = "Hybrid Combat Duelist"
+    elif config.w_endanger_enemy_sov >= 3.2 or config.ev_enemy_killable >= 300:
+        archetype_name = "Ruthless Sovereign Assassin"
+    elif config.w_muster_promote >= 3.5:
+        archetype_name = "Legion Commander"
+    else:
+        archetype_name = "Balanced Tactical Bot"
+
+    lines = []
+    lines.append(f"{'='*66}")
+    lines.append(f"  {title} — \"{archetype_name}\"")
+    lines.append(f"{'='*66}")
+
+    # 2. Engine & Thinking Style
+    pos_pct = int(round(hratio * 100))
+    move_pct = 100 - pos_pct
+    lines.append(f"  • Thinking Style: {depth}-Ply Lookahead (Beam: {beam})")
+    lines.append(f"    - Evaluation Blend: {pos_pct}% Positional Board Eval / {move_pct}% Tactical Move Scoring")
+
+    # 3. Core Strategic Priorities
+    priorities = []
+    if config.w_endanger_enemy_sov >= 2.5 or config.ev_enemy_killable >= 250:
+        priorities.append(f"Fierce sovereign hunting (danger move wt: {config.w_endanger_enemy_sov:.2f}, killable sov eval: +{config.ev_enemy_killable:.0f})")
+    if config.w_muster_promote >= 2.5:
+        priorities.append(f"High-tempo recruitment & promotion (muster move wt: {config.w_muster_promote:.2f})")
+    if config.w_champion_support >= 2.5 or config.ev_allied_champ_sup >= 30:
+        priorities.append(f"Champion support formations (champ support wt: {config.w_champion_support:.2f}, support eval: +{config.ev_allied_champ_sup:.0f})")
+    if config.ev_enemy_champion <= -30:
+        priorities.append(f"Aggressive champion elimination (enemy champion penalty: {config.ev_enemy_champion:.1f})")
+    if config.w_kill_enemy >= 1.5:
+        priorities.append(f"Direct tactical combat (kill enemy move wt: {config.w_kill_enemy:.2f})")
+    if getattr(config, 'w_claim_territory', 1.0) >= 2.0 or getattr(config, 'ev_territory_control', 2.0) >= 5.0:
+        priorities.append(f"Territorial expansion & army recruitment (claim move wt: {getattr(config, 'w_claim_territory', 1.0):.2f}, territory eval: +{getattr(config, 'ev_territory_control', 2.0):.1f})")
+    if not priorities:
+        priorities.append("Balanced all-round positional and tactical play")
+
+    lines.append("  • Strategic Priorities:")
+    for p in priorities:
+        lines.append(f"    - {p}")
+
+    # 4. Self-Preservation vs Aggression
+    if config.w_protect_sovereign < 0.5:
+        defense_desc = f"Offense-First (protect_sov: {config.w_protect_sovereign:.2f}) — relies on overwhelming counter-threats rather than turtling."
+    elif config.w_protect_sovereign >= 2.0:
+        defense_desc = f"Fortified Defense (protect_sov: {config.w_protect_sovereign:.2f}) — keeps sovereign heavily guarded and retreats when pressured."
+    else:
+        defense_desc = f"Balanced (protect_sov: {config.w_protect_sovereign:.2f}) — defends when threatened without sacrificing offensive tempo."
+    lines.append(f"  • Self-Preservation: {defense_desc}")
+
+    # 5. Opening Style & Timing
+    non_intent = config.w_random + config.w_deceptive
+    if non_intent < 0.05:
+        opening = "Pure Intent from Turn 1 (no bluffing or random moves)"
+    else:
+        opening = f"Bluffing early game (random: {config.w_random*100:.0f}%, deceptive: {config.w_deceptive*100:.0f}% for first {max(config.random_early_turns, config.deceptive_early_turns)} turns)"
+    lines.append(f"  • Opening Style: {opening}")
+    lines.append(f"  • Hunter Intelligence: Unlocks adaptive sovereign targeting on Turn {config.adaptive_turn}")
+    lines.append(f"{'='*66}")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +354,7 @@ class EvolvableBot:
         self.config = config
         self.memory = BotMemory(debug=False)
         self._weights = config.to_weights_dict()
+        self._eval_weights = config.to_evaluator_weights()
 
     @property
     def secret_nation(self):
@@ -218,7 +404,22 @@ class EvolvableBot:
                                            turn_number, suspected_ri)
 
     def _compute_intent(self, grid, gci, nation_list, turn, suspected_ri):
-        """Strategic intent using config weights."""
+        """Strategic intent using config weights, with optional lookahead and hybrid scoring."""
+        from bot import _lookahead_best
+
+        if self.config.lookahead_depth > 1 or self.config.hybrid_ratio > 0.0:
+            chosen = _lookahead_best(
+                grid, self.player, gci, nation_list,
+                turn, suspected_ri, self._weights,
+                depth=self.config.lookahead_depth - 1,
+                beam_width=self.config.lookahead_beam,
+                mode=self.config.lookahead_mode,
+                eval_weights=self._eval_weights,
+                hybrid_ratio=self.config.hybrid_ratio)
+            if chosen is None:
+                return None
+            return (*chosen, 'intent')
+
         actions = _gather_actions(grid, self.player, gci, nation_list,
                                   suspected_human_ri=suspected_ri,
                                   turn_number=turn,
@@ -359,6 +560,10 @@ class HeadlessGame:
         self.turn_number = 1
         self.global_cooldown_idx = None
 
+        # Guess accuracy tracking (populated after play())
+        self.guess_correct = 0   # how many bots guessed correctly
+        self.guess_total   = 0   # total guesses attempted (0, 1, or 2)
+
     def play(self) -> str:
         """Play the full game.  Returns a RESULT_* constant."""
         bots = [self.bot1, self.bot2]
@@ -431,17 +636,31 @@ class HeadlessGame:
             b2_loses = self.grid.check_loss_condition(self.bot2.player)
 
             if (b1_wins and b2_wins) or (b1_loses and b2_loses):
+                self._record_guess_accuracy()
                 return RESULT_TIE
             if b1_wins or b2_loses:
+                self._record_guess_accuracy()
                 return RESULT_BOT1_WIN
             if b2_wins or b1_loses:
+                self._record_guess_accuracy()
                 return RESULT_BOT2_WIN
 
             # Advance turn
             current = 1 - current
             self.turn_number += 1
 
+        self._record_guess_accuracy()
         return RESULT_DRAW
+
+    def _record_guess_accuracy(self):
+        """Check each bot's guess of the opponent's secret nation."""
+        for guesser, opponent in [(self.bot1, self.bot2),
+                                   (self.bot2, self.bot1)]:
+            guess_ri = guesser.guess_opponent_faction(self.nations)
+            if guess_ri is not None:
+                self.guess_total += 1
+                if guess_ri == opponent.secret_nation.ring_index:
+                    self.guess_correct += 1
 
 
 # ---------------------------------------------------------------------------
@@ -461,11 +680,15 @@ class Tournament:
         """Play all matchups and return configs with updated fitness scores.
 
         Fitness scoring: +3 win, +1 tie, +0 loss/draw.
+        Also tracks aggregate guess accuracy across all games.
         """
         n = len(self.configs)
         # Reset fitness
         for c in self.configs:
             c.fitness = 0.0
+
+        self.guess_correct = 0
+        self.guess_total   = 0
 
         total_matches = n * (n - 1) // 2 * self.games_per_pair
         played = 0
@@ -479,6 +702,10 @@ class Tournament:
                         max_turns=self.max_turns, seed=seed)
                     result = game.play()
 
+                    # Accumulate guess stats
+                    self.guess_correct += game.guess_correct
+                    self.guess_total   += game.guess_total
+
                     if result == RESULT_BOT1_WIN:
                         self.configs[i].fitness += 3
                     elif result == RESULT_BOT2_WIN:
@@ -491,6 +718,13 @@ class Tournament:
                     played += 1
 
         return self.configs
+
+    @property
+    def guess_accuracy(self):
+        """Return guess accuracy as a float 0.0-1.0, or None if no guesses."""
+        if self.guess_total == 0:
+            return None
+        return self.guess_correct / self.guess_total
 
 
 # ---------------------------------------------------------------------------
@@ -506,27 +740,53 @@ _GENE_RANGES = {
     'w_champion_support':   (0.0, 5.0),
     'w_endanger_enemy_sov': (0.0, 5.0),
     'w_unsupport_enemy_ch': (0.0, 5.0),
+    'w_claim_territory':    (0.0, 5.0),
     'w_random':             (0.0, 1.0),
     'w_deceptive':          (0.0, 1.0),
     'random_early_turns':   (0, 30),
     'deceptive_early_turns': (0, 25),
-    'adaptive_turn':        (5, 60),
+     # Architectural genes (evolvable depth, beam, and hybrid evaluation)
+    'lookahead_depth':      (1, 4),
+    'lookahead_beam':       (1, 4),
+    'hybrid_ratio':         (0.0, 1.0),
+    # Evaluator weights
+    'ev_ghost_enemy':       (100.0, 1000.0),
+    'ev_own_sov_dead':      (-20000.0, -2000.0),
+    'ev_ally_sov_dead':     (-500.0, 0.0),
+    'ev_enemy_killable':    (50.0, 600.0),
+    'ev_enemy_trapped':     (10.0, 300.0),
+    'ev_enemy_unsupported': (5.0, 150.0),
+    'ev_own_sov_killable':  (-800.0, -50.0),
+    'ev_own_sov_trapped':   (-400.0, -10.0),
+    'ev_allied_army':       (2.0, 60.0),
+    'ev_allied_champion':   (5.0, 100.0),
+    'ev_enemy_army':        (-60.0, -1.0),
+    'ev_enemy_champion':    (-80.0, -2.0),
+    'ev_allied_champ_sup':  (5.0, 100.0),
+    'ev_enemy_champ_unsup': (2.0, 80.0),
+    'ev_adjacent_enemy_sov': (5.0, 100.0),
+    'ev_champion_approach': (0.5, 30.0),
+    'ev_territory_control': (0.0, 15.0),
 }
 
 # Fields that are integers
-_INT_GENES = {'random_early_turns', 'deceptive_early_turns', 'adaptive_turn'}
+_INT_GENES = {'random_early_turns', 'deceptive_early_turns', 'adaptive_turn', 'lookahead_depth', 'lookahead_beam'}
 
-# All gene field names
+# All gene field names (31 genes)
 _GENE_NAMES = list(_GENE_RANGES.keys())
 
 
 class GeneticAlgorithm:
     """Genetic algorithm engine for evolving BotConfigs."""
 
-    def __init__(self, population_size=24, generations=50,
-                 elite_count=4, mutation_rate=0.15,
-                 mutation_reset_rate=0.05, games_per_pair=2,
-                 max_turns=MAX_TURNS, seed_configs=None):
+    def __init__(self, population_size=settings.EVO_POPULATION,
+                 generations=settings.EVO_GENERATIONS,
+                 elite_count=settings.EVO_ELITE_COUNT,
+                 mutation_rate=settings.EVO_MUTATION_RATE,
+                 mutation_reset_rate=settings.EVO_MUTATION_RESET,
+                 games_per_pair=settings.EVO_GAMES_PER_PAIR,
+                 max_turns=MAX_TURNS, seed_configs=None,
+                 lookahead_depth=None, lookahead_beam=None, lookahead_mode='position'):
         self.population_size = population_size
         self.generations = generations
         self.elite_count = elite_count
@@ -534,25 +794,60 @@ class GeneticAlgorithm:
         self.mutation_reset_rate = mutation_reset_rate
         self.games_per_pair = games_per_pair
         self.max_turns = max_turns
+        self.lookahead_depth = lookahead_depth
+        self.lookahead_beam = lookahead_beam
+        self.lookahead_mode = lookahead_mode
 
         # Initialize population
         if seed_configs:
             # Resume: start with seed configs + fill with mutated variants + random
             self.population = []
             for sc in seed_configs[:self.elite_count]:
-                self.population.append(copy.deepcopy(sc))
+                sc_copy = copy.deepcopy(sc)
+                if sc_copy.lookahead_depth >= 4:
+                    sc_copy.lookahead_beam = min(3, sc_copy.lookahead_beam)
+                self.population.append(sc_copy)
+
+            # Inject a 4-ply upgraded mutant of the top seed so 4-ply enters the arena immediately
+            if seed_configs:
+                champ_4ply = copy.deepcopy(seed_configs[0])
+                champ_4ply.lookahead_depth = 4
+                champ_4ply.lookahead_beam = min(3, champ_4ply.lookahead_beam)
+                self._mutate(champ_4ply, rate=0.15)
+                champ_4ply.lookahead_depth = 4
+                champ_4ply.lookahead_beam = min(3, champ_4ply.lookahead_beam)
+                self.population.append(champ_4ply)
+
             # Fill remaining with mutated variants of seeds + random immigrants
             while len(self.population) < self.population_size:
-                if random.random() < 0.6 and seed_configs:
+                if random.random() < 0.5 and seed_configs:
                     # Mutated variant of a seed
                     parent = copy.deepcopy(random.choice(seed_configs))
                     self._mutate(parent, rate=0.30)  # higher mutation for diversity
+                    if parent.lookahead_depth >= 4:
+                        parent.lookahead_beam = min(3, parent.lookahead_beam)
                     self.population.append(parent)
                 else:
-                    self.population.append(BotConfig.random_config())
+                    immigrant = BotConfig.random_config()
+                    if immigrant.lookahead_depth >= 4:
+                        immigrant.lookahead_beam = min(3, immigrant.lookahead_beam)
+                    self.population.append(immigrant)
         else:
-            self.population = [BotConfig.random_config()
-                               for _ in range(self.population_size)]
+            # Seed fresh population with diverse archetypes
+            archetypes = ['speedster', 'positional', 'hybrid', 'deep', 'wild']
+            self.population = [BotConfig.random_config(archetype=archetypes[i % len(archetypes)])
+                                for i in range(self.population_size)]
+
+        # Apply explicit lookahead overrides if provided via CLI
+        for c in self.population:
+            if self.lookahead_depth is not None:
+                c.lookahead_depth = self.lookahead_depth
+            if self.lookahead_beam is not None:
+                c.lookahead_beam = self.lookahead_beam
+            if self.lookahead_mode is not None:
+                c.lookahead_mode = self.lookahead_mode
+            if c.lookahead_depth >= 4:
+                c.lookahead_beam = min(3, c.lookahead_beam)
 
     def evolve(self, progress_callback=None):
         """Run the full evolution.  Returns the final sorted population.
@@ -572,9 +867,11 @@ class GeneticAlgorithm:
 
             best_fit = self.population[0].fitness
             avg_fit = sum(c.fitness for c in self.population) / len(self.population)
+            guess_acc = tournament.guess_accuracy
 
             if progress_callback:
-                progress_callback(gen, best_fit, avg_fit, self.population[0])
+                progress_callback(gen, best_fit, avg_fit, self.population[0],
+                                  guess_accuracy=guess_acc)
 
             # Build next generation
             next_gen = []
@@ -605,6 +902,17 @@ class GeneticAlgorithm:
                 next_gen.append(child)
 
             self.population = next_gen[:self.population_size]
+
+            # Apply explicit lookahead overrides if provided via CLI
+            for c in self.population:
+                if self.lookahead_depth is not None:
+                    c.lookahead_depth = self.lookahead_depth
+                if self.lookahead_beam is not None:
+                    c.lookahead_beam = self.lookahead_beam
+                if self.lookahead_mode is not None:
+                    c.lookahead_mode = self.lookahead_mode
+                if getattr(c, 'lookahead_depth', 1) >= 4:
+                    c.lookahead_beam = min(3, getattr(c, 'lookahead_beam', 3))
 
         # Final tournament to get definitive rankings
         tournament = Tournament(self.population,
@@ -655,6 +963,10 @@ class GeneticAlgorithm:
                         new_val = int(round(new_val))
                     setattr(config, gene, new_val)
 
+        # 4-ply bots can only have a maximum beam width of 3
+        if getattr(config, 'lookahead_depth', 1) >= 4:
+            config.lookahead_beam = min(3, getattr(config, 'lookahead_beam', 3))
+
     def _population_diversity(self) -> float:
         """Measure population diversity as mean coefficient of variation across genes.
 
@@ -682,7 +994,7 @@ DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), 'bot_configs.json'
 
 
 def persist_top_configs(configs: list, filepath=DEFAULT_CONFIG_PATH,
-                        generations=0, top_n=4):
+                        generations=0, top_n=settings.EVO_TOP_N_PERSIST):
     """Save the top N evolved configs to a JSON file."""
     top = configs[:top_n]
     data = {
@@ -729,45 +1041,71 @@ def load_top_configs(filepath=DEFAULT_CONFIG_PATH) -> list:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def _progress(gen, best_fit, avg_fit, best_config):
-    """Print progress for each generation."""
-    intent_w = [f"{getattr(best_config, g):.2f}" for g in _GENE_NAMES[:7]]
-    rnd = f"{best_config.w_random:.2f}"
-    dec = f"{best_config.w_deceptive:.2f}"
-    print(f"  Gen {gen:3d} | best={best_fit:6.1f}  avg={avg_fit:5.1f} | "
-          f"intent={','.join(intent_w)}  rnd={rnd}  dec={dec}")
+def _progress(gen, best_fit, avg_fit, best_config, guess_accuracy=None):
+    """Print progress and rich human-readable personality explainer for each generation."""
+    depth = getattr(best_config, 'lookahead_depth', 1)
+    beam = getattr(best_config, 'lookahead_beam', 3)
+    hratio = getattr(best_config, 'hybrid_ratio', 0.5)
+    guess_str = f"{guess_accuracy*100:.0f}%" if guess_accuracy is not None else "n/a"
+    print(f"\n>>> GENERATION {gen:3d} COMPLETE | Best Fitness: {best_fit:6.1f} | Population Avg: {avg_fit:5.1f} | Deduction Acc: {guess_str}")
+    print(describe_bot(best_config, rank=f"1 (Gen {gen})"))
+    print()
 
 
 def main():
+    os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+    os.environ.setdefault('SDL_AUDIODRIVER', 'dummy')
     parser = argparse.ArgumentParser(
         description='Six Nations -- Bot Evolution Chamber')
-    parser.add_argument('--population', type=int, default=24,
-                        help='Population size per generation (default: 24)')
-    parser.add_argument('--generations', type=int, default=50,
-                        help='Number of generations to evolve (default: 50)')
-    parser.add_argument('--games', type=int, default=2,
-                        help='Games per matchup pair (default: 2)')
-    parser.add_argument('--max-turns', type=int, default=MAX_TURNS,
-                        help=f'Max turns per game (default: {MAX_TURNS})')
-    parser.add_argument('--resume', action='store_true',
-                        help='Resume from existing bot_configs.json')
+    parser.add_argument('--population', type=int, default=settings.EVO_POPULATION,
+                        help=f'Population size per generation (default: {settings.EVO_POPULATION})')
+    parser.add_argument('--generations', type=int, default=settings.EVO_GENERATIONS,
+                        help=f'Number of generations to evolve (default: {settings.EVO_GENERATIONS})')
+    parser.add_argument('--games', type=int, default=settings.EVO_GAMES_PER_PAIR,
+                        help=f'Games per matchup pair (default: {settings.EVO_GAMES_PER_PAIR})')
+    parser.add_argument('--max-turns', type=int, default=settings.EVO_MAX_TURNS,
+                        help=f'Max turns per game (default: {settings.EVO_MAX_TURNS})')
+    parser.add_argument('--freshstart', '--fresh', action='store_true',
+                        help='Start a fresh evolution run instead of resuming from existing configs')
     parser.add_argument('--output', type=str, default=DEFAULT_CONFIG_PATH,
                         help='Output JSON filepath (default: bot_configs.json)')
+    parser.add_argument('--depth', type=int, default=None,
+                        help='Override lookahead depth for all bots (default: evolved per bot)')
+    parser.add_argument('--beam', type=int, default=None,
+                        help='Override lookahead beam for all bots (default: evolved per bot)')
+    parser.add_argument('--mode', type=str, default='position',
+                        choices=['action', 'position'],
+                        help='Lookahead mode (default: position)')
     args = parser.parse_args()
 
-    print("=" * 56)
-    print("        SIX NATIONS -- EVOLUTION CHAMBER")
-    print("=" * 56)
+    print("=" * 66)
+    print("        SIX NATIONS -- ULTIMATE COMBAT BOT STABLE")
+    print("=" * 66)
     print(f"  Population: {args.population}  |  Generations: {args.generations}")
     print(f"  Games/pair: {args.games}  |  Max turns: {args.max_turns}")
+    if args.depth is not None or args.beam is not None:
+        print(f"  Lookahead override: depth={args.depth}  beam={args.beam}  mode={args.mode}")
+    else:
+        print(f"  Evolving: Depth (1-3), Beam (1-4), Hybrid Eval (0-100%), Move & Board Weights")
 
     seed_configs = None
-    if args.resume:
+    should_resume = not args.freshstart
+    if should_resume and os.path.exists(args.output):
         seed_configs = load_top_configs(args.output)
         if seed_configs:
             print(f"  Resuming from {len(seed_configs)} saved configs in {args.output}")
-        else:
-            print(f"  --resume: no existing configs found at {args.output}, starting fresh")
+            if args.depth is not None or args.beam is not None:
+                for c in seed_configs:
+                    if args.depth is not None:
+                        c.lookahead_depth = args.depth
+                    if args.beam is not None:
+                        c.lookahead_beam = args.beam
+                    if args.mode is not None:
+                        c.lookahead_mode = args.mode
+    elif args.freshstart:
+        print(f"  Starting fresh archetype-seeded population (--freshstart enabled)")
+    else:
+        print(f"  No existing config found at {args.output}, starting fresh archetype population")
 
     print()
 
@@ -777,6 +1115,9 @@ def main():
         games_per_pair=args.games,
         max_turns=args.max_turns,
         seed_configs=seed_configs,
+        lookahead_depth=args.depth,
+        lookahead_beam=args.beam,
+        lookahead_mode=args.mode,
     )
 
     t0 = time.time()
@@ -786,7 +1127,6 @@ def main():
     except KeyboardInterrupt:
         interrupted = True
         print("\n\n  !! Interrupted — saving best configs so far...")
-        # Sort current population by fitness (may be from last completed gen)
         ga.population.sort(key=lambda c: c.fitness, reverse=True)
         final = ga.population
 
@@ -799,7 +1139,7 @@ def main():
 
     # Determine total generations (including any previous runs)
     total_gens = args.generations
-    if args.resume and os.path.exists(args.output):
+    if should_resume and os.path.exists(args.output):
         try:
             with open(args.output) as f:
                 old_data = json.load(f)
@@ -810,17 +1150,19 @@ def main():
     persist_top_configs(final, filepath=args.output,
                         generations=total_gens)
 
+    # Print full human-readable narrative profile of #1 champion bot
+    print("\n" + describe_bot(final[0], rank=1) + "\n")
+
     # Print summary of top 4
-    print("\n  -- TOP 4 EVOLVED CONFIGS --\n")
+    print("  -- TOP 4 EVOLVED BOT STABLE --\n")
     for i, c in enumerate(final[:4]):
-        print(f"  #{i+1}  fitness={c.fitness:.1f}")
-        print(f"      kill_enemy={c.w_kill_enemy:.2f}  advance={c.w_advance_allied:.2f}  "
-              f"protect_sov={c.w_protect_sovereign:.2f}")
-        print(f"      muster={c.w_muster_promote:.2f}  champ_sup={c.w_champion_support:.2f}  "
-              f"danger_sov={c.w_endanger_enemy_sov:.2f}  unsup_ch={c.w_unsupport_enemy_ch:.2f}")
-        print(f"      random={c.w_random:.2f}  deceptive={c.w_deceptive:.2f}  "
-              f"rnd_early={c.random_early_turns}  dec_early={c.deceptive_early_turns}  "
-              f"adaptive_t={c.adaptive_turn}")
+        depth = getattr(c, 'lookahead_depth', 1)
+        beam = getattr(c, 'lookahead_beam', 3)
+        hratio = getattr(c, 'hybrid_ratio', 0.5)
+        print(f"  #{i+1}  fitness={c.fitness:.1f} | {depth}-ply (beam {beam}) | hybrid={hratio*100:.0f}% pos")
+        print(f"      kill={c.w_kill_enemy:.2f}  advance={c.w_advance_allied:.2f}  protect_sov={c.w_protect_sovereign:.2f}")
+        print(f"      muster={c.w_muster_promote:.2f}  champ_sup={c.w_champion_support:.2f}  danger_sov={c.w_endanger_enemy_sov:.2f}")
+        print(f"      eval: ghost={c.ev_ghost_enemy:.0f}  killable_sov={c.ev_enemy_killable:.0f}  army={c.ev_allied_army:.1f}/{c.ev_enemy_army:.1f}  champ={c.ev_allied_champion:.1f}/{c.ev_enemy_champion:.1f}")
         print()
 
 
