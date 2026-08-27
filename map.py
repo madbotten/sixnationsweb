@@ -859,6 +859,8 @@ class MapGrid:
                 continue
             if self.armies.get(coord):
                 continue  # already has an army
+            if self.knights.get(coord):
+                continue  # already has a knight
             q, r = coord
             # Check adjacency to any enemy piece
             has_adjacent_enemy = False
