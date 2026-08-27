@@ -38,6 +38,8 @@ def _find_unit(grid, unit_type, nation_ri, q, r):
         bucket = grid.sovereigns.get((q, r), [])
     elif unit_type == 'champion':
         bucket = grid.champions.get((q, r), [])
+    elif unit_type == 'knight':
+        bucket = grid.knights.get((q, r), [])
     elif unit_type == 'army':
         bucket = grid.armies.get((q, r), [])
     else:
@@ -106,7 +108,7 @@ def apply_serialized_move(grid, move_data, nation_list):
         grid.recruit_army(nation, *to_hex)
         return True, "Recruited.", nation, []
 
-    # ── Promote ───────────────────────────────────────────────────────────
+    # ── Promote to Champion ───────────────────────────────────────────────
     if mtype == 'promote':
         coord = to_hex or from_hex
         if coord is None:
@@ -116,6 +118,18 @@ def apply_serialized_move(grid, move_data, nation_list):
         if not armies_here:
             return False, f"No army for nation {nation_ri} at {coord}.", None, []
         grid.promote_to_champion(armies_here[0])
-        return True, "Promoted.", nation, []
+        return True, "Promoted to champion.", nation, []
+
+    # ── Promote to Knight ─────────────────────────────────────────────────
+    if mtype in ('promote_knight', 'promote_to_knight'):
+        coord = to_hex or from_hex
+        if coord is None:
+            return False, "Promote knight requires a hex.", None, []
+        armies_here = [a for a in grid.armies.get(coord, [])
+                       if a.nation.ring_index == nation_ri]
+        if not armies_here:
+            return False, f"No army for nation {nation_ri} at {coord}.", None, []
+        grid.promote_to_knight(armies_here[0])
+        return True, "Promoted to knight.", nation, []
 
     return False, f"Unknown move type: {mtype}", None, []

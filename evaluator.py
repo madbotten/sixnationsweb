@@ -39,8 +39,10 @@ DEFAULT_EVAL_WEIGHTS = {
 
     # Material
     'allied_army':        15.0,   # per allied army on the board
+    'allied_knight':      20.0,   # per allied knight on the board
     'allied_champion':    25.0,   # per allied champion on the board
     'enemy_army':        -10.0,   # per enemy army on the board
+    'enemy_knight':      -15.0,   # per enemy knight on the board
     'enemy_champion':    -20.0,   # per enemy champion on the board
 
     # Champion support
@@ -141,6 +143,14 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None):
             elif ri in enemy_ri_set:
                 score += w['enemy_army']
 
+    for knight_list in grid.knights.values():
+        for knight in knight_list:
+            ri = knight.nation.ring_index
+            if ri in allied_ri_set:
+                score += w['allied_knight']
+            elif ri in enemy_ri_set:
+                score += w['enemy_knight']
+
     for champ_list in grid.champions.values():
         for champ in champ_list:
             ri = champ.nation.ring_index
@@ -173,6 +183,13 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None):
                 for army in army_list:
                     if army.nation.ring_index in allied_ri_set:
                         if (army.q, army.r) in neighbors:
+                            score += w['adjacent_enemy_sov']
+
+            # Allied knights adjacent
+            for knight_list in grid.knights.values():
+                for knight in knight_list:
+                    if knight.nation.ring_index in allied_ri_set:
+                        if (knight.q, knight.r) in neighbors:
                             score += w['adjacent_enemy_sov']
 
             # Allied champions adjacent

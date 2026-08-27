@@ -156,7 +156,7 @@ def get_unit_at_screen(grid, mx, my):
     """
     Return (unit, unit_type_str) for the unit icon the mouse is over,
     or (None, None) if none.
-    unit_type_str is one of 'sovereign', 'champion', 'army'.
+    unit_type_str is one of 'sovereign', 'champion', 'knight', 'army'.
     """
     q, r = grid.screen_to_axial(mx, my)
     if not grid.get_tile(q, r):
@@ -167,6 +167,7 @@ def get_unit_at_screen(grid, mx, my):
     units_here = (
         [('sovereign', u) for u in grid.sovereigns.get((q, r), [])]
         + [('champion', u) for u in grid.champions.get((q, r), [])]
+        + [('knight',   u) for u in grid.knights.get((q, r), [])]
         + [('army',     u) for u in grid.armies.get((q, r), [])]
     )
     n = len(units_here)
@@ -193,10 +194,11 @@ def draw_drag_ghost(screen, unit_type, nation_color, mx, my):
     fa     = 210   # fill alpha
 
     sprite_name = {'army': 'army.png',
+                   'knight': 'knight.png',
                    'champion': 'champion.png',
                    'sovereign': 'sovereign.png'}.get(unit_type)
     if sprite_name is not None:
-        scale = 3.2 if unit_type == 'champion' else 2.0
+        scale = 3.2 if unit_type in ('champion', 'knight') else 2.0
         icon_h = int(s * scale)
         template = util.load_image(sprite_name, alpha=True)
         if template is not None:
@@ -414,12 +416,15 @@ def compute_sidebar_buttons(grid, eligible_nations):
 
         can_recruit = bool(grid.get_recruit_hexes(nation))
         can_promote = bool(grid.get_promote_hexes(nation))
+        can_promote_knight = bool(grid.get_promote_knight_hexes(nation))
 
         icons = []
         if can_recruit:
             icons.append('recruit')
         if can_promote:
             icons.append('promote')
+        if can_promote_knight:
+            icons.append('promote_knight')
 
         for i, icon_type in enumerate(icons):
             offset_x = (i - (len(icons) - 1) / 2.0) * GAP
@@ -460,24 +465,27 @@ def draw_sidebar_buttons(screen, grid, buttons, action_pending, pending_nation, 
         border_width = 3 if active else 1
         pygame.draw.circle(screen, border_col, (bx, by), radius, border_width)
 
-        # Symbol: army (shield) or champion (sword cross) in white
+        # Symbol: army (shield), champion (sword), or knight (helmet) in white
         s = int(size * 0.35)
         sym_col = (255, 255, 255)
 
         if btype == 'recruit':
-            # Army shield sprite (white for sidebar button)
             icon_h = int(s * 2.0)
             sprite_name = 'army.png'
-            template = util.load_image(sprite_name, alpha=True)
-            if template is not None:
-                icon_w = int(icon_h * template.get_width() / template.get_height())
-                sprite = util.load_tinted_sprite(sprite_name, sym_col, icon_w, icon_h)
-                if sprite is not None:
-                    screen.blit(sprite, sprite.get_rect(center=(bx, by)))
-        else:
-            # Champion sword sprite (white for sidebar button)
+            label = "REC"
+        elif btype == 'promote':
             icon_h = int(s * 2.0)
             sprite_name = 'champion.png'
+            label = "PRO"
+        elif btype == 'promote_knight':
+            icon_h = int(s * 2.0)
+            sprite_name = 'knight.png'
+            label = "KNT"
+        else:
+            sprite_name = None
+            label = ""
+
+        if sprite_name:
             template = util.load_image(sprite_name, alpha=True)
             if template is not None:
                 icon_w = int(icon_h * template.get_width() / template.get_height())
@@ -486,9 +494,8 @@ def draw_sidebar_buttons(screen, grid, buttons, action_pending, pending_nation, 
                     screen.blit(sprite, sprite.get_rect(center=(bx, by)))
 
         # Small label below
-        label = "REC" if btype == 'recruit' else "PRO"
-        lbl   = font_tiny.render(label, True,
-                                 (255, 255, 255) if active else (160, 170, 195))
+        lbl = font_tiny.render(label, True,
+                               (255, 255, 255) if active else (160, 170, 195))
         screen.blit(lbl, lbl.get_rect(midtop=(bx, by + radius + 2)))
 
 
@@ -744,8 +751,10 @@ async def main():
                         highlight_promo  = set()
                         if action_pending == 'recruit':
                             highlight_muster = set(grid.get_recruit_hexes(pending_nation))
-                        else:
+                        elif action_pending == 'promote':
                             highlight_promo  = set(grid.get_promote_hexes(pending_nation))
+                        elif action_pending == 'promote_knight':
+                            highlight_promo  = set(grid.get_promote_knight_hexes(pending_nation))
 
                 # --- Recruit placement ---
                 elif action_pending == 'recruit':
@@ -789,7 +798,7 @@ async def main():
                         action_pending = pending_nation = None
                         highlight_muster = highlight_promo = set()
 
-                # --- Promote selection ---
+                # --- Promote selection (Champion) ---
                 elif action_pending == 'promote':
                     tq, tr = grid.screen_to_axial(mx, my)
                     if (tq, tr) in highlight_promo:
@@ -807,6 +816,50 @@ async def main():
                                                   None, (tq, tr), None, 'promote')
                             if settings.DEPLOYMENT == 'DEBUG':
                                 print(f"[{active_player.player_id} promote] T{turn_number} {pending_nation.color_name} at {(tq,tr)}  {_move_data}")
+                            if game_mode == 'vs_bot':
+                                bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
+                            action_pending   = pending_nation = None
+                            highlight_muster = highlight_promo = set()
+
+                            active_player.add_to_cooldown(moved_nation)
+                            global_cooldown_idx = moved_nation.ring_index
+                            end = check_all_end_conditions(
+                                grid, player1, player2, nation_list)
+                            if end is not None:
+                                game_state = STATE_GAME_OVER
+                                game_result = end
+                            elif game_mode == 'vs_bot':
+                                game_state = STATE_BOT_THINKING
+                                bot_think_timer = BOT_THINK_MS
+                                current_player_idx = 1
+                            elif game_mode == 'network':
+                                game_state = STATE_WAITING_OPPONENT
+                                turn_number += 1
+                            else:
+                                current_player_idx = 1 - current_player_idx
+                                turn_number += 1
+                    else:
+                        action_pending = pending_nation = None
+                        highlight_muster = highlight_promo = set()
+
+                # --- Promote selection (Knight) ---
+                elif action_pending == 'promote_knight':
+                    tq, tr = grid.screen_to_axial(mx, my)
+                    if (tq, tr) in highlight_promo:
+                        armies_here = [a for a in grid.armies.get((tq, tr), [])
+                                       if a.nation.ring_index == pending_nation.ring_index]
+                        if armies_here:
+                            grid.promote_to_knight(armies_here[0])
+                            moved_nation     = pending_nation
+                            _move_data = moves_mod.serialize_move(
+                                'promote_knight', pending_nation.ring_index,
+                                to_hex=(tq, tr))
+                            on_local_move_made(_move_data)
+                            if game_mode == 'vs_bot':
+                                bot_memory.record(turn_number, pending_nation,
+                                                  None, (tq, tr), None, 'promote_knight')
+                            if settings.DEPLOYMENT == 'DEBUG':
+                                print(f"[{active_player.player_id} promote knight] T{turn_number} {pending_nation.color_name} at {(tq,tr)}  {_move_data}")
                             if game_mode == 'vs_bot':
                                 bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
                             action_pending   = pending_nation = None
@@ -905,6 +958,9 @@ async def main():
                         if drag_unit.nation.is_enemy(_u.nation):
                             _target_ris.add(_u.nation.ring_index)
                     for _u in grid.champions.get((tq, tr), []):
+                        if drag_unit.nation.is_enemy(_u.nation):
+                            _target_ris.add(_u.nation.ring_index)
+                    for _u in grid.knights.get((tq, tr), []):
                         if drag_unit.nation.is_enemy(_u.nation):
                             _target_ris.add(_u.nation.ring_index)
                     for _u in grid.armies.get((tq, tr), []):

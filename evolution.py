@@ -83,7 +83,7 @@ class BotConfig:
     # --- Adaptive behaviour ---
     adaptive_turn:         int  = 25    # when to start using opponent intel
 
-    # --- Evaluator weights (16 genes for position-mode lookahead) ---
+    # --- Evaluator weights (18 genes for position-mode lookahead) ---
     ev_ghost_enemy:        float = 500.0
     ev_own_sov_dead:       float = -10000.0
     ev_ally_sov_dead:      float = -50.0
@@ -93,8 +93,10 @@ class BotConfig:
     ev_own_sov_killable:   float = -300.0
     ev_own_sov_trapped:    float = -100.0
     ev_allied_army:        float = 15.0
+    ev_allied_knight:      float = 20.0
     ev_allied_champion:    float = 25.0
     ev_enemy_army:         float = -10.0
+    ev_enemy_knight:       float = -15.0
     ev_enemy_champion:     float = -20.0
     ev_allied_champ_sup:   float = 30.0
     ev_enemy_champ_unsup:  float = 20.0
@@ -137,8 +139,10 @@ class BotConfig:
             'own_sov_killable':  self.ev_own_sov_killable,
             'own_sov_trapped':   self.ev_own_sov_trapped,
             'allied_army':       self.ev_allied_army,
+            'allied_knight':     self.ev_allied_knight,
             'allied_champion':   self.ev_allied_champion,
             'enemy_army':        self.ev_enemy_army,
+            'enemy_knight':      self.ev_enemy_knight,
             'enemy_champion':    self.ev_enemy_champion,
             'allied_champ_sup':  self.ev_allied_champ_sup,
             'enemy_champ_unsup': self.ev_enemy_champ_unsup,
@@ -210,8 +214,10 @@ class BotConfig:
             ev_own_sov_killable=random.uniform(-600, -100),
             ev_own_sov_trapped=random.uniform(-300, -20),
             ev_allied_army=random.uniform(5, 50),
+            ev_allied_knight=random.uniform(8, 65),
             ev_allied_champion=random.uniform(10, 80),
             ev_enemy_army=random.uniform(-40, -2),
+            ev_enemy_knight=random.uniform(-50, -3),
             ev_enemy_champion=random.uniform(-60, -5),
             ev_allied_champ_sup=random.uniform(10, 80),
             ev_enemy_champ_unsup=random.uniform(5, 60),
@@ -759,8 +765,10 @@ _GENE_RANGES = {
     'ev_own_sov_killable':  (-800.0, -50.0),
     'ev_own_sov_trapped':   (-400.0, -10.0),
     'ev_allied_army':       (2.0, 60.0),
+    'ev_allied_knight':     (3.0, 75.0),
     'ev_allied_champion':   (5.0, 100.0),
     'ev_enemy_army':        (-60.0, -1.0),
+    'ev_enemy_knight':      (-70.0, -2.0),
     'ev_enemy_champion':    (-80.0, -2.0),
     'ev_allied_champ_sup':  (5.0, 100.0),
     'ev_enemy_champ_unsup': (2.0, 80.0),

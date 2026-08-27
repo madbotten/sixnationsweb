@@ -9,6 +9,7 @@ from player import Player
 from map import MapGrid
 from armies import Army
 from champions import Champion, Sovereign
+from knights import Knight
 from bot import BotMemory
 from moves import serialize_move, apply_serialized_move
 
@@ -1203,5 +1204,267 @@ class TestPositionalEvaluator(unittest.TestCase):
         self.assertIsNotNone(action, "4-ply bot should compute a valid action")
         self.assertEqual(action[-1], 'intent')
 
+class TestKnightMechanics(unittest.TestCase):
+    """Unit tests for Knight promotion, army capacity, movement, and combat."""
+
+    def setUp(self):
+        self.grid = MapGrid()
+        self.grid.generate_map()
+        self.nation_list = list(NATIONS)
+
+    def test_knight_promotion_on_home_territory(self):
+        """A nation can promote an army on home territory to a knight; max 1 knight per nation."""
+        n0 = NATIONS[0]
+        self.assertFalse(self.grid._has_knight(n0))
+
+        valid_promos = self.grid.get_promote_knight_hexes(n0)
+        self.assertTrue(len(valid_promos) > 0, "Home hexes with armies should be eligible for knight promotion")
+
+        # Promote one army
+        promo_hex = valid_promos[0]
+        army = self.grid.armies[promo_hex][0]
+        knight = self.grid.promote_to_knight(army)
+
+        self.assertIsInstance(knight, Knight)
+        self.assertTrue(self.grid._has_knight(n0))
+        self.assertIn(knight, self.grid.knights.get(promo_hex, []))
+        self.assertNotIn(army, self.grid.armies.get(promo_hex, []))
+
+        # Cannot promote a second knight
+        self.assertEqual(self.grid.get_promote_knight_hexes(n0), [],
+                         "Nation with an active knight must not be allowed to promote another")
+
+    def test_knight_counts_toward_army_cap(self):
+        """The knight counts as one of the nation's active armies for army capacity."""
+        n0 = NATIONS[0]
+        # Start: 3 armies, 0 knights -> army_count = 3, max cap = 3 -> cannot muster
+        self.assertEqual(self.grid._army_count(n0), 3)
+        self.assertFalse(self.grid.can_muster_army(n0))
+
+        # Promote 1 army to knight -> 2 armies, 1 knight -> army_count is still 3
+        army = list(self.grid.armies.values())[0][0]
+        if army.nation.ring_index != 0:
+            army = [a for alist in self.grid.armies.values() for a in alist if a.nation.ring_index == 0][0]
+        self.grid.promote_to_knight(army)
+
+        self.assertEqual(self.grid._army_count(n0), 3)
+        self.assertFalse(self.grid.can_muster_army(n0), "Knight must count toward active army limit")
+
+    def test_unsupported_army_cannot_attack_unsupported_knight(self):
+        """An unsupported army cannot attack an unsupported knight."""
+        n_yellow = NATIONS[0]
+        n_cobalt = NATIONS[3] # Enemy
+
+        army = Army(n_yellow, 0, 0)
+        knight = Knight(n_cobalt, 0, 1)
+        self.grid.armies.clear()
+        self.grid.knights.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        self.grid.add_army(army)
+        self.grid.add_knight(knight)
+
+        self.assertFalse(self.grid.is_supported(army))
+        self.assertFalse(self.grid.is_supported(knight))
+
+        # Valid attacks for unsupported army should NOT include knight
+        valid_attacks = self.grid.get_valid_attacks(army)
+        self.assertNotIn((0, 1), valid_attacks)
+
+        success, msg, destroyed = self.grid.resolve_attack(army, 0, 1)
+        self.assertFalse(success, "Unsupported army attack on knight must fail")
+        self.assertEqual(destroyed, [])
+
+    def test_unsupported_knight_attacks_unsupported_army_trades(self):
+        """An unsupported knight attacking an unsupported army results in mutual destruction."""
+        n_yellow = NATIONS[0]
+        n_cobalt = NATIONS[3]
+
+        knight = Knight(n_yellow, 0, 0)
+        army = Army(n_cobalt, 0, 1)
+        self.grid.armies.clear()
+        self.grid.knights.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        self.grid.add_knight(knight)
+        self.grid.add_army(army)
+
+        self.assertFalse(self.grid.is_supported(knight))
+        self.assertFalse(self.grid.is_supported(army))
+
+        valid_attacks = self.grid.get_valid_attacks(knight)
+        self.assertIn((0, 1), valid_attacks)
+
+        success, msg, destroyed = self.grid.resolve_attack(knight, 0, 1)
+        self.assertTrue(success)
+        self.assertIn(knight, destroyed)
+        self.assertIn(army, destroyed)
+        self.assertNotIn((0, 0), self.grid.knights)
+        self.assertNotIn((0, 1), self.grid.armies)
+
+    def test_unsupported_knight_attacks_unsupported_knight_trades(self):
+        """Unsupported knight attacking unsupported knight results in mutual destruction."""
+        n_yellow = NATIONS[0]
+        n_cobalt = NATIONS[3]
+
+        k1 = Knight(n_yellow, 0, 0)
+        k2 = Knight(n_cobalt, 0, 1)
+        self.grid.armies.clear()
+        self.grid.knights.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        self.grid.add_knight(k1)
+        self.grid.add_knight(k2)
+
+        valid_attacks = self.grid.get_valid_attacks(k1)
+        self.assertIn((0, 1), valid_attacks)
+
+        success, msg, destroyed = self.grid.resolve_attack(k1, 0, 1)
+        self.assertTrue(success)
+        self.assertIn(k1, destroyed)
+        self.assertIn(k2, destroyed)
+
+    def test_supported_army_attacks_unsupported_knight(self):
+        """Supported army attacking unsupported knight destroys knight and advances."""
+        n_yellow = NATIONS[0]
+        n_cobalt = NATIONS[3]
+
+        army = Army(n_yellow, 0, 0)
+        champ_supp = Champion(n_yellow, 0, 0)
+        knight = Knight(n_cobalt, 0, 1)
+        self.grid.armies.clear()
+        self.grid.knights.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        self.grid.add_army(army)
+        self.grid.add_champion(champ_supp)
+        self.grid.add_knight(knight)
+
+        self.assertTrue(self.grid.is_supported(army))
+        self.assertFalse(self.grid.is_supported(knight))
+
+        valid_attacks = self.grid.get_valid_attacks(army)
+        self.assertIn((0, 1), valid_attacks)
+
+        success, msg, destroyed = self.grid.resolve_attack(army, 0, 1)
+        self.assertTrue(success)
+        self.assertEqual(destroyed, [knight])
+        self.assertEqual(army.hex_location, (0, 1), "Supported army should advance into knight's hex")
+
+    def test_supported_army_attacks_supported_knight_both_destroyed(self):
+        """Supported army attacking supported knight results in mutual destruction."""
+        n_yellow = NATIONS[0]
+        n_cobalt = NATIONS[3]
+
+        army = Army(n_yellow, 0, 0)
+        champ1 = Champion(n_yellow, 0, 0)
+        knight = Knight(n_cobalt, 0, 1)
+        champ2 = Champion(n_cobalt, 0, 1)
+        self.grid.armies.clear()
+        self.grid.knights.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        self.grid.add_army(army)
+        self.grid.add_champion(champ1)
+        self.grid.add_knight(knight)
+        self.grid.add_champion(champ2)
+
+        self.assertTrue(self.grid.is_supported(army))
+        self.assertTrue(self.grid.is_supported(knight))
+
+        success, msg, destroyed = self.grid.resolve_attack(army, 0, 1)
+        self.assertTrue(success)
+        self.assertIn(army, destroyed)
+        self.assertIn(knight, destroyed)
+
+    def test_champion_attacks_knight(self):
+        """Champion destroys unsupported knight and advances."""
+        n_yellow = NATIONS[0]
+        n_cobalt = NATIONS[3]
+
+        champ = Champion(n_yellow, 0, 0)
+        knight = Knight(n_cobalt, 0, 1)
+        self.grid.armies.clear()
+        self.grid.knights.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        self.grid.add_champion(champ)
+        self.grid.add_knight(knight)
+
+        valid_attacks = self.grid.get_valid_attacks(champ)
+        self.assertIn((0, 1), valid_attacks)
+
+        success, msg, destroyed = self.grid.resolve_attack(champ, 0, 1)
+        self.assertTrue(success)
+        self.assertEqual(destroyed, [knight])
+        self.assertEqual(champ.hex_location, (0, 1))
+
+    def test_knight_attacks_trapped_sovereign(self):
+        """Knight can attack an unsupported, trapped sovereign, but cannot attack champions."""
+        n_yellow = NATIONS[0]
+        n_cobalt = NATIONS[3]
+
+        knight = Knight(n_yellow, 0, 0)
+        sov = Sovereign(n_cobalt, 0, 1)
+        champ = Champion(n_cobalt, 1, 0)
+        # Trap the sovereign at (0, 1) using enemies at opposite directions
+        enemy_trap1 = Army(n_yellow, 0, 2)
+        enemy_trap2 = Army(n_yellow, 0, 0) # knight is already here at (0, 0)
+        self.grid.armies.clear()
+        self.grid.knights.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        self.grid.add_knight(knight)
+        self.grid.add_sovereign(sov)
+        self.grid.add_champion(champ)
+        self.grid.add_army(enemy_trap1)
+
+        self.assertTrue(self.grid.is_trapped(sov))
+
+        valid_attacks = self.grid.get_valid_attacks(knight)
+        self.assertIn((0, 1), valid_attacks, "Knight should be able to attack trapped sovereign")
+        self.assertNotIn((1, 0), valid_attacks, "Knight cannot attack champion")
+
+        success, msg, destroyed = self.grid.resolve_attack(knight, 0, 1)
+        self.assertTrue(success)
+        self.assertEqual(destroyed, [sov])
+
+    def test_knight_movement_and_stacking(self):
+        """Knight seizes territory and cannot stack on another army or knight."""
+        n_yellow = NATIONS[0]
+        n_cobalt = NATIONS[3]
+
+        knight = Knight(n_yellow, 0, 0)
+        self.grid.armies.clear()
+        self.grid.knights.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+        self.grid.add_knight(knight)
+
+        # Move to neutral hex (0, 1)
+        self.grid.tile_control[(0, 1)] = None
+        self.grid.apply_move(knight, 0, 1)
+        self.assertEqual(self.grid.tile_control.get((0, 1)), 0, "Knight claims neutral hex")
+
+        # Move to enemy hex (0, 2)
+        self.grid.tile_control[(0, 2)] = 3
+        self.grid.apply_move(knight, 0, 2)
+        self.assertEqual(self.grid.tile_control.get((0, 2)), 0, "Knight seizes enemy hex")
+
+        # Destination occupied by an army
+        army = Army(n_yellow, 0, 1)
+        self.grid.add_army(army)
+        valid_moves = self.grid.get_valid_moves(knight)
+        self.assertNotIn((0, 1), valid_moves, "Knight cannot move onto hex occupied by army")
+
+
 if __name__ == '__main__':
     unittest.main()
+

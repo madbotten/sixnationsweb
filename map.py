@@ -21,6 +21,7 @@ import util
 from factions import NATIONS
 from armies import Army
 from champions import Champion, Sovereign
+from knights import Knight
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +66,7 @@ class MapGrid:
         self.tiles        = {}   # (q,r) -> Tile
         self.tile_control = {}   # (q,r) -> Optional[int] (nation ring_index or None)
         self.armies       = {}   # (q,r) -> [Army, ...]
+        self.knights      = {}   # (q,r) -> [Knight, ...]
         self.champions    = {}   # (q,r) -> [Champion, ...]
         self.sovereigns   = {}   # (q,r) -> [Sovereign, ...]
         self.hex_width    = settings.HEX_WIDTH
@@ -78,10 +80,12 @@ class MapGrid:
         """Place all 37 hex tiles, starting control, and starting units."""
         from armies    import Army
         from champions import Champion, Sovereign
+        from knights   import Knight
 
         self.tiles.clear()
         self.tile_control.clear()
         self.armies.clear()
+        self.knights.clear()
         self.champions.clear()
         self.sovereigns.clear()
 
@@ -140,6 +144,15 @@ class MapGrid:
                 cloned.append(c)
             clone.armies[coord] = cloned
 
+        clone.knights = {}
+        for coord, knight_list in self.knights.items():
+            cloned = []
+            for k in knight_list:
+                c = Knight(k.nation, k.q, k.r)
+                unit_map[id(k)] = c
+                cloned.append(c)
+            clone.knights[coord] = cloned
+
         clone.champions = {}
         for coord, champ_list in self.champions.items():
             cloned = []
@@ -174,6 +187,16 @@ class MapGrid:
             if not self.armies[loc]:
                 del self.armies[loc]
 
+    def add_knight(self, knight):
+        self.knights.setdefault(knight.hex_location, []).append(knight)
+
+    def remove_knight(self, knight):
+        loc = knight.hex_location
+        if loc in self.knights:
+            self.knights[loc] = [k for k in self.knights[loc] if k is not knight]
+            if not self.knights[loc]:
+                del self.knights[loc]
+
     def add_champion(self, champ):
         self.champions.setdefault(champ.hex_location, []).append(champ)
 
@@ -198,29 +221,41 @@ class MapGrid:
         return {
             'sovereigns': list(self.sovereigns.get((q, r), [])),
             'champions':  list(self.champions.get((q, r), [])),
+            'knights':    list(self.knights.get((q, r), [])),
             'armies':     list(self.armies.get((q, r), [])),
         }
 
     def get_all_nation_units(self, nation):
-        """Return all units (sovereigns, champions, armies) belonging to nation."""
+        """Return all units (sovereigns, champions, knights, armies) belonging to nation."""
         units = []
         for slist in self.sovereigns.values():
             units.extend(s for s in slist if s.nation.ring_index == nation.ring_index)
         for clist in self.champions.values():
             units.extend(c for c in clist if c.nation.ring_index == nation.ring_index)
+        for klist in self.knights.values():
+            units.extend(k for k in klist if k.nation.ring_index == nation.ring_index)
         for alist in self.armies.values():
             units.extend(a for a in alist if a.nation.ring_index == nation.ring_index)
         return units
 
     def _army_count(self, nation) -> int:
-        return sum(
-            1 for alist in self.armies.values()
-            for a in alist if a.nation.ring_index == nation.ring_index
+        """Count active armies and knights for nation (knights count toward army cap)."""
+        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
+        armies_cnt = sum(1 for alist in self.armies.values() for a in alist if a.nation.ring_index == ri)
+        knights_cnt = sum(1 for klist in self.knights.values() for k in klist if k.nation.ring_index == ri)
+        return armies_cnt + knights_cnt
+
+    def _has_knight(self, nation) -> bool:
+        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
+        return any(
+            k.nation.ring_index == ri
+            for klist in self.knights.values() for k in klist
         )
 
     def _has_champion(self, nation) -> bool:
+        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
         return any(
-            c.nation.ring_index == nation.ring_index
+            c.nation.ring_index == ri
             for clist in self.champions.values() for c in clist
         )
 
@@ -282,8 +317,6 @@ class MapGrid:
     def is_supported(self, unit) -> bool:
         """
         True if unit has at least one allied unit in the same hex.
-        (Armies cannot support other armies -- irrelevant since max 1 army
-        per hex -- but allied champions/sovereigns do support an army.)
         """
         q, r = unit.hex_location
         units = self.get_units_at(q, r)
@@ -293,6 +326,9 @@ class MapGrid:
                 return True
         for champ in units['champions']:
             if champ is not unit and self._are_allied(nation, champ.nation):
+                return True
+        for knight in units.get('knights', []):
+            if knight is not unit and self._are_allied(nation, knight.nation):
                 return True
         for army in units['armies']:
             if army is not unit and self._are_allied(nation, army.nation):
@@ -305,6 +341,8 @@ class MapGrid:
             if nation.is_enemy(sov.nation):   return True
         for champ in self.champions.get((q,r), []):
             if nation.is_enemy(champ.nation): return True
+        for knight in self.knights.get((q,r), []):
+            if nation.is_enemy(knight.nation): return True
         for army  in self.armies.get((q,r), []):
             if nation.is_enemy(army.nation):  return True
         return False
@@ -337,9 +375,11 @@ class MapGrid:
                     if c is not sov and self._are_allied(nation, c.nation)]
         s_armies = [a for a in self.armies.get((q,r),[])
                     if self._are_allied(nation, a.nation)]
+        s_knights = [k for k in self.knights.get((q,r),[])
+                     if self._are_allied(nation, k.nation)]
         s_sovs   = [s for s in self.sovereigns.get((q,r),[])
                     if s is not sov and self._are_allied(nation, s.nation)]
-        return s_champs, s_armies, s_sovs
+        return s_champs, s_armies + s_knights, s_sovs
 
     # =======================================================================
     # Game Logic -- valid move / attack queries
@@ -353,6 +393,9 @@ class MapGrid:
         for champ in self.champions.get((nq, nr), []):
             if self._are_allied(nation, champ.nation):
                 return True
+        for knight in self.knights.get((nq, nr), []):
+            if self._are_allied(nation, knight.nation):
+                return True
         for army in self.armies.get((nq, nr), []):
             if self._are_allied(nation, army.nation):
                 return True
@@ -361,8 +404,8 @@ class MapGrid:
     def get_valid_moves(self, unit, mover_secret_nation=None) -> list:
         """
         Return list of (q,r) hexes the unit can move to (non-attack moves only).
-        Army   : adjacent hex with no army AND no enemy units.
-        Champion/Sovereign: adjacent hex with no enemy units.
+        Army / Knight: adjacent hex with no army/knight AND no enemy units.
+        Champion / Sovereign: adjacent hex with no enemy units.
 
         mover_secret_nation: the secret nation of the player making the move.
         If provided and the unit is an enemy Sovereign, destination hexes are
@@ -372,6 +415,7 @@ class MapGrid:
         """
         from armies    import Army
         from champions import Champion, Sovereign
+        from knights   import Knight
         q, r   = unit.hex_location
         nation = unit.nation
         valid  = []
@@ -380,8 +424,8 @@ class MapGrid:
                 continue
             if self._has_enemy_unit_at(nq, nr, nation):
                 continue
-            if isinstance(unit, Army) and self.armies.get((nq, nr)):
-                continue          # only one army per hex
+            if isinstance(unit, (Army, Knight)) and (self.armies.get((nq, nr)) or self.knights.get((nq, nr))):
+                continue          # only one army/knight per hex
             valid.append((nq, nr))
 
         # Sovereign movement restrictions:
@@ -408,10 +452,11 @@ class MapGrid:
     def get_valid_attacks(self, unit) -> list:
         """
         Return list of (q,r) hexes where unit can make a legal attack.
-        Only armies and champions may attack.
+        Only armies, knights, and champions may attack.
         """
         from armies    import Army
         from champions import Champion
+        from knights   import Knight
         q, r   = unit.hex_location
         nation = unit.nation
         valid  = set()
@@ -421,19 +466,35 @@ class MapGrid:
             if not self.get_tile(nq, nr):
                 continue
 
-            e_armies = [a for a in self.armies.get((nq,nr),[])
-                        if nation.is_enemy(a.nation)]
-            e_champs = [c for c in self.champions.get((nq,nr),[])
-                        if nation.is_enemy(c.nation)]
-            e_sovs   = [s for s in self.sovereigns.get((nq,nr),[])
-                        if nation.is_enemy(s.nation)]
+            e_armies  = [a for a in self.armies.get((nq,nr),[])    if nation.is_enemy(a.nation)]
+            e_knights = [k for k in self.knights.get((nq,nr),[])   if nation.is_enemy(k.nation)]
+            e_champs  = [c for c in self.champions.get((nq,nr),[]) if nation.is_enemy(c.nation)]
+            e_sovs    = [s for s in self.sovereigns.get((nq,nr),[]) if nation.is_enemy(s.nation)]
 
             if isinstance(unit, Army):
                 # vs enemy army
                 for ea in e_armies:
                     if atk_supp or not self.is_supported(ea):
                         valid.add((nq, nr)); break
+                # vs enemy knight: only if attacker is supported
+                for ek in e_knights:
+                    if atk_supp:
+                        valid.add((nq, nr)); break
                 # vs trapped+unsupported sovereign (army can't attack champion)
+                for es in e_sovs:
+                    if not self.is_supported(es) and self.is_trapped(es):
+                        valid.add((nq, nr)); break
+
+            elif isinstance(unit, Knight):
+                # vs enemy army (unsupported knight attacking unsupported army trades)
+                for ea in e_armies:
+                    if atk_supp or not self.is_supported(ea):
+                        valid.add((nq, nr)); break
+                # vs enemy knight (unsupported knight attacking unsupported knight trades)
+                for ek in e_knights:
+                    if atk_supp or not self.is_supported(ek):
+                        valid.add((nq, nr)); break
+                # vs trapped+unsupported sovereign
                 for es in e_sovs:
                     if not self.is_supported(es) and self.is_trapped(es):
                         valid.add((nq, nr)); break
@@ -442,6 +503,10 @@ class MapGrid:
                 # vs enemy army
                 for ea in e_armies:
                     if atk_supp or not self.is_supported(ea):
+                        valid.add((nq, nr)); break
+                # vs enemy knight
+                for ek in e_knights:
+                    if atk_supp or not self.is_supported(ek):
                         valid.add((nq, nr)); break
                 # vs enemy champion
                 for ec in e_champs:
@@ -466,11 +531,12 @@ class MapGrid:
     def update_hex_control(self, unit, tq, tr):
         """Update hex control at (tq, tr) when unit moves or advances there.
         - If unclaimed (None) -> claimed by unit.nation
-        - If owned by an enemy -> seized by unit.nation if unit is Army or Champion
+        - If owned by an enemy -> seized by unit.nation if unit is Army, Knight, or Champion
         - If owned by an ally -> original owner keeps control ('first come keeps it')
         """
         from armies    import Army
         from champions import Champion, Sovereign
+        from knights   import Knight
 
         curr_ri = self.tile_control.get((tq, tr))
         unit_ri = unit.nation.ring_index
@@ -479,16 +545,19 @@ class MapGrid:
         elif curr_ri != unit_ri:
             owner_nation = NATIONS[curr_ri]
             if unit.nation.is_enemy(owner_nation):
-                # Enemy seizure (Armies and Champions seize enemy territory)
-                if isinstance(unit, (Army, Champion)):
+                # Enemy seizure (Armies, Knights, and Champions seize enemy territory)
+                if isinstance(unit, (Army, Knight, Champion)):
                     self.tile_control[(tq, tr)] = unit_ri
 
     def _move_unit(self, unit, tq, tr):
         """Unconditionally relocate unit to (tq, tr) and update territory control."""
         from armies    import Army
         from champions import Champion, Sovereign
+        from knights   import Knight
         if isinstance(unit, Army):
             self.remove_army(unit);     unit.q, unit.r = tq, tr; self.add_army(unit)
+        elif isinstance(unit, Knight):
+            self.remove_knight(unit);   unit.q, unit.r = tq, tr; self.add_knight(unit)
         elif isinstance(unit, Champion):
             self.remove_champion(unit); unit.q, unit.r = tq, tr; self.add_champion(unit)
         elif isinstance(unit, Sovereign):
@@ -512,7 +581,7 @@ class MapGrid:
         """
         Resolve an attack by attacker on hex (tq, tr).
 
-        target_type: 'army' | 'champion' | 'sovereign' | None (auto-select).
+        target_type: 'army' | 'knight' | 'champion' | 'sovereign' | None (auto-select).
 
         Returns (success: bool, message: str, destroyed: list[unit]).
         If success is False the attack was illegal and nothing was changed.
@@ -520,21 +589,24 @@ class MapGrid:
         """
         from armies    import Army
         from champions import Champion, Sovereign
+        from knights   import Knight
 
         nation       = attacker.nation
         atk_supp     = self.is_supported(attacker)
 
         # Collect enemy units in target hex
         e_armies  = [a for a in self.armies.get((tq,tr),[])    if nation.is_enemy(a.nation)]
+        e_knights = [k for k in self.knights.get((tq,tr),[])   if nation.is_enemy(k.nation)]
         e_champs  = [c for c in self.champions.get((tq,tr),[]) if nation.is_enemy(c.nation)]
         e_sovs    = [s for s in self.sovereigns.get((tq,tr),[]) if nation.is_enemy(s.nation)]
 
         # Auto-select target type if not specified
         if target_type is None:
-            if e_armies:   target_type = 'army'
-            elif e_champs: target_type = 'champion'
-            elif e_sovs:   target_type = 'sovereign'
-            else:          return False, "No enemy units in target hex.", []
+            if e_armies:     target_type = 'army'
+            elif e_knights:  target_type = 'knight'
+            elif e_champs:   target_type = 'champion'
+            elif e_sovs:     target_type = 'sovereign'
+            else:            return False, "No enemy units in target hex.", []
 
         destroyed         = []
         messages          = []
@@ -567,6 +639,22 @@ class MapGrid:
                     destroyed += [target, attacker]; attacker_lives = False
                     messages.append("Both armies destroyed (both supported).")
 
+            elif target_type == 'knight':
+                if not e_knights:
+                    return False, "No enemy knight in that hex.", []
+                target = e_knights[0]
+                tgt_supp = self.is_supported(target)
+
+                if not atk_supp:
+                    return False, "Illegal: unsupported army cannot attack a knight.", []
+                if atk_supp and not tgt_supp:
+                    self.remove_knight(target); destroyed.append(target)
+                    advance = True; messages.append("Enemy knight destroyed, attacker advances.")
+                else:   # both supported
+                    self.remove_knight(target); self.remove_army(attacker)
+                    destroyed += [target, attacker]; attacker_lives = False
+                    messages.append("Both units destroyed (both supported).")
+
             elif target_type == 'champion':
                 return False, "Illegal: armies cannot attack champions.", []
 
@@ -576,6 +664,64 @@ class MapGrid:
                 target = e_sovs[0]
                 if self.is_supported(target) or not self.is_trapped(target):
                     return False, "Illegal: army can only attack an unsupported, trapped sovereign.", []
+                self.remove_sovereign(target); destroyed.append(target)
+                advance = True
+                messages.append(f"{target.nation.color_name} sovereign destroyed!")
+
+        # -------------------------------------------------------------------
+        # KNIGHT attacks
+        # -------------------------------------------------------------------
+        elif isinstance(attacker, Knight):
+
+            if target_type == 'army':
+                if not e_armies:
+                    return False, "No enemy army in that hex.", []
+                target = e_armies[0]
+                tgt_supp = self.is_supported(target)
+
+                if not atk_supp and tgt_supp:
+                    return False, "Illegal: unsupported knight cannot attack a supported army.", []
+                if not atk_supp and not tgt_supp:
+                    self.remove_army(target); self.remove_knight(attacker)
+                    destroyed += [target, attacker]; attacker_lives = False
+                    messages.append("Both units destroyed (knight trades with army).")
+                elif atk_supp and not tgt_supp:
+                    self.remove_army(target); destroyed.append(target)
+                    advance = True; messages.append("Enemy army destroyed, attacker advances.")
+                else:   # both supported
+                    self.remove_army(target); self.remove_knight(attacker)
+                    destroyed += [target, attacker]; attacker_lives = False
+                    messages.append("Both units destroyed (both supported).")
+
+            elif target_type == 'knight':
+                if not e_knights:
+                    return False, "No enemy knight in that hex.", []
+                target = e_knights[0]
+                tgt_supp = self.is_supported(target)
+
+                if not atk_supp and tgt_supp:
+                    return False, "Illegal: unsupported knight cannot attack a supported knight.", []
+                if not atk_supp and not tgt_supp:
+                    self.remove_knight(target); self.remove_knight(attacker)
+                    destroyed += [target, attacker]; attacker_lives = False
+                    messages.append("Both knights destroyed.")
+                elif atk_supp and not tgt_supp:
+                    self.remove_knight(target); destroyed.append(target)
+                    advance = True; messages.append("Enemy knight destroyed, attacker advances.")
+                else:   # both supported
+                    self.remove_knight(target); self.remove_knight(attacker)
+                    destroyed += [target, attacker]; attacker_lives = False
+                    messages.append("Both knights destroyed (both supported).")
+
+            elif target_type == 'champion':
+                return False, "Illegal: knights cannot attack champions.", []
+
+            elif target_type == 'sovereign':
+                if not e_sovs:
+                    return False, "No enemy sovereign in that hex.", []
+                target = e_sovs[0]
+                if self.is_supported(target) or not self.is_trapped(target):
+                    return False, "Illegal: knight can only attack an unsupported, trapped sovereign.", []
                 self.remove_sovereign(target); destroyed.append(target)
                 advance = True
                 messages.append(f"{target.nation.color_name} sovereign destroyed!")
@@ -594,6 +740,16 @@ class MapGrid:
                 self.remove_army(target); destroyed.append(target)
                 advance = True
                 messages.append("Enemy army destroyed.")
+
+            elif target_type == 'knight':
+                if not e_knights:
+                    return False, "No enemy knight in that hex.", []
+                target = e_knights[0]
+                if not atk_supp and self.is_supported(target):
+                    return False, "Illegal: unsupported champion cannot attack a supported knight.", []
+                self.remove_knight(target); destroyed.append(target)
+                advance = True
+                messages.append("Enemy knight destroyed.")
 
             elif target_type == 'champion':
                 if not e_champs:
@@ -634,10 +790,14 @@ class MapGrid:
                     if sc:
                         return False, "Illegal: champion cannot attack a sovereign supported by a champion.", []
                     elif sa:
-                        # Attack hits the supporting army instead
-                        army = sa[0]
-                        self.remove_army(army); destroyed.append(army)
-                        messages.append(f"Supporting army destroyed; sovereign shielded.")
+                        # Attack hits the supporting army/knight instead
+                        unit_guard = sa[0]
+                        if isinstance(unit_guard, Army):
+                            self.remove_army(unit_guard); destroyed.append(unit_guard)
+                            messages.append("Supporting army destroyed; sovereign shielded.")
+                        elif isinstance(unit_guard, Knight):
+                            self.remove_knight(unit_guard); destroyed.append(unit_guard)
+                            messages.append("Supporting knight destroyed; sovereign shielded.")
                     else:
                         # Supported only by another sovereign
                         self.remove_sovereign(target); destroyed.append(target)
@@ -651,8 +811,8 @@ class MapGrid:
         # -------------------------------------------------------------------
         if attacker_lives and advance and not force_no_advance:
             still_enemy = self._has_enemy_unit_at(tq, tr, nation)
-            army_there  = bool(self.armies.get((tq, tr)))
-            can_advance = not still_enemy and (not isinstance(attacker, Army) or not army_there)
+            unit_there  = bool(self.armies.get((tq, tr)) or self.knights.get((tq, tr)))
+            can_advance = not still_enemy and (not isinstance(attacker, (Army, Knight)) or not unit_there)
             if can_advance:
                 self._move_unit(attacker, tq, tr)
             else:
@@ -744,6 +904,29 @@ class MapGrid:
         self.add_champion(champ)
         return champ
 
+    def get_promote_knight_hexes(self, nation) -> list:
+        """
+        Return starting hexes where an army may be promoted to a knight.
+        Conditions: nation not ghost, no knight on board,
+        hex has an army belonging to nation.
+        """
+        if nation.is_ghost or self._has_knight(nation):
+            return []
+        return [
+            coord for coord in self.NATION_HEXES[nation.ring_index]
+            if any(a.nation.ring_index == nation.ring_index
+                   for a in self.armies.get(coord, []))
+        ]
+
+    def promote_to_knight(self, army):
+        """Remove army and place a Knight in the same hex. Returns the Knight."""
+        from knights import Knight
+        q, r = army.hex_location
+        self.remove_army(army)
+        knight = Knight(army.nation, q, r)
+        self.add_knight(knight)
+        return knight
+
     # =======================================================================
     # Game Logic -- win / loss / ghost detection
     # =======================================================================
@@ -796,9 +979,10 @@ class MapGrid:
             s = int(size * 0.42)
 
         # All unit types use tinted PNG sprites
-        scale = 3.2 if unit_type == 'champion' else 2.0
+        scale = 3.2 if unit_type in ('champion', 'knight') else 2.0
         icon_h = int(s * scale)
         sprite_name = {'army': 'army.png',
+                       'knight': 'knight.png',
                        'champion': 'champion.png',
                        'sovereign': 'sovereign.png'}.get(unit_type)
         if sprite_name is None:
@@ -863,6 +1047,7 @@ class MapGrid:
             units = (
                 [('sovereign', u) for u in self.sovereigns.get((q,r), []) if u is not drag_unit]
                 + [('champion', u) for u in self.champions.get((q,r), []) if u is not drag_unit]
+                + [('knight',   u) for u in self.knights.get((q,r), [])   if u is not drag_unit]
                 + [('army',     u) for u in self.armies.get((q,r), [])    if u is not drag_unit]
             )
             n = len(units)

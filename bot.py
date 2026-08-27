@@ -289,6 +289,7 @@ def _score_attack(grid, attacker, tq, tr, enemy_ring_set, allied_ring_set=None,
     nation   = attacker.nation
     e_sovs   = [s for s in grid.sovereigns.get((tq, tr), []) if nation.is_enemy(s.nation)]
     e_champs = [c for c in grid.champions.get((tq, tr), [])  if nation.is_enemy(c.nation)]
+    e_knights= [k for k in grid.knights.get((tq, tr), [])    if nation.is_enemy(k.nation)]
     e_armies = [a for a in grid.armies.get((tq, tr), [])     if nation.is_enemy(a.nation)]
 
     if e_sovs:
@@ -300,6 +301,9 @@ def _score_attack(grid, attacker, tq, tr, enemy_ring_set, allied_ring_set=None,
     elif e_champs:
         ri    = e_champs[0].nation.ring_index
         score = (400  if ri in enemy_ring_set else 100) * w_kill
+    elif e_knights:
+        ri    = e_knights[0].nation.ring_index
+        score = (250  if ri in enemy_ring_set else 75) * w_kill
     elif e_armies:
         ri    = e_armies[0].nation.ring_index
         score = (150  if ri in enemy_ring_set else 50) * w_kill
@@ -326,6 +330,7 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
     """
     from armies    import Army
     from champions import Champion, Sovereign
+    from knights   import Knight
 
     w = weights or {}
     w_advance   = w.get('advance_allied', 1.0)
@@ -395,12 +400,13 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
                 if allies_at == 0:
                     score += 40 * w_unsup_ch
 
-    elif isinstance(unit, Army):
+    elif isinstance(unit, (Army, Knight)):
         if is_allied:
             old_d = _nearest_enemy_sov_dist(grid, unit.q, unit.r, enemy_ring_set)
             new_d = _nearest_enemy_sov_dist(grid, tq, tr, enemy_ring_set)
+            base_adv = 85 if isinstance(unit, Knight) else 80
             if new_d < old_d:
-                score += (80 + (old_d - new_d) * 10) * w_advance
+                score += (base_adv + (old_d - new_d) * 10) * w_advance
             else:
                 score += 5
         else:
@@ -420,7 +426,7 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
             from factions import NATIONS
             owner_ri = curr_owner.ring_index if hasattr(curr_owner, 'ring_index') else curr_owner
             owner_nation = NATIONS[owner_ri]
-            if nation.is_enemy(owner_nation) and isinstance(unit, (Army, Champion)):
+            if nation.is_enemy(owner_nation) and isinstance(unit, (Army, Knight, Champion)):
                 # Seizing enemy territory
                 if is_allied:
                     score += 70.0 * w_territory
@@ -479,6 +485,10 @@ def _gather_actions(grid, bot_player, global_cooldown_idx, nation_list,
         for coord in grid.get_promote_hexes(nation):
             s = (70.0 if is_allied else 20.0) * w_muster
             actions.append((s, 'promote', nation, coord))
+
+        for coord in grid.get_promote_knight_hexes(nation):
+            s = (65.0 if is_allied else 18.0) * w_muster
+            actions.append((s, 'promote_knight', nation, coord))
 
     # Apply adaptive sovereign intelligence
     adaptive_t = weights.get('adaptive_turn') if weights else None
@@ -747,6 +757,15 @@ def _execute(grid, action):
             return nation, 'promote', f"{tag} Promote {nation.color_name} at {coord}"
         return None, None, f"{tag} Promote: no army found"
 
+    if atype == 'promote_knight':
+        nation, coord = payload
+        armies_here = [a for a in grid.armies.get(coord, [])
+                       if a.nation.ring_index == nation.ring_index]
+        if armies_here:
+            grid.promote_to_knight(armies_here[0])
+            return nation, 'promote_knight', f"{tag} Promote Knight {nation.color_name} at {coord}"
+        return None, None, f"{tag} Promote Knight: no army found"
+
     return None, None, f"{tag} Unknown action: {atype}"
 
 
@@ -954,6 +973,8 @@ def compute_bot_action(grid, bot_player, global_cooldown_idx, nation_list, turn_
                 pool.append((0, 'recruit', nation, coord))
             for coord in grid.get_promote_hexes(nation):
                 pool.append((0, 'promote', nation, coord))
+            for coord in grid.get_promote_knight_hexes(nation):
+                pool.append((0, 'promote_knight', nation, coord))
         if not pool:
             return None
         pool = _adaptive_sovereign_adjustments(
