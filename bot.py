@@ -494,7 +494,8 @@ def _score_move(grid, unit, tq, tr, enemy_name_set, allied_name_set,
 def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
                     suspected_human_ri=None, turn_number=0, weights=None,
                     dipl_state=None, bot_goals=None,
-                    top3_names=None, bottom3_names=None):
+                    top3_names=None, bottom3_names=None,
+                    exclude_diplomacy=False):
     """
     Build a scored list of all legal bot actions.
     Returns list of (score, action_type, *payload).
@@ -508,6 +509,8 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
     bot_goals:  BotGoals instance with prevail_goals/defeat_goals lists (None = skip diplomacy).
     top3_names:    list of up to 3 color_name strings (top human-faction guesses = inferred prevail).
     bottom3_names: list of up to 3 color_name strings (bottom human-faction guesses = inferred defeat).
+    exclude_diplomacy: if True, skip all diplomacy action generation (used by lookahead tree
+                       so diplomacy is always evaluated 1-ply and not mixed into beam search).
     """
     eligible        = _eligible_nations(bot_player, global_cooldown_name, nation_list)
     bot_secret      = bot_player.secret_nation
@@ -548,7 +551,7 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
             actions.append((s, 'promote_knight', nation, coord))
 
     # --- Diplomacy actions ---
-    if dipl_state is not None and bot_goals is not None and weights is not None:
+    if not exclude_diplomacy and dipl_state is not None and bot_goals is not None and weights is not None:
         w_ally   = weights.get('w_diplomacy_ally',  1.0)
         w_war    = weights.get('w_diplomacy_war',   1.0)
         w_peace  = weights.get('w_diplomacy_peace', 0.5)
@@ -619,7 +622,7 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
     #   1. Wars between defeat-goal nations (weaken both)
     #   3. Alliances between prevail-goal nations (keep them strong together)
     #   4. Wars between suspected-human prevail nations (disrupt opponent)
-    if dipl_state is not None and bot_goals is not None and weights is not None:
+    if not exclude_diplomacy and dipl_state is not None and bot_goals is not None and weights is not None:
         w_ally_3p = weights.get('w_diplomacy_ally', 1.0)
         w_war_3p  = weights.get('w_diplomacy_war',  1.0)
 
@@ -743,11 +746,12 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
 
     bot_secret = bot_player.secret_nation
 
-    # Gather and score all actions (1-ply move scoring)
+    # Gather and score all actions (1-ply move scoring, diplomacy excluded from tree)
     actions = _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
                               suspected_human_ri=suspected_opp_ri,
                               turn_number=turn_number,
-                              weights=weights)
+                              weights=weights,
+                              exclude_diplomacy=True)
     if not actions:
         return None
 
@@ -822,7 +826,8 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
                 snap, fake_opp, new_gci, nation_list,
                 suspected_human_ri=opp_suspected_us,
                 turn_number=turn_number + 1,
-                weights=weights)
+                weights=weights,
+                exclude_diplomacy=True)
 
             if not opp_actions:
                 pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights,
@@ -858,7 +863,8 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
                             opp_snap, bot_player, opp_moved.color_name, nation_list,
                             suspected_human_ri=suspected_opp_ri,
                             turn_number=turn_number + 2,
-                            weights=weights)
+                            weights=weights,
+                            exclude_diplomacy=True)
                         if our_followups:
                             our_valid = [a for a in our_followups if a[0] > -1000]
                             if our_valid:
@@ -872,7 +878,8 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
                                     opp_snap, fake_opp, our_moved.color_name, nation_list,
                                     suspected_human_ri=opp_suspected_us,
                                     turn_number=turn_number + 3,
-                                    weights=weights)
+                                    weights=weights,
+                                    exclude_diplomacy=True)
                                 if opp_followups:
                                     opp_f_valid = [a for a in opp_followups if a[0] > -1000]
                                     if opp_f_valid:
@@ -902,7 +909,8 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
                 snap, fake_opp, new_gci, nation_list,
                 suspected_human_ri=opp_suspected_us,
                 turn_number=turn_number + 1,
-                weights=weights)
+                weights=weights,
+                exclude_diplomacy=True)
             if opp_actions:
                 opp_valid = [a for a in opp_actions if a[0] > -1000]
                 if opp_valid:
@@ -1160,16 +1168,34 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
 
     if use_intent:
         if lookahead_depth > 1 or hybrid_ratio > 0.0:
-            # Multi-ply lookahead / hybrid evaluation
-            chosen = _lookahead_best(
+            # Diplomacy always evaluated 1-ply (not mixed into the beam search tree)
+            dipl_actions = _gather_actions(
+                grid, bot_player, global_cooldown_name, nation_list,
+                suspected_human_ri=suspected_human_ri,
+                turn_number=turn_number,
+                weights=weights,
+                dipl_state=dipl_state,
+                bot_goals=bot_goals,
+                top3_names=top3_names,
+                bottom3_names=bottom3_names,
+                exclude_diplomacy=False)   # diplomacy-only subset
+            dipl_actions = [a for a in dipl_actions if a[1] == 'diplomacy' and a[0] > -1000]
+            best_dipl = max(dipl_actions, key=lambda a: a[0]) if dipl_actions else None
+
+            # Military moves via multi-ply lookahead (diplomacy excluded from tree)
+            military = _lookahead_best(
                 grid, bot_player, global_cooldown_name, nation_list,
                 turn_number, suspected_human_ri, weights,
                 depth=lookahead_depth - 1, beam_width=lookahead_beam,
                 mode=lookahead_mode, eval_weights=eval_weights,
                 hybrid_ratio=hybrid_ratio)
-            if chosen is None:
+
+            # Pick whichever is better: best diplomacy vs best military
+            if best_dipl is not None and (military is None or best_dipl[0] > military[0]):
+                return (*best_dipl, 'intent')
+            if military is None:
                 return None
-            return (*chosen, 'intent')   # tag with path label
+            return (*military, 'intent')
         else:
             # Original 1-ply move scoring
             actions = _gather_actions(grid, bot_player, global_cooldown_name, nation_list,

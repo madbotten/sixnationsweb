@@ -988,8 +988,9 @@ class GeneticAlgorithm:
             guess_acc = tournament.guess_accuracy
 
             if progress_callback:
+                top4 = self.population[:4]
                 progress_callback(gen, best_fit, avg_fit, self.population[0],
-                                  guess_accuracy=guess_acc)
+                                  guess_accuracy=guess_acc, top4=top4)
 
             # Build next generation
             next_gen = []
@@ -1159,15 +1160,25 @@ def load_top_configs(filepath=DEFAULT_CONFIG_PATH) -> list:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def _progress(gen, best_fit, avg_fit, best_config, guess_accuracy=None):
+def _progress(gen, best_fit, avg_fit, best_config, guess_accuracy=None, top4=None):
     """Print progress and rich human-readable personality explainer for each generation."""
-    depth = getattr(best_config, 'lookahead_depth', 1)
-    beam = getattr(best_config, 'lookahead_beam', 3)
-    hratio = getattr(best_config, 'hybrid_ratio', 0.5)
     guess_str = f"{guess_accuracy*100:.0f}%" if guess_accuracy is not None else "n/a"
-    print(f"\n>>> GENERATION {gen:3d} COMPLETE | Best Fitness: {best_fit:6.1f} | Population Avg: {avg_fit:5.1f} | Deduction Acc: {guess_str}")
-    print(describe_bot(best_config, rank=f"1 (Gen {gen})"))
-    print()
+    print(f"\n{'='*66}")
+    print(f"  GENERATION {gen:3d} COMPLETE | Best: {best_fit:6.1f} | Avg: {avg_fit:5.1f} | Deduction: {guess_str}")
+
+    # Leaderboard summary line
+    if top4:
+        parts = []
+        for i, cfg in enumerate(top4, 1):
+            d = getattr(cfg, 'lookahead_depth', 1)
+            parts.append(f"#{i} {d}ply f={cfg.fitness:.1f}")
+        print(f"  Leaderboard: {' | '.join(parts)}")
+    print(f"{'='*66}")
+
+    configs_to_show = top4 if top4 else [best_config]
+    for i, cfg in enumerate(configs_to_show, 1):
+        print(describe_bot(cfg, rank=f"{i} (Gen {gen})"))
+        print()
 
 
 def main():
