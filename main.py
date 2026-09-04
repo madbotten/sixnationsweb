@@ -117,9 +117,9 @@ GAME_RESULT_LOSS_BOT_SCORE    = 4   # Human lost: bot destroyed 2 target soverei
 GAME_RESULT_TIE              = 5   # Both players meet win condition simultaneously
 
 # Unit icon dimensions (must match map.py draw constants)
-UNIT_SIZE    = 44
+UNIT_SIZE    = 40
 UNIT_RADIUS  = UNIT_SIZE // 2
-UNIT_SPACING = 52
+UNIT_SPACING = 47
 
 
 # ---------------------------------------------------------------------------
@@ -221,29 +221,19 @@ def draw_top_bar(screen, font_large, font_small, active_player,
                      (0, settings.TOP_BAR_HEIGHT - 1),
                      (settings.SCREEN_WIDTH, settings.TOP_BAR_HEIGHT - 1), 1)
 
-    nation = active_player.secret_nation
-    col    = nation.color_rgb
-
-    if game_mode == 'vs_human':
-        label_text = f"{active_player.player_id.upper()} SECRET NATION:"
-    else:
-        label_text = "YOUR SECRET NATION:"
-    lbl = font_small.render(label_text, True, settings.COLOR_TEXT_MUTED)
-    screen.blit(lbl, lbl.get_rect(midleft=(20, settings.TOP_BAR_HEIGHT // 2 - 10)))
-    bx, by = 22, settings.TOP_BAR_HEIGHT // 2 + 4
-    pygame.draw.rect(screen, col, (bx, by, 28, 20), border_radius=4)
-    name = font_large.render(nation.color_name.upper(), True, col)
-    screen.blit(name, name.get_rect(midleft=(bx + 38, by + 10)))
+    # Left accent: thin nation-colour stripe so the bar isn't empty
+    nc = active_player.secret_nation.color_rgb
+    pygame.draw.rect(screen, nc, (0, 0, 4, settings.TOP_BAR_HEIGHT))
 
     if game_state == STATE_GAME_OVER:
         centre_text = "GAME OVER"
         centre_col  = settings.COLOR_TEXT_MUTED
     elif game_state == STATE_BOT_THINKING:
         centre_text = f"TURN {turn_number}  —  BOT IS THINKING…"
-        centre_col  = settings.NATION_COLORS[1]   # green-ish pulse colour
+        centre_col  = settings.NATION_COLORS[1]
     elif game_state == STATE_WAITING_OPPONENT:
         centre_text = f"TURN {turn_number}  —  WAITING FOR OPPONENT…"
-        centre_col  = settings.NATION_COLORS[2]   # sky-blue pulse
+        centre_col  = settings.NATION_COLORS[2]
     else:
         if game_mode == 'vs_human':
             whose = current_player.player_id.upper() + "'S TURN"
@@ -270,6 +260,93 @@ def draw_diplo_panel(screen, diplo_img, font_small):
     screen.blit(diplo_img, (x, y))
     lbl = font_small.render("Diplomatic Ring", True, settings.COLOR_TEXT_MUTED)
     screen.blit(lbl, lbl.get_rect(midtop=(x + size // 2, y + size + 8)))
+
+
+def draw_predictions_panel(screen, font_small, player):
+    """Floating upper-left panel showing the human player's PREVAIL/DEFEAT goals.
+
+    Mirrors the style of the diplo-ring panel on the upper-right.
+    Each entry shows: army sprite | nation name | point value (right-aligned).
+    """
+    MARGIN   = 10
+    PADDING  = 12
+    PANEL_W  = 300   # wider to fit pts column
+    ITEM_H   = 28    # height per nation row
+    SECT_H   = 22    # section label height
+    SECT_GAP = 8     # gap between PREVAIL and DEFEAT sections
+    HDR_H    = 22    # "GOALS" header height
+
+    total_h = (PADDING
+               + HDR_H + 6
+               + SECT_H + 3 * ITEM_H
+               + SECT_GAP
+               + SECT_H + 3 * ITEM_H
+               + PADDING)
+
+    x = MARGIN
+    y = MARGIN
+
+    panel_rect = pygame.Rect(x, y, PANEL_W, total_h)
+    pygame.draw.rect(screen, settings.COLOR_PANEL,        panel_rect, border_radius=8)
+    pygame.draw.rect(screen, settings.COLOR_PANEL_BORDER, panel_rect, 1, border_radius=8)
+
+    cy = y + PADDING
+
+    # Header row: "GOALS" label + secret-nation colour dot
+    nc  = player.secret_nation.color_rgb
+    hdr = font_small.render("SECRET GOALS", True, settings.COLOR_TEXT_MUTED)
+    screen.blit(hdr, (x + PADDING, cy))
+    pygame.draw.circle(screen, nc,
+                       (x + PANEL_W - PADDING - 7, cy + hdr.get_height() // 2), 6)
+    cy += HDR_H + 6
+
+    # Thin divider
+    pygame.draw.line(screen, settings.COLOR_PANEL_BORDER,
+                     (x + PADDING, cy), (x + PANEL_W - PADDING, cy), 1)
+    cy += 4
+
+    _WEIGHTS = (3, 2, 1)
+
+    def _draw_section(label, label_color, nations):
+        nonlocal cy
+        lbl_surf = font_small.render(label, True, label_color)
+        screen.blit(lbl_surf, (x + PADDING, cy))
+        cy += SECT_H
+
+        # Precompute army sprite size from template aspect ratio
+        template = util.load_image('army.png', alpha=True)
+        sprite_h = 18
+        sprite_w = (max(1, int(sprite_h * template.get_width() / template.get_height()))
+                    if template else sprite_h)
+
+        for slot_i, nation in enumerate(nations):
+            c = nation.color_rgb
+
+            # Army sprite
+            sprite = util.load_tinted_sprite('army.png', c, sprite_w, sprite_h)
+            icon_x = x + PADDING
+            if sprite:
+                screen.blit(sprite, sprite.get_rect(
+                    midleft=(icon_x, cy + ITEM_H // 2)))
+            else:
+                pygame.draw.rect(screen, c,
+                                 (icon_x, cy + 5, 14, ITEM_H - 10), border_radius=3)
+
+            name_surf = font_small.render(nation.color_name, True, c)
+            screen.blit(name_surf, name_surf.get_rect(
+                midleft=(icon_x + sprite_w + 8, cy + ITEM_H // 2)))
+
+            # Point value right-aligned
+            pts = _WEIGHTS[slot_i] if slot_i < len(_WEIGHTS) else 0
+            pts_surf = font_small.render(f"{pts}pt", True, (75, 92, 130))
+            screen.blit(pts_surf, pts_surf.get_rect(
+                midright=(x + PANEL_W - PADDING, cy + ITEM_H // 2)))
+
+            cy += ITEM_H
+
+    _draw_section("PREVAIL", (52, 210, 96),  player.prevail_picks)
+    cy += SECT_GAP
+    _draw_section("DEFEAT",  (220, 65, 55),  player.defeat_picks)
 
 
 def draw_cooldown_panel(screen, font_small, players, global_cooldown_idx):
@@ -319,61 +396,114 @@ def draw_error(screen, font_small, message, alpha):
         center=(settings.SCREEN_WIDTH // 2, settings.TOP_BAR_HEIGHT + 30)))
 
 
-def draw_game_over(screen, font_large, font_small, result):
-    """Semi-transparent game-over overlay with bold, shadowed text."""
+
+def draw_score_screen(screen, player1, player2, nation_list):
+    """Full-screen score reveal shown when 3 sovereigns have been destroyed.
+
+    Displays both players' PREVAIL/DEFEAT predictions with correct/wrong marks,
+    sorted by score descending.  Press SPACE to play again, ESC to quit.
+    """
     W, H = settings.SCREEN_WIDTH, settings.SCREEN_HEIGHT
 
-    # Darker overlay so the board fades further into the background
     overlay = pygame.Surface((W, H), pygame.SRCALPHA)
-    overlay.fill((0, 0, 0, 210))
+    overlay.fill((4, 6, 14, 248))
     screen.blit(overlay, (0, 0))
 
-    if result == GAME_RESULT_WIN_SCORE:
-        msg = "YOU WIN!"
-        col = (80, 235, 140)
-        sub = "You have destroyed 2 of your 3 target sovereigns."
-    elif result == GAME_RESULT_WIN_OPPONENT_DEAD:
-        msg = "YOU WIN!"
-        col = (80, 235, 140)
-        sub = "Your opponent\u2019s secret sovereign has been destroyed."
-    elif result == GAME_RESULT_LOSS_SOVEREIGN:
-        msg = "YOU LOSE."
-        col = (235, 80, 60)
-        sub = "Your secret nation\u2019s sovereign has been destroyed."
-    elif result == GAME_RESULT_TIE:
-        msg = "IT\u2019S A TIE."
-        col = (220, 205, 60)
-        sub = "Both secret nations share the same victories \u2014 a simultaneous win."
-    else:   # GAME_RESULT_LOSS_BOT_SCORE
-        msg = "YOU LOSE."
-        col = (235, 80, 60)
-        sub = "Your opponent has destroyed 2 of their 3 target sovereigns."
+    fnt_hdr   = util.get_font(52, bold=True)
+    fnt_rank  = util.get_font(36, bold=True)
+    fnt_name  = util.get_font(28, bold=True)
+    fnt_label = util.get_font(22, bold=True)
+    fnt_pick  = util.get_font(22)
+    fnt_hint  = util.get_font(18)
+    SHADOW    = (0, 0, 0)
 
-    font_title = util.get_font(72, bold=True)
-    font_sub   = util.get_font(24, bold=True)
-    font_hint  = util.get_font(18)
-    SHADOW     = (0, 0, 0)
+    # Header
+    hdr_text = "GAME OVER  --  FINAL SCORES"
+    hdr_surf = fnt_hdr.render(hdr_text, True, (210, 222, 255))
+    hdr_sh   = fnt_hdr.render(hdr_text, True, SHADOW)
+    screen.blit(hdr_sh,  hdr_sh.get_rect(centerx=W // 2 + 2, y=42))
+    screen.blit(hdr_surf, hdr_surf.get_rect(centerx=W // 2,   y=40))
+    pygame.draw.line(screen, (50, 65, 110), (80, 108), (W - 80, 108), 1)
 
-    # Title
-    cy_title = H // 2 - 60
-    title_surf = font_title.render(msg, True, col)
-    shadow_surf = font_title.render(msg, True, SHADOW)
-    screen.blit(shadow_surf, shadow_surf.get_rect(center=(W // 2 + 3, cy_title + 3)))
-    screen.blit(title_surf,  title_surf.get_rect(center=(W // 2, cy_title)))
+    # Score entries sorted by score descending
+    p1_score = player1.compute_score()
+    p2_score = player2.compute_score()
+    entries = sorted(
+        [("Player 1", player1, p1_score),
+         ("Bot",      player2, p2_score)],
+        key=lambda x: -x[2])
 
-    # Subtitle
-    cy_sub = H // 2 + 20
-    sub_surf = font_sub.render(sub, True, (230, 235, 255))
-    sh_sub   = font_sub.render(sub, True, SHADOW)
-    screen.blit(sh_sub,  sh_sub.get_rect(center=(W // 2 + 2, cy_sub + 2)))
-    screen.blit(sub_surf, sub_surf.get_rect(center=(W // 2, cy_sub)))
+    ROW_X = 120
+    y = 128
 
-    # ESC hint
-    cy_esc = H // 2 + 66
-    esc_surf = font_hint.render("Press ESC to quit.", True, (160, 168, 195))
-    sh_esc   = font_hint.render("Press ESC to quit.", True, SHADOW)
-    screen.blit(sh_esc,  sh_esc.get_rect(center=(W // 2 + 1, cy_esc + 1)))
-    screen.blit(esc_surf, esc_surf.get_rect(center=(W // 2, cy_esc)))
+    for rank_i, (label, player, score) in enumerate(entries):
+        nc = player.secret_nation.color_rgb
+
+        # -- Player header row ------------------------------------------------
+        rank_surf  = fnt_rank.render(f"#{rank_i + 1}", True, (190, 206, 255))
+        screen.blit(rank_surf, (ROW_X, y))
+
+        full_label = f"{label}  |  secret: {player.secret_nation.color_name}"
+        name_surf  = fnt_name.render(full_label, True, nc)
+        screen.blit(name_surf,
+                    name_surf.get_rect(midleft=(ROW_X + 72, y + fnt_rank.get_height() // 2)))
+
+        score_col  = ((72, 228, 132) if score >= 8
+                      else (228, 210, 65) if score >= 4
+                      else (200, 80, 65))
+        score_surf = fnt_rank.render(f"{score} / 12 pts", True, score_col)
+        screen.blit(score_surf, score_surf.get_rect(right=W - ROW_X, y=y))
+
+        y += fnt_rank.get_height() + 10
+
+        # -- PREVAIL row -------------------------------------------------------
+        prev_lbl = fnt_label.render("PREVAIL:", True, (52, 210, 96))
+        screen.blit(prev_lbl, (ROW_X + 36, y + 4))
+        px = ROW_X + 36 + prev_lbl.get_width() + 24
+
+        for slot_i, nation in enumerate(player.prevail_picks):
+            weight   = (3, 2, 1)[slot_i]
+            nc2      = nation.color_rgb
+            survived = not nation.is_ghost
+            chk_col  = (60, 220, 90) if survived else (220, 60, 60)
+            pts_str  = f"+{weight}" if survived else "+0"
+            label    = f"{nation.color_name}  {pts_str}"
+            n_surf   = fnt_pick.render(nation.color_name, True, nc2)
+            p_surf   = fnt_label.render(pts_str, True, chk_col)
+            screen.blit(n_surf, (px, y + 4))
+            screen.blit(p_surf, (px + n_surf.get_width() + 6, y + 2))
+            px += n_surf.get_width() + p_surf.get_width() + 36
+
+        y += fnt_label.get_height() + 8
+
+        # -- DEFEAT row --------------------------------------------------------
+        def_lbl = fnt_label.render("DEFEAT: ", True, (220, 65, 55))
+        screen.blit(def_lbl, (ROW_X + 36, y + 4))
+        dx = ROW_X + 36 + def_lbl.get_width() + 24
+
+        for slot_i, nation in enumerate(player.defeat_picks):
+            weight   = (3, 2, 1)[slot_i]
+            nc2      = nation.color_rgb
+            defeated = nation.is_ghost
+            chk_col  = (60, 220, 90) if defeated else (220, 60, 60)
+            pts_str  = f"+{weight}" if defeated else "+0"
+            n_surf   = fnt_pick.render(nation.color_name, True, nc2)
+            p_surf   = fnt_label.render(pts_str, True, chk_col)
+            screen.blit(n_surf, (dx, y + 4))
+            screen.blit(p_surf, (dx + n_surf.get_width() + 6, y + 2))
+            dx += n_surf.get_width() + p_surf.get_width() + 36
+
+        y += fnt_label.get_height() + 26
+        pygame.draw.line(screen, (35, 44, 70), (ROW_X, y), (W - ROW_X, y), 1)
+        y += 22
+
+    # Footer
+    hint_surf = fnt_hint.render(
+        "Press SPACE to play again   |   Press ESC to quit",
+        True, (125, 138, 185))
+    screen.blit(hint_surf, hint_surf.get_rect(centerx=W // 2, y=H - 46))
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -398,8 +528,8 @@ def compute_sidebar_buttons(grid, eligible_nations):
     clamped so they always remain inside the visible screen area.
     """
     buttons  = []
-    ICON_SIZE = 32
-    GAP       = 40   # horizontal gap between two icons for the same nation
+    ICON_SIZE = 29
+    GAP       = 36   # horizontal gap between two icons for the same nation
     MARGIN    = ICON_SIZE  # minimum distance from screen edges
 
     for nation in eligible_nations:
@@ -513,30 +643,13 @@ def _clear_action(state):
     """Return a cleared action-pending state tuple."""
     return None, None, set(), set()
 
-def check_all_end_conditions(grid, player1, player2, nation_list):
+def check_trigger_game_end(grid, nation_list) -> bool:
     """
-    Run ghost detection then evaluate all win/loss/tie conditions.
-    Returns a GAME_RESULT_* constant, or None if the game continues.
-    Priority: tie > individual win > individual loss.
+    Run ghost detection then check the new victory trigger:
+    game ends when 3 or more sovereigns have been destroyed.
     """
     grid.check_ghost_nations(nation_list)
-    p1_wins  = grid.check_win_condition(player1, nation_list)
-    p2_wins  = grid.check_win_condition(player2, nation_list)
-    p1_loses = grid.check_loss_condition(player1)
-    p2_loses = grid.check_loss_condition(player2)
-
-    # Simultaneous wins or simultaneous sovereign deaths → tie
-    if (p1_wins and p2_wins) or (p1_loses and p2_loses):
-        return GAME_RESULT_TIE
-    if p1_wins:
-        return GAME_RESULT_WIN_SCORE
-    if p2_loses:
-        return GAME_RESULT_WIN_OPPONENT_DEAD
-    if p2_wins:
-        return GAME_RESULT_LOSS_BOT_SCORE
-    if p1_loses:
-        return GAME_RESULT_LOSS_SOVEREIGN
-    return None
+    return grid.count_ghost_nations(nation_list) >= 3
 
 
 # ---------------------------------------------------------------------------
@@ -592,12 +705,27 @@ async def main():
     grid = MapGrid()
     grid.generate_map()
 
-    # Drag state
+    # Drag state (game board)
     drag_unit      = None
     drag_unit_type = None
     highlight_move   = set()
     highlight_attack = set()
     drag_mouse_pos   = (0, 0)
+
+    # Splash prediction picks and drag state
+    prevail_picks       = []    # list[Nation], max 3
+    defeat_picks        = []    # list[Nation], max 3
+    drag_splash_nation  = None  # Nation being dragged on the splash screen
+    drag_splash_src     = None  # 'palette' | 'prevail' | 'defeat'
+    drag_splash_pos     = (0, 0)
+    # Rects cached after each draw_splash call (None until first draw)
+    splash_bot_rect     = None
+    splash_human_rect   = None
+    splash_inst_rect    = None
+    splash_evolved_rect = None
+    splash_prevail_rect = None
+    splash_defeat_rect  = None
+    splash_tile_rects   = {}    # ring_index -> Rect
 
     # Action-pending state (recruit / promote)
     action_pending   = None   # None | 'recruit' | 'promote'
@@ -666,52 +794,160 @@ async def main():
                 else:
                     running = False
 
-            # ---- Splash screen clicks --------------------------------------
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                if game_state == STATE_GAME_OVER:
+                    # Full game reset back to splash
+                    import random as _rnd
+                    _rnd.shuffle(nation_list)
+                    for _n in nation_list:
+                        _n.is_ghost = False
+                    p1_nation = nation_list[0]
+                    p2_nation = nation_list[1]
+                    player1 = Player(secret_nation=p1_nation, is_bot=False, player_id='player1')
+                    player2 = Player(secret_nation=p2_nation, is_bot=True,  player_id='player2')
+                    players = [player1, player2]
+                    current_player_idx  = 0
+                    global_cooldown_idx = None
+                    turn_number         = 1
+                    game_result         = GAME_RESULT_NONE
+                    game_state          = STATE_SPLASH
+                    game_mode           = 'vs_bot'
+                    bot_think_timer     = 0
+                    prevail_picks       = []
+                    defeat_picks        = []
+                    drag_splash_nation  = None
+                    drag_splash_src     = None
+                    drag_splash_pos     = (0, 0)
+                    splash_bot_rect     = None
+                    splash_human_rect   = None
+                    splash_inst_rect    = None
+                    splash_evolved_rect = None
+                    splash_prevail_rect = None
+                    splash_defeat_rect  = None
+                    splash_tile_rects   = {}
+                    drag_unit           = None
+                    drag_unit_type      = None
+                    highlight_move      = set()
+                    highlight_attack    = set()
+                    action_pending      = None
+                    pending_nation      = None
+                    highlight_muster    = set()
+                    highlight_promo     = set()
+                    sidebar_buttons     = []
+                    evolved_bot_config  = None
+                    evolved_bot_weights = None
+                    bot_memory          = BotMemory(debug=(settings.DEPLOYMENT == 'DEBUG'))
+                    grid.generate_map()
+
+            # ---- Splash: left-click (buttons + drag start) -----------------
             elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                   and game_state == STATE_SPLASH):
                 mx, my = event.pos
-                b_rect, h_rect, i_rect, e_rect = splash_mod.draw_splash(
-                    screen, splash_fonts, p1_nation, mx, my, diplo_splash,
-                    evolved_available=has_evolved_configs)
-                if b_rect.collidepoint(mx, my):
-                    game_mode      = 'vs_bot'
-                    player2.is_bot = True
-                    evolved_bot_config  = None
-                    evolved_bot_weights = None
-                    game_state     = STATE_HUMAN_TURN
-                    game_mode_global = game_mode
-                    print(f"[Mode] Playing vs Bot")
-                elif e_rect and e_rect.collidepoint(mx, my):
-                    game_mode      = 'vs_bot'
-                    player2.is_bot = True
-                    game_state     = STATE_HUMAN_TURN
-                    game_mode_global = game_mode
-                    # Load #1 champion evolved config
-                    _loaded = load_top_configs(_evolved_configs_path)
-                    if _loaded:
-                        evolved_bot_config  = _loaded[0]  # #1 Champion bot
-                        evolved_bot_weights = evolved_bot_config.to_weights_dict()
-                        print(f"\n[Mode] Playing vs Champion Evolved Bot (#{1} from {_evolved_configs_path})")
-                        try:
-                            from evolution import describe_bot
-                            print(describe_bot(evolved_bot_config, rank=1))
-                        except Exception:
-                            pass
-                    else:
+                buttons_en = (len(prevail_picks) == 3 and len(defeat_picks) == 3)
+
+                # Mode / instructions buttons (use rects cached from last draw)
+                if splash_bot_rect is not None:
+                    if buttons_en and splash_bot_rect.collidepoint(mx, my):
+                        player1.prevail_picks = list(prevail_picks)
+                        player1.defeat_picks  = list(defeat_picks)
+                        _sn = list(nation_list)
+                        import random as _rnd2; _rnd2.shuffle(_sn)
+                        player2.prevail_picks = _sn[:3]
+                        player2.defeat_picks  = _sn[3:]
+                        game_mode = 'vs_bot'
+                        player2.is_bot = True
                         evolved_bot_config  = None
                         evolved_bot_weights = None
-                        print(f"[Mode] Playing vs Bot (no evolved configs found)")
-                elif h_rect.collidepoint(mx, my):
-                    game_mode      = 'vs_human'
-                    player2.is_bot = False
-                    evolved_bot_config  = None
-                    evolved_bot_weights = None
-                    game_state     = STATE_HUMAN_TURN
-                    game_mode_global = game_mode
-                    print(f"[Mode] Playing vs Human (hot-seat)")
-                elif i_rect.collidepoint(mx, my):
-                    game_state    = STATE_INSTRUCTIONS
-                    inst_scroll   = 0
+                        game_state     = STATE_HUMAN_TURN
+                        game_mode_global = game_mode
+                        print(f"[Mode] Playing vs Bot")
+                    elif (buttons_en and splash_evolved_rect
+                          and splash_evolved_rect.collidepoint(mx, my)):
+                        player1.prevail_picks = list(prevail_picks)
+                        player1.defeat_picks  = list(defeat_picks)
+                        _sn = list(nation_list)
+                        import random as _rnd3; _rnd3.shuffle(_sn)
+                        player2.prevail_picks = _sn[:3]
+                        player2.defeat_picks  = _sn[3:]
+                        game_mode = 'vs_bot'
+                        player2.is_bot = True
+                        game_state     = STATE_HUMAN_TURN
+                        game_mode_global = game_mode
+                        _loaded = load_top_configs(_evolved_configs_path)
+                        if _loaded:
+                            evolved_bot_config  = _loaded[0]
+                            evolved_bot_weights = evolved_bot_config.to_weights_dict()
+                            print(f"[Mode] Playing vs Champion Evolved Bot")
+                        else:
+                            evolved_bot_config  = None
+                            evolved_bot_weights = None
+                            print(f"[Mode] Playing vs Bot (no evolved configs found)")
+                    elif buttons_en and splash_human_rect.collidepoint(mx, my):
+                        player1.prevail_picks = list(prevail_picks)
+                        player1.defeat_picks  = list(defeat_picks)
+                        _sn = list(nation_list)
+                        import random as _rnd4; _rnd4.shuffle(_sn)
+                        player2.prevail_picks = _sn[:3]
+                        player2.defeat_picks  = _sn[3:]
+                        game_mode = 'vs_human'
+                        player2.is_bot = False
+                        evolved_bot_config  = None
+                        evolved_bot_weights = None
+                        game_state     = STATE_HUMAN_TURN
+                        game_mode_global = game_mode
+                        print(f"[Mode] Playing vs Human (hot-seat)")
+                    elif (splash_inst_rect is not None
+                          and splash_inst_rect.collidepoint(mx, my)):
+                        game_state  = STATE_INSTRUCTIONS
+                        inst_scroll = 0
+
+                # Drag start: check palette tiles
+                if drag_splash_nation is None and splash_tile_rects:
+                    placed = {n.ring_index for n in prevail_picks + defeat_picks}
+                    for ri, trect in splash_tile_rects.items():
+                        if trect.collidepoint(mx, my) and ri not in placed:
+                            drag_splash_nation = NATIONS[ri]
+                            drag_splash_src    = 'palette'
+                            drag_splash_pos    = (mx, my)
+                            break
+
+                # Drag start: from PREVAIL box
+                if drag_splash_nation is None and splash_prevail_rect is not None:
+                    for i, srect in enumerate(splash_mod.get_slot_rects(splash_prevail_rect)):
+                        if srect.collidepoint(mx, my) and i < len(prevail_picks):
+                            drag_splash_nation = prevail_picks.pop(i)
+                            drag_splash_src    = 'prevail'
+                            drag_splash_pos    = (mx, my)
+                            break
+
+                # Drag start: from DEFEAT box
+                if drag_splash_nation is None and splash_defeat_rect is not None:
+                    for i, srect in enumerate(splash_mod.get_slot_rects(splash_defeat_rect)):
+                        if srect.collidepoint(mx, my) and i < len(defeat_picks):
+                            drag_splash_nation = defeat_picks.pop(i)
+                            drag_splash_src    = 'defeat'
+                            drag_splash_pos    = (mx, my)
+                            break
+
+            # ---- Splash: right-click (remove from box) ----------------------
+            elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 3
+                  and game_state == STATE_SPLASH):
+                mx, my = event.pos
+                if splash_prevail_rect is not None:
+                    for i, srect in enumerate(splash_mod.get_slot_rects(splash_prevail_rect)):
+                        if srect.collidepoint(mx, my) and i < len(prevail_picks):
+                            prevail_picks.pop(i)
+                            break
+                if splash_defeat_rect is not None:
+                    for i, srect in enumerate(splash_mod.get_slot_rects(splash_defeat_rect)):
+                        if srect.collidepoint(mx, my) and i < len(defeat_picks):
+                            defeat_picks.pop(i)
+                            break
+
+            # ---- Splash: drag motion ----------------------------------------
+            elif (event.type == pygame.MOUSEMOTION
+                  and game_state == STATE_SPLASH and drag_splash_nation is not None):
+                drag_splash_pos = event.pos
 
             # ---- Instructions screen clicks --------------------------------
             elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
@@ -720,7 +956,7 @@ async def main():
                 s_rect, _ = splash_mod.draw_instructions(
                     screen, splash_fonts, rules_surfs, inst_scroll, mx, my)
                 if s_rect.collidepoint(mx, my):
-                    game_state = STATE_HUMAN_TURN
+                    game_state = STATE_SPLASH
 
             # ---- Mouse wheel (instructions scroll) -------------------------
             elif event.type == pygame.MOUSEWHEEL:
@@ -779,11 +1015,9 @@ async def main():
 
                         active_player.add_to_cooldown(moved_nation)
                         global_cooldown_idx = moved_nation.ring_index
-                        end = check_all_end_conditions(
-                            grid, player1, player2, nation_list)
-                        if end is not None:
-                            game_state = STATE_GAME_OVER
-                            game_result = end
+                        if check_trigger_game_end(grid, nation_list):
+                            game_state  = STATE_GAME_OVER
+                            game_result = True
                         elif game_mode == 'vs_bot':
                             game_state = STATE_BOT_THINKING
                             bot_think_timer = BOT_THINK_MS
@@ -824,11 +1058,9 @@ async def main():
 
                             active_player.add_to_cooldown(moved_nation)
                             global_cooldown_idx = moved_nation.ring_index
-                            end = check_all_end_conditions(
-                                grid, player1, player2, nation_list)
-                            if end is not None:
-                                game_state = STATE_GAME_OVER
-                                game_result = end
+                            if check_trigger_game_end(grid, nation_list):
+                                game_state  = STATE_GAME_OVER
+                                game_result = True
                             elif game_mode == 'vs_bot':
                                 game_state = STATE_BOT_THINKING
                                 bot_think_timer = BOT_THINK_MS
@@ -868,11 +1100,9 @@ async def main():
 
                             active_player.add_to_cooldown(moved_nation)
                             global_cooldown_idx = moved_nation.ring_index
-                            end = check_all_end_conditions(
-                                grid, player1, player2, nation_list)
-                            if end is not None:
-                                game_state = STATE_GAME_OVER
-                                game_result = end
+                            if check_trigger_game_end(grid, nation_list):
+                                game_state  = STATE_GAME_OVER
+                                game_result = True
                             elif game_mode == 'vs_bot':
                                 game_state = STATE_BOT_THINKING
                                 bot_think_timer = BOT_THINK_MS
@@ -901,6 +1131,39 @@ async def main():
                             error_message = (
                                 f"{unit.nation.color_name} is on cooldown — pick another nation.")
                             error_alpha = 255.0
+
+            # ---- Splash: drop nation into box --------------------------------
+            elif (event.type == pygame.MOUSEBUTTONUP and event.button == 1
+                  and game_state == STATE_SPLASH
+                  and drag_splash_nation is not None):
+                mx, my = event.pos
+                dropped = False
+                placed_ri = {n.ring_index for n in prevail_picks + defeat_picks}
+
+                if (splash_prevail_rect is not None
+                        and splash_prevail_rect.collidepoint(mx, my)):
+                    if (len(prevail_picks) < 3
+                            and drag_splash_nation.ring_index not in placed_ri):
+                        prevail_picks.append(drag_splash_nation)
+                        dropped = True
+
+                elif (splash_defeat_rect is not None
+                      and splash_defeat_rect.collidepoint(mx, my)):
+                    if (len(defeat_picks) < 3
+                            and drag_splash_nation.ring_index not in placed_ri):
+                        defeat_picks.append(drag_splash_nation)
+                        dropped = True
+
+                if not dropped:
+                    # Return to source box if it was dragged from one
+                    if drag_splash_src == 'prevail':
+                        prevail_picks.append(drag_splash_nation)
+                    elif drag_splash_src == 'defeat':
+                        defeat_picks.append(drag_splash_nation)
+                    # If from palette: just cancel (no re-add needed)
+
+                drag_splash_nation = None
+                drag_splash_src    = None
 
             # ---- Drag motion -----------------------------------------------
             elif event.type == pygame.MOUSEMOTION and drag_unit:
@@ -1002,11 +1265,9 @@ async def main():
                     active_player = players[current_player_idx]
                     active_player.add_to_cooldown(moved_nation)
                     global_cooldown_idx = moved_nation.ring_index
-                    end = check_all_end_conditions(
-                        grid, player1, player2, nation_list)
-                    if end is not None:
+                    if check_trigger_game_end(grid, nation_list):
                         game_state  = STATE_GAME_OVER
-                        game_result = end
+                        game_result = True
                     elif game_mode == 'vs_bot':
                         game_state      = STATE_BOT_THINKING
                         bot_think_timer = BOT_THINK_MS
@@ -1030,11 +1291,9 @@ async def main():
                     global_cooldown_idx = moved_nation.ring_index
                     if settings.DEPLOYMENT == 'DEBUG':
                         print(f"[Network] Received move: {incoming}")
-                    end = check_all_end_conditions(
-                        grid, player1, player2, nation_list)
-                    if end is not None:
+                    if check_trigger_game_end(grid, nation_list):
                         game_state  = STATE_GAME_OVER
-                        game_result = end
+                        game_result = True
                     else:
                         game_state = STATE_HUMAN_TURN
                 elif settings.DEPLOYMENT == 'DEBUG':
@@ -1107,11 +1366,9 @@ async def main():
                 bot_flash_hex        = None
                 bot_flash_button_key = None
 
-                end = check_all_end_conditions(
-                    grid, player1, player2, nation_list)
-                if end is not None:
+                if check_trigger_game_end(grid, nation_list):
                     game_state  = STATE_GAME_OVER
-                    game_result = end
+                    game_result = True
                 else:
                     game_state         = STATE_HUMAN_TURN
                     current_player_idx = 0
@@ -1127,9 +1384,18 @@ async def main():
         splash_mx, splash_my = pygame.mouse.get_pos()
 
         if game_state == STATE_SPLASH:
-            splash_mod.draw_splash(screen, splash_fonts, p1_nation,
-                                   splash_mx, splash_my, diplo_splash,
-                                   evolved_available=has_evolved_configs)
+            _buttons_en = (len(prevail_picks) == 3 and len(defeat_picks) == 3)
+            _splash_result = splash_mod.draw_splash(
+                screen, splash_fonts, p1_nation,
+                splash_mx, splash_my, diplo_splash,
+                evolved_available=has_evolved_configs,
+                prevail_nations=prevail_picks,
+                defeat_nations=defeat_picks,
+                drag_nation=drag_splash_nation,
+                drag_pos=drag_splash_pos if drag_splash_nation else None,
+                buttons_enabled=_buttons_en)
+            (splash_bot_rect, splash_human_rect, splash_inst_rect, splash_evolved_rect,
+             splash_prevail_rect, splash_defeat_rect, splash_tile_rects) = _splash_result
 
         elif game_state == STATE_INSTRUCTIONS:
             _, inst_max_scroll = splash_mod.draw_instructions(
@@ -1176,6 +1442,7 @@ async def main():
                          display_player, current_player, turn_number,
                          game_state, game_mode)
             draw_diplo_panel(screen, diplo_img, font_small)
+            draw_predictions_panel(screen, font_small, player1)
             draw_cooldown_panel(screen, font_small, players, global_cooldown_idx)
             draw_error(screen, font_small, error_message, error_alpha)
 
@@ -1223,7 +1490,7 @@ async def main():
                             break
 
             if game_state == STATE_GAME_OVER:
-                draw_game_over(screen, font_large, font_small, game_result)
+                draw_score_screen(screen, player1, player2, nation_list)
 
         pygame.display.flip()
         await asyncio.sleep(0)

@@ -14,13 +14,19 @@ class Player:
         cooldown      : Ring indices of the last 2 nations this player moved
                         (most recent first).  A player cannot move a nation
                         that is in their cooldown list.
+        prevail_picks : Up to 3 Nations the player predicts will survive
+                        (sovereign still alive at game end).
+        defeat_picks  : Up to 3 Nations the player predicts will be defeated
+                        (sovereign destroyed at game end).
     """
 
     def __init__(self, secret_nation, is_bot: bool = False, player_id: str = 'player1'):
-        self.secret_nation = secret_nation
-        self.is_bot        = is_bot
-        self.player_id     = player_id    # 'player1' or 'player2'
-        self.cooldown: list[int] = []     # at most 2 entries
+        self.secret_nation  = secret_nation
+        self.is_bot         = is_bot
+        self.player_id      = player_id    # 'player1' or 'player2'
+        self.cooldown: list[int] = []      # at most 2 entries
+        self.prevail_picks: list = []      # list[Nation], max 3
+        self.defeat_picks:  list = []      # list[Nation], max 3
 
     # -----------------------------------------------------------------------
     # Cooldown management
@@ -35,6 +41,24 @@ class Player:
     def nation_on_cooldown(self, nation) -> bool:
         """True if this player is forbidden from moving the given nation."""
         return nation.ring_index in self.cooldown
+
+    # -----------------------------------------------------------------------
+    # Prediction scoring
+    # -----------------------------------------------------------------------
+
+    def compute_score(self) -> int:
+        """Score based on pre-game predictions at game end.
+
+        Position weights (same for both PREVAIL and DEFEAT boxes):
+          slot 0 (top / placed first)  : 3 pts if correct
+          slot 1                       : 2 pts if correct
+          slot 2 (bottom / placed last): 1 pt  if correct
+        Maximum 12 points total (6 per box).
+        """
+        _weights = (3, 2, 1)
+        score  = sum(w for w, n in zip(_weights, self.prevail_picks) if not n.is_ghost)
+        score += sum(w for w, n in zip(_weights, self.defeat_picks)  if n.is_ghost)
+        return score
 
     # -----------------------------------------------------------------------
     # Win / loss helpers

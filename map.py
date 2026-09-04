@@ -990,6 +990,10 @@ class MapGrid:
         """Player loses immediately if their own secret nation becomes a ghost."""
         return player.secret_nation.is_ghost
 
+    def count_ghost_nations(self, all_nations) -> int:
+        """Return the number of nations whose sovereign has been destroyed."""
+        return sum(1 for n in all_nations if n.is_ghost)
+
     # =======================================================================
     # Rendering helpers
     # =======================================================================
@@ -1076,8 +1080,8 @@ class MapGrid:
                 self.draw_hex_polygon(screen, cx, cy, w-2, h-2, (220, 55, 55), 3)
 
         # -- Units -----------------------------------------------------------
-        UNIT_SIZE    = 44
-        UNIT_SPACING = 52
+        UNIT_SIZE    = 40
+        UNIT_SPACING = 47
 
         for (q, r) in self.tiles:
             cx, cy = self.screen_pos(q, r)

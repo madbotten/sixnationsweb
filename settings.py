@@ -5,7 +5,7 @@ import math
 
 # -- Window -------------------------------------------------------------------
 SCREEN_WIDTH  = 2000
-SCREEN_HEIGHT = 1400
+SCREEN_HEIGHT = 1380
 WINDOW_TITLE  = "Six Nations"
 FPS           = 60
 
@@ -13,15 +13,15 @@ FPS           = 60
 # HEX_WIDTH  = vertex-to-vertex horizontal distance.
 # HEX_HEIGHT = vertex-to-vertex vertical distance.
 # Proper flat-top ratio: HEX_HEIGHT = HEX_WIDTH * sqrt(3) / 2
-HEX_WIDTH  = 200
-HEX_HEIGHT = int(HEX_WIDTH * math.sqrt(3) / 2)   # ~173 px
+HEX_WIDTH  = 180
+HEX_HEIGHT = int(HEX_WIDTH * math.sqrt(3) / 2)   # ~156 px  (90% of original 200/173)
 
 # Fixed center of the map on screen (no scroll or zoom).
 MAP_CENTER_X = 1000
-MAP_CENTER_Y = 735
+MAP_CENTER_Y = 715
 
 # -- UI regions ---------------------------------------------------------------
-TOP_BAR_HEIGHT  = 70   # Top status bar height
+TOP_BAR_HEIGHT  = 60   # Top status bar height
 DIPLO_RING_SIZE = 300  # Square side for DiplomacyRing.jpg panel (top-right)
 COOLDOWN_PANEL_W = 300
 COOLDOWN_PANEL_H = 150
@@ -37,7 +37,14 @@ NATION_COLORS = [
     (210,  45,  65),   # 5  Crimson
 ]
 
-NATION_NAMES = ["Yellow", "Green", "Sky Blue", "Cobalt", "Magenta", "Crimson"]
+NATION_NAMES = [
+    "Yilerond",  # Yellow
+    "Galland",   # Green
+    "Beldrin",   # Blue
+    "Crestmoor", # Cobalt
+    "Malkor",    # Magenta
+    "Ravengard"  # Red
+]
 
 # Dark tinted fills for starting hex interiors (18% blend over dark bg).
 NATION_HEX_FILLS = [
