@@ -535,18 +535,20 @@ def compute_sidebar_buttons(grid, eligible_nations):
         for i, icon_type in enumerate(icons):
             offset_x = (i - (len(icons) - 1) / 2.0) * GAP
             bx = int(max(MARGIN, min(settings.SCREEN_WIDTH - MARGIN, px + offset_x)))
+            btn_size = UNIT_SIZE if icon_type in ('promote_knight', 'recruit') else ICON_SIZE
             buttons.append({
                 'type':   icon_type,
                 'nation': nation,
                 'pos':    (bx, int(py)),
-                'size':   ICON_SIZE,
+                'size':   btn_size,
                 'key':    (icon_type, ri),
             })
 
     return buttons
 
 
-def draw_sidebar_buttons(screen, grid, buttons, action_pending, pending_nation, font_tiny):
+def draw_sidebar_buttons(screen, grid, buttons, action_pending, pending_nation, font_tiny,
+                         drag_knight_nation=None, drag_recruit_nation=None):
     """Draw recruit/promote buttons outside each nation's corner hex."""
     w, h = grid.hex_width, grid.hex_height
 
@@ -557,6 +559,20 @@ def draw_sidebar_buttons(screen, grid, buttons, action_pending, pending_nation, 
         btype    = btn['type']
         c        = nation.color_rgb
         radius   = size // 2
+
+        if btype == 'recruit':
+            # Instead of the little circle button, show an ordinary army icon there
+            if drag_recruit_nation is not None and drag_recruit_nation.color_name == nation.color_name:
+                continue
+            grid.draw_unit_icon(screen, bx, by, 'army', c, size=UNIT_SIZE)
+            continue
+
+        if btype == 'promote_knight':
+            # Instead of the little circle button, show an ordinary knight icon there
+            if drag_knight_nation is not None and drag_knight_nation.color_name == nation.color_name:
+                continue
+            grid.draw_unit_icon(screen, bx, by, 'knight', c, size=UNIT_SIZE)
+            continue
 
         active = (action_pending == btype
                   and pending_nation is not None
@@ -571,22 +587,14 @@ def draw_sidebar_buttons(screen, grid, buttons, action_pending, pending_nation, 
         border_width = 3 if active else 1
         pygame.draw.circle(screen, border_col, (bx, by), radius, border_width)
 
-        # Symbol: army (shield), champion (sword), or knight (helmet) in white
+        # Symbol: champion (sword) in white
         s = int(size * 0.35)
         sym_col = (255, 255, 255)
 
-        if btype == 'recruit':
-            icon_h = int(s * 2.0)
-            sprite_name = 'army.png'
-            label = "REC"
-        elif btype == 'promote':
+        if btype == 'promote':
             icon_h = int(s * 2.0)
             sprite_name = 'champion.png'
             label = "PRO"
-        elif btype == 'promote_knight':
-            icon_h = int(s * 2.0)
-            sprite_name = 'knight.png'
-            label = "KNT"
         else:
             sprite_name = None
             label = ""
@@ -654,7 +662,9 @@ def _apply_diplomacy_move(grid, panel, action: DiplomacyAction, all_nations):
         new_stance = 'neutral'
     try:
         from map import reconcile_stance_change
-        reconcile_stance_change(grid, flag, box, new_stance, all_nations)
+        events = reconcile_stance_change(grid, flag, box, new_stance, all_nations)
+        for ev in events:
+            print(f"[Diplomacy Reconciliation] {ev}")
     except (ImportError, AttributeError):
         pass
 
@@ -714,11 +724,13 @@ async def main():
     grid.generate_map()
 
     # Drag state (game board)
-    drag_unit      = None
-    drag_unit_type = None
-    highlight_move   = set()
-    highlight_attack = set()
-    drag_mouse_pos   = (0, 0)
+    drag_unit           = None
+    drag_unit_type      = None
+    drag_knight_nation  = None
+    drag_recruit_nation = None
+    highlight_move      = set()
+    highlight_attack    = set()
+    drag_mouse_pos      = (0, 0)
 
     # Splash prediction picks and drag state
     prevail_picks       = []    # list[Nation], max 3
@@ -832,6 +844,8 @@ async def main():
                     splash_tile_rects   = {}
                     drag_unit           = None
                     drag_unit_type      = None
+                    drag_knight_nation  = None
+                    drag_recruit_nation = None
                     highlight_move      = set()
                     highlight_attack    = set()
                     action_pending      = None
@@ -985,10 +999,24 @@ async def main():
                 eligible = get_eligible_nations(
                     active_player, global_cooldown_name, nation_list)
 
-                # --- Sidebar button click? ---
+                # --- Sidebar button click / drag start ---
                 btn = get_sidebar_button_at(sidebar_buttons, mx, my)
                 if btn:
-                    if (action_pending == btn['type']
+                    if btn['type'] == 'recruit':
+                        # Drag-and-drop army recruitment: start drag immediately
+                        drag_recruit_nation = btn['nation']
+                        drag_mouse_pos = (mx, my)
+                        highlight_muster = set(grid.get_recruit_hexes(drag_recruit_nation))
+                        action_pending = pending_nation = None
+                        highlight_promo = set()
+                    elif btn['type'] == 'promote_knight':
+                        # Drag-and-drop knight promotion: start drag immediately
+                        drag_knight_nation = btn['nation']
+                        drag_mouse_pos = (mx, my)
+                        highlight_promo = set(grid.get_promote_knight_hexes(drag_knight_nation))
+                        action_pending = pending_nation = None
+                        highlight_muster = set()
+                    elif (action_pending == btn['type']
                             and pending_nation is not None
                             and pending_nation.color_name == btn['nation'].color_name):
                         # Click same button again → cancel
@@ -999,53 +1027,9 @@ async def main():
                         pending_nation   = btn['nation']
                         highlight_muster = set()
                         highlight_promo  = set()
-                        if action_pending == 'recruit':
-                            highlight_muster = set(grid.get_recruit_hexes(pending_nation))
-                        elif action_pending == 'promote':
+                        if action_pending == 'promote':
                             highlight_promo  = set(grid.get_promote_hexes(pending_nation))
-                        elif action_pending == 'promote_knight':
-                            highlight_promo  = set(grid.get_promote_knight_hexes(pending_nation))
 
-                # --- Recruit placement ---
-                elif action_pending == 'recruit':
-                    tq, tr = grid.screen_to_axial(mx, my)
-                    if (tq, tr) in highlight_muster:
-                        grid.recruit_army(pending_nation, tq, tr)
-                        moved_nation     = pending_nation
-                        _move_data = moves_mod.serialize_move(
-                            'recruit', pending_nation.color_name,
-                            to_hex=(tq, tr))
-                        on_local_move_made(_move_data)
-                        if game_mode == 'vs_bot':
-                            bot_memory.record(turn_number, pending_nation,
-                                              None, None, (tq, tr), 'recruit')
-                        if settings.DEPLOYMENT == 'DEBUG':
-                            print(f"[{active_player.player_id} recruit] T{turn_number} {pending_nation.color_name} at {(tq,tr)}  {_move_data}")
-                        if game_mode == 'vs_bot':
-                            bot_memory.add_score(pending_nation.color_name, 2, settings.NATION_NAMES)
-                        action_pending   = pending_nation = None
-                        highlight_muster = highlight_promo = set()
-
-                        active_player.add_to_cooldown(moved_nation)
-                        global_cooldown_name = moved_nation.color_name
-                        dipl_panel.tick_cooldowns()
-                        if check_trigger_game_end(grid, nation_list):
-                            game_state  = STATE_GAME_OVER
-                            game_result = True
-                        elif game_mode == 'vs_bot':
-                            game_state = STATE_BOT_THINKING
-                            bot_think_timer = BOT_THINK_MS
-                            current_player_idx = 1
-                        elif game_mode == 'network':
-                            game_state = STATE_WAITING_OPPONENT
-                            turn_number += 1
-                        else:
-                            current_player_idx = 1 - current_player_idx
-                            turn_number += 1
-                    else:
-                        # Click outside valid hexes → cancel
-                        action_pending = pending_nation = None
-                        highlight_muster = highlight_promo = set()
 
                 # --- Promote selection (Champion) ---
                 elif action_pending == 'promote':
@@ -1185,7 +1169,7 @@ async def main():
             elif event.type == pygame.MOUSEMOTION:
                 if game_state == STATE_HUMAN_TURN:
                     dipl_panel.on_mousemotion(event.pos)
-                if drag_unit:
+                if drag_unit or drag_knight_nation or drag_recruit_nation:
                     drag_mouse_pos = event.pos
 
             # ---- Human diplomacy drop --------------------------------------
@@ -1196,6 +1180,99 @@ async def main():
                     _apply_diplomacy_move(grid, dipl_panel, action, nation_list)
                     dipl_panel.tick_cooldowns()
 
+                    if check_trigger_game_end(grid, nation_list):
+                        game_state  = STATE_GAME_OVER
+                        game_result = True
+                    elif game_mode == 'vs_bot':
+                        game_state      = STATE_BOT_THINKING
+                        bot_think_timer = BOT_THINK_MS
+                        current_player_idx = 1
+                    elif game_mode == 'network':
+                        game_state = STATE_WAITING_OPPONENT
+                        turn_number += 1
+                    else:
+                        current_player_idx = 1 - current_player_idx
+                        turn_number += 1
+
+            # ---- Recruit drag drop -----------------------------------------
+            elif (event.type == pygame.MOUSEBUTTONUP and event.button == 1
+                  and drag_recruit_nation and game_state == STATE_HUMAN_TURN):
+                mx, my = event.pos
+                tq, tr = grid.screen_to_axial(mx, my)
+                moved_nation = None
+
+                if (tq, tr) in highlight_muster:
+                    grid.recruit_army(drag_recruit_nation, tq, tr)
+                    moved_nation = drag_recruit_nation
+                    _move_data = moves_mod.serialize_move(
+                        'recruit', moved_nation.color_name,
+                        to_hex=(tq, tr))
+                    on_local_move_made(_move_data)
+                    if game_mode == 'vs_bot':
+                        bot_memory.record(turn_number, moved_nation,
+                                          None, None, (tq, tr), 'recruit')
+                    if settings.DEPLOYMENT == 'DEBUG':
+                        print(f"[{active_player.player_id} recruit] T{turn_number} {moved_nation.color_name} at {(tq,tr)}  {_move_data}")
+                    if game_mode == 'vs_bot':
+                        bot_memory.add_score(moved_nation.color_name, 2, settings.NATION_NAMES)
+
+                # Always clear recruit drag state and highlights
+                drag_recruit_nation = None
+                highlight_muster = set()
+
+                if moved_nation:
+                    active_player = players[current_player_idx]
+                    active_player.add_to_cooldown(moved_nation)
+                    global_cooldown_name = moved_nation.color_name
+                    dipl_panel.tick_cooldowns()
+                    if check_trigger_game_end(grid, nation_list):
+                        game_state  = STATE_GAME_OVER
+                        game_result = True
+                    elif game_mode == 'vs_bot':
+                        game_state      = STATE_BOT_THINKING
+                        bot_think_timer = BOT_THINK_MS
+                        current_player_idx = 1
+                    elif game_mode == 'network':
+                        game_state = STATE_WAITING_OPPONENT
+                        turn_number += 1
+                    else:
+                        current_player_idx = 1 - current_player_idx
+                        turn_number += 1
+
+            # ---- Knight promo drag drop ------------------------------------
+            elif (event.type == pygame.MOUSEBUTTONUP and event.button == 1
+                  and drag_knight_nation and game_state == STATE_HUMAN_TURN):
+                mx, my = event.pos
+                tq, tr = grid.screen_to_axial(mx, my)
+                moved_nation = None
+
+                if (tq, tr) in highlight_promo:
+                    armies_here = [a for a in grid.armies.get((tq, tr), [])
+                                   if a.nation.color_name == drag_knight_nation.color_name]
+                    if armies_here:
+                        grid.promote_to_knight(armies_here[0])
+                        moved_nation = drag_knight_nation
+                        _move_data = moves_mod.serialize_move(
+                            'promote_knight', moved_nation.color_name,
+                            to_hex=(tq, tr))
+                        on_local_move_made(_move_data)
+                        if game_mode == 'vs_bot':
+                            bot_memory.record(turn_number, moved_nation,
+                                              None, (tq, tr), None, 'promote_knight')
+                        if settings.DEPLOYMENT == 'DEBUG':
+                            print(f"[{active_player.player_id} promote knight] T{turn_number} {moved_nation.color_name} at {(tq,tr)}  {_move_data}")
+                        if game_mode == 'vs_bot':
+                            bot_memory.add_score(moved_nation.color_name, 2, settings.NATION_NAMES)
+
+                # Always clear knight drag state and highlights
+                drag_knight_nation = None
+                highlight_promo = set()
+
+                if moved_nation:
+                    active_player = players[current_player_idx]
+                    active_player.add_to_cooldown(moved_nation)
+                    global_cooldown_name = moved_nation.color_name
+                    dipl_panel.tick_cooldowns()
                     if check_trigger_game_end(grid, nation_list):
                         game_state  = STATE_GAME_OVER
                         game_result = True
@@ -1478,7 +1555,9 @@ async def main():
             sidebar_buttons = compute_sidebar_buttons(grid, eligible_now)
             font_tiny = util.get_font(11)
             draw_sidebar_buttons(screen, grid, sidebar_buttons,
-                                 action_pending, pending_nation, font_tiny)
+                                 action_pending, pending_nation, font_tiny,
+                                 drag_knight_nation=drag_knight_nation,
+                                 drag_recruit_nation=drag_recruit_nation)
 
             # Draw Diplomacy Panel on right sidebar
             dipl_panel.draw(screen, splash_fonts)
@@ -1507,6 +1586,12 @@ async def main():
             if drag_unit and drag_unit_type:
                 draw_drag_ghost(screen, drag_unit_type,
                                 drag_unit.nation.color_rgb, *drag_mouse_pos)
+            elif drag_knight_nation:
+                draw_drag_ghost(screen, 'knight',
+                                drag_knight_nation.color_rgb, *drag_mouse_pos)
+            elif drag_recruit_nation:
+                draw_drag_ghost(screen, 'army',
+                                drag_recruit_nation.color_rgb, *drag_mouse_pos)
 
             # Bot animation flash — bright pulsing ring on the relevant hex / button
             if game_state in (STATE_BOT_PRE_FLASH, STATE_BOT_POST_FLASH):

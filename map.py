@@ -1003,6 +1003,9 @@ class MapGrid:
         """Return the number of nations whose sovereign has been destroyed."""
         return sum(1 for n in all_nations if n.is_ghost)
 
+    def reconcile_stance_change(self, nation_a, nation_b, new_stance: str, all_nations: list):
+        return reconcile_stance_change(self, nation_a, nation_b, new_stance, all_nations)
+
     # =======================================================================
     # Rendering helpers
     # =======================================================================
@@ -1110,3 +1113,196 @@ class MapGrid:
                 self.draw_unit_icon(screen, ux, cy, utype,
                                     unit.nation.color_rgb, UNIT_SIZE,
                                     frozen=frozen)
+
+
+# ===========================================================================
+# Diplomacy Reconcile Functions
+# ===========================================================================
+
+def _remove_unit(grid, unit):
+    """Remove a unit of any type from the grid."""
+    from armies import Army
+    from champions import Champion, Sovereign
+    from knights import Knight
+    if isinstance(unit, Champion):
+        grid.remove_champion(unit)
+    elif isinstance(unit, Sovereign):
+        grid.remove_sovereign(unit)
+    elif isinstance(unit, Knight):
+        grid.remove_knight(unit)
+    elif isinstance(unit, Army):
+        grid.remove_army(unit)
+
+
+def _resolve_declare_war_combat(grid, nation_a, nation_b, all_nations):
+    """
+    Resolve combat on all hexes containing units of both nation_a and nation_b
+    when war is declared between them.
+
+    Rules:
+    1. If BOTH Champion A and Champion B are present:
+       - With a Sovereign: both champions are destroyed, sovereign survives.
+       - One champion supported by Army/Knight: unsupported champion dies,
+         supporting army/knight is destroyed, supported champion survives.
+       - Both unsupported: both champions kill each other.
+    2. If only ONE Champion is present (e.g. Champion A, no Champion B):
+       - With enemy Sovereign B: Sovereign B is killed (ghost nation), Champion A survives.
+       - With enemy Army/Knight B: Army/Knight B is destroyed, Champion A survives.
+       (Symmetrically for Champion B with units of A).
+    3. If NO Champions are present:
+       - Army/Knight with enemy Sovereign: Sovereign is killed (ghost nation),
+         Army/Knight survives.
+    """
+    events = []
+    sovereign_killed = False
+
+    coords_to_check = set()
+    for coord in grid.tiles:
+        u_list = (grid.sovereigns.get(coord, []) +
+                  grid.champions.get(coord, []) +
+                  grid.knights.get(coord, []) +
+                  grid.armies.get(coord, []))
+        nations_here = {u.nation for u in u_list}
+        if nation_a in nations_here and nation_b in nations_here:
+            coords_to_check.add(coord)
+
+    for q, r in coords_to_check:
+        champs_a = [c for c in grid.champions.get((q, r), []) if c.nation is nation_a]
+        champs_b = [c for c in grid.champions.get((q, r), []) if c.nation is nation_b]
+
+        armies_a = ([a for a in grid.armies.get((q, r), []) if a.nation is nation_a] +
+                    [k for k in grid.knights.get((q, r), []) if k.nation is nation_a])
+        armies_b = ([a for a in grid.armies.get((q, r), []) if a.nation is nation_b] +
+                    [k for k in grid.knights.get((q, r), []) if k.nation is nation_b])
+
+        sovs_a = [s for s in grid.sovereigns.get((q, r), []) if s.nation is nation_a]
+        sovs_b = [s for s in grid.sovereigns.get((q, r), []) if s.nation is nation_b]
+        all_sovs = grid.sovereigns.get((q, r), [])
+
+        # -------------------------------------------------------------------
+        # Case 1: Both Champion A and Champion B are present
+        # -------------------------------------------------------------------
+        if champs_a and champs_b:
+            c_a = champs_a[0]
+            c_b = champs_b[0]
+
+            if all_sovs:
+                # Two now-enemy champions together with a sovereign: both destroyed
+                grid.remove_champion(c_a)
+                grid.remove_champion(c_b)
+                events.append(f"Champions of {nation_a.color_name} and {nation_b.color_name} destroyed at ({q},{r}) in sovereign's presence.")
+            else:
+                supp_a = armies_a[0] if armies_a else None
+                supp_b = armies_b[0] if armies_b else None
+
+                if supp_a and not supp_b:
+                    grid.remove_champion(c_b)
+                    _remove_unit(grid, supp_a)
+                    events.append(f"{nation_b.color_name} champion destroyed at ({q},{r}); {nation_a.color_name} champion survives (supporting army lost).")
+                elif supp_b and not supp_a:
+                    grid.remove_champion(c_a)
+                    _remove_unit(grid, supp_b)
+                    events.append(f"{nation_a.color_name} champion destroyed at ({q},{r}); {nation_b.color_name} champion survives (supporting army lost).")
+                else:
+                    # Neither supported (or theoretically both, though armies can't share hexes)
+                    grid.remove_champion(c_a)
+                    grid.remove_champion(c_b)
+                    events.append(f"Both {nation_a.color_name} and {nation_b.color_name} champions destroyed each other at ({q},{r}).")
+
+        # -------------------------------------------------------------------
+        # Case 2: Only Champion A is present (no Champion B)
+        # -------------------------------------------------------------------
+        elif champs_a and not champs_b:
+            c_a = champs_a[0]
+            if sovs_b:
+                for s in list(sovs_b):
+                    grid.remove_sovereign(s)
+                    sovereign_killed = True
+                    events.append(f"{nation_b.color_name} sovereign killed by {nation_a.color_name} champion at ({q},{r})!")
+            if armies_b:
+                for a in list(armies_b):
+                    _remove_unit(grid, a)
+                    events.append(f"{nation_b.color_name} army destroyed by {nation_a.color_name} champion at ({q},{r}).")
+
+        # -------------------------------------------------------------------
+        # Case 3: Only Champion B is present (no Champion A)
+        # -------------------------------------------------------------------
+        elif champs_b and not champs_a:
+            c_b = champs_b[0]
+            if sovs_a:
+                for s in list(sovs_a):
+                    grid.remove_sovereign(s)
+                    sovereign_killed = True
+                    events.append(f"{nation_a.color_name} sovereign killed by {nation_b.color_name} champion at ({q},{r})!")
+            if armies_a:
+                for a in list(armies_a):
+                    _remove_unit(grid, a)
+                    events.append(f"{nation_a.color_name} army destroyed by {nation_b.color_name} champion at ({q},{r}).")
+
+        # -------------------------------------------------------------------
+        # Case 4: No champions present -- Army/Knight vs Sovereign
+        # -------------------------------------------------------------------
+        else:
+            if armies_a and sovs_b:
+                for s in list(sovs_b):
+                    grid.remove_sovereign(s)
+                    sovereign_killed = True
+                    events.append(f"{nation_b.color_name} sovereign killed by {nation_a.color_name} army at ({q},{r})!")
+            if armies_b and sovs_a:
+                for s in list(sovs_a):
+                    grid.remove_sovereign(s)
+                    sovereign_killed = True
+                    events.append(f"{nation_a.color_name} sovereign killed by {nation_b.color_name} army at ({q},{r})!")
+
+    # Check ghost nations if any sovereign was eliminated
+    if sovereign_killed:
+        grid.check_ghost_nations(all_nations)
+
+    return events
+
+
+def _reconcile_territory_seizure(grid, nation_a, nation_b):
+    """
+    Reconcile territory control between nation_a and nation_b after combat:
+    - If a tile is currently controlled by nation_b, but only nation_a units occupy it:
+      nation_a seizes control.
+    - If a tile is currently controlled by nation_a, but only nation_b units occupy it:
+      nation_b seizes control.
+    """
+    seizures = []
+    for coord in grid.tiles:
+        curr_owner = grid.tile_control.get(coord)
+        if curr_owner not in (nation_a.color_name, nation_b.color_name):
+            continue
+
+        units_here = (grid.sovereigns.get(coord, []) +
+                      grid.champions.get(coord, []) +
+                      grid.knights.get(coord, []) +
+                      grid.armies.get(coord, []))
+
+        has_a = any(u.nation is nation_a for u in units_here)
+        has_b = any(u.nation is nation_b for u in units_here)
+
+        if curr_owner == nation_b.color_name and has_a and not has_b:
+            grid.tile_control[coord] = nation_a.color_name
+            seizures.append(f"{nation_a.color_name} seized ({coord[0]},{coord[1]}) from {nation_b.color_name}.")
+        elif curr_owner == nation_a.color_name and has_b and not has_a:
+            grid.tile_control[coord] = nation_b.color_name
+            seizures.append(f"{nation_b.color_name} seized ({coord[0]},{coord[1]}) from {nation_a.color_name}.")
+
+    return seizures
+
+
+def reconcile_stance_change(grid, nation_a, nation_b, new_stance: str, all_nations: list):
+    """
+    Reconcile map units and territory when stance changes between nation_a and nation_b.
+    - 'enemy': combat resolution executed first, followed by territory seizure.
+    - 'ally' / 'neutral': no combat or seizure; units coexist peacefully.
+    """
+    if new_stance != 'enemy':
+        return []
+
+    events = _resolve_declare_war_combat(grid, nation_a, nation_b, all_nations)
+    seizures = _reconcile_territory_seizure(grid, nation_a, nation_b)
+    events.extend(seizures)
+    return events

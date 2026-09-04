@@ -281,7 +281,7 @@ def build_rules_surfaces(raw_text, font_h, font_b, max_width):
 # Public drawing functions
 # ---------------------------------------------------------------------------
 
-def draw_splash(screen, fonts, human_nation, mx, my,
+def draw_splash(screen, fonts, human_nation=None, mx=0, my=0,
                 evolved_available=False,
                 prevail_nations=None, defeat_nations=None,
                 drag_nation=None, drag_pos=None,
@@ -304,7 +304,7 @@ def draw_splash(screen, fonts, human_nation, mx, my,
 
     W  = settings.SCREEN_WIDTH
     H  = settings.SCREEN_HEIGHT
-    nc = human_nation.color_rgb
+    nc = human_nation.color_rgb if human_nation is not None else (200, 180, 100)
 
     screen.fill(settings.COLOR_BACKGROUND)
     _draw_hex_bg(screen, nc, W, H)
@@ -326,17 +326,16 @@ def draw_splash(screen, fonts, human_nation, mx, my,
     title_surf = fonts['title'].render("SIX NATIONS", True, (228, 234, 255))
     screen.blit(title_surf, title_surf.get_rect(centerx=W // 2, centery=50))
 
-    line_col = tuple(min(255, int(v * 0.9 + 30)) for v in nc)
-    lw = 380
+    line_col = (180, 195, 230)
+    lw = 420
     pygame.draw.rect(screen, line_col, (W // 2 - lw // 2, 88, lw, 2), border_radius=1)
 
-    sub_surf  = fonts['small'].render("Your secret faction:", True, (128, 142, 185))
-    name_surf = fonts['large'].render(human_nation.color_name.upper(), True, nc)
-    screen.blit(sub_surf,  sub_surf.get_rect(centerx=W // 2, centery=110))
-    name_rect = name_surf.get_rect(centerx=W // 2, centery=142)
-    screen.blit(name_surf, name_rect)
-    _draw_crown(screen, name_rect.left - 28, 142, 13, nc)
-    _draw_crown(screen, name_rect.right + 28, 142, 13, nc)
+    sub_surf  = fonts['large'].render("Choose your secret goals", True, (228, 234, 255))
+    sub_rect  = sub_surf.get_rect(centerx=W // 2, centery=125)
+    screen.blit(sub_surf, sub_rect)
+    crown_col = (212, 175, 55)
+    _draw_crown(screen, sub_rect.left - 28, 125, 13, crown_col)
+    _draw_crown(screen, sub_rect.right + 28, 125, 13, crown_col)
 
     pygame.draw.line(screen, settings.COLOR_HEX_BORDER, (0, TITLE_H), (W, TITLE_H), 1)
 
