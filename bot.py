@@ -425,14 +425,14 @@ def _score_move(grid, unit, tq, tr, enemy_name_set, allied_name_set,
 
     if isinstance(unit, Sovereign):
         if is_allied:
-            if grid.is_trapped(unit):
-                score += 350 * w_protect
-            elif not grid.is_supported(unit):
+            if not grid.is_supported(unit):
                 allies_here = sum(
                     1 for lst in grid.get_units_at(tq, tr).values()
                     for u in lst if not u.nation.is_enemy(nation) and u is not unit
                 )
-                score += (250 if allies_here > 0 else 25) * w_protect
+                score += (350 if allies_here > 0 else 50) * w_protect
+            elif grid.is_trapped(unit):
+                score += 350 * w_protect
         else:
             # Non-allied (target) sovereign — push toward center & threats
             curr_threats = sum(
@@ -522,8 +522,10 @@ def _score_move(grid, unit, tq, tr, enemy_name_set, allied_name_set,
             else:
                 score += 10.0 * w_territory
         elif curr_owner != unit_name:
-            from factions import NATIONS_BY_NAME
-            owner_nation = NATIONS_BY_NAME[curr_owner]
+            owner_nation = grid.get_nation(curr_owner) if hasattr(grid, 'get_nation') else None
+            if owner_nation is None:
+                from factions import NATIONS_BY_NAME
+                owner_nation = NATIONS_BY_NAME[curr_owner]
             if nation.is_enemy(owner_nation) and isinstance(unit, (Army, Knight, Champion)):
                 # Seizing enemy territory
                 if is_allied:
@@ -568,7 +570,7 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
         allied_name_set = set(bot_goals.prevail_goals) | {bot_ri}
         enemy_name_set  = set(bot_goals.defeat_goals) | {n.color_name for n in bot_secret.enemy_nations(nation_list)}
     else:
-        allied_name_set = {n.color_name for n in bot_secret.allies} | {bot_ri}
+        allied_name_set = {n.color_name for n in nation_list if not bot_secret.is_enemy(n)}
         enemy_name_set  = {n.color_name for n in bot_secret.enemy_nations(nation_list)}
 
     w_muster = (weights or {}).get('muster_promote', 1.0)
@@ -591,7 +593,7 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
                                 allied_name_set, weights=weights)
                 actions.append((s, 'move', unit, coord))
 
-        for coord in grid.get_recruit_hexes(nation):
+        for coord in grid.get_recruit_hexes(nation, turn_number=turn_number):
             s = (60.0 if is_allied else 15.0) * w_muster
             actions.append((s, 'recruit', nation, coord))
 
@@ -1014,7 +1016,8 @@ def _execute(grid, action, dipl_state=None):
 
     if atype == 'recruit':
         nation, coord = payload
-        grid.recruit_army(nation, *coord)
+        eff_turn = getattr(grid, 'turn_number', None)
+        grid.recruit_army(nation, *coord, turn_number=eff_turn)
         return nation, 'recruit', f"{tag} Recruit {nation.color_name} at {coord}"
 
     if atype == 'promote':
@@ -1055,7 +1058,7 @@ def _execute(grid, action, dipl_state=None):
             from map import reconcile_stance_change
             events = reconcile_stance_change(
                 grid, nation_a, nation_b, new_stance,
-                list(NATIONS_BY_NAME.values()))
+                list(getattr(grid, 'nations', NATIONS_BY_NAME.values())))
             for ev in events:
                 if settings.DEPLOYMENT == 'DEBUG':
                     print(f"[Bot-diplomacy] {ev}")
@@ -1109,7 +1112,7 @@ def _turn_random(grid, bot_player, global_cooldown_name, nation_list):
                                and unit.nation.is_enemy(s.nation)]
                 if not allied_sovs:
                     pool.append(('attack', unit, c))
-        for coord in grid.get_recruit_hexes(nation):
+        for coord in grid.get_recruit_hexes(nation, turn_number=getattr(grid, 'turn_number', None)):
             pool.append(('recruit', nation, coord))
         for coord in grid.get_promote_hexes(nation):
             pool.append(('promote', nation, coord))
@@ -1128,7 +1131,8 @@ def _turn_random(grid, bot_player, global_cooldown_name, nation_list):
             return actor.nation, 'attack', f"[Bot-random] Attack {actor.nation.color_name}"
         return None, None, f"[Bot-random] Attack failed: {msg}"
     if atype == 'recruit':
-        grid.recruit_army(actor, *coord)
+        eff_turn = getattr(grid, 'turn_number', None)
+        grid.recruit_army(actor, *coord, turn_number=eff_turn)
         return actor, 'recruit', f"[Bot-random] Recruit {actor.color_name}"
     if atype == 'promote':
         armies_here = [a for a in grid.armies.get(coord, [])
@@ -1192,6 +1196,8 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
     dipl_state: DiplomacyState instance for cooldown checking.
     bot_goals:  BotGoals with prevail_goals/defeat_goals lists.
     """
+    bot_secret = bot_player.secret_nation
+
     if evolved_config is not None:
         if lookahead_depth is None:
             lookahead_depth = getattr(evolved_config, 'lookahead_depth', 1)
@@ -1249,8 +1255,9 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
                 if military is None:
                     return (*best_dipl, 'intent')
                 if hybrid_ratio > 0.0 and lookahead_mode == 'position':
-                    from evaluator import evaluate_position
+                    from evaluator import evaluate_position, _derive_ghost_set
                     root_pos = evaluate_position(grid, bot_secret, nation_list, weights=eval_weights,
+                                                 ghost_name_set=_derive_ghost_set(grid),
                                                  bot_goals=bot_goals)
                     dipl_eff = (1.0 - hybrid_ratio) * best_dipl[0] + hybrid_ratio * root_pos
                 else:
@@ -1289,7 +1296,7 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
         if bot_goals is not None:
             allied_name_set = set(bot_goals.prevail_goals) | {bot_ri}
         else:
-            allied_name_set = {n.color_name for n in bot_player.secret_nation.allies} | {bot_ri}
+            allied_name_set = {n.color_name for n in nation_list if not bot_player.secret_nation.is_enemy(n)}
         eligible = _eligible_nations(bot_player, global_cooldown_name, nation_list)
         pool = []
         for nation in eligible:
@@ -1303,7 +1310,7 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
                                    and unit.nation.is_enemy(s.nation)]
                     if not allied_sovs:
                         pool.append((0, 'attack', unit, c))
-            for coord in grid.get_recruit_hexes(nation):
+            for coord in grid.get_recruit_hexes(nation, turn_number=turn_number):
                 pool.append((0, 'recruit', nation, coord))
             for coord in grid.get_promote_hexes(nation):
                 pool.append((0, 'promote', nation, coord))

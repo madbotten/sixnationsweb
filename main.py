@@ -496,7 +496,7 @@ _CORNER_OUTWARD = {
     'Ravengard': (-1,  0),
 }
 
-def compute_sidebar_buttons(grid, eligible_nations):
+def compute_sidebar_buttons(grid, eligible_nations, turn_number=None):
     """
     Return a list of button dicts for recruit/promote actions.
     Each dict: {type, nation, pos:(x,y), size, key:(type,ring_idx)}
@@ -507,6 +507,7 @@ def compute_sidebar_buttons(grid, eligible_nations):
     ICON_SIZE = 29
     GAP       = 36   # horizontal gap between two icons for the same nation
     MARGIN    = ICON_SIZE  # minimum distance from screen edges
+    eff_turn  = turn_number if turn_number is not None else getattr(grid, 'turn_number', 1)
 
     for nation in eligible_nations:
         ri = nation.color_name
@@ -520,7 +521,10 @@ def compute_sidebar_buttons(grid, eligible_nations):
         py = max(settings.TOP_BAR_HEIGHT + MARGIN,
                  min(settings.SCREEN_HEIGHT - MARGIN, py))
 
-        can_recruit = bool(grid.get_recruit_hexes(nation))
+        has_recruitable_hex = bool(grid.get_recruitable_hexes(nation))
+        cooldown_elapsed = grid.is_recruit_cooldown_elapsed(nation, eff_turn)
+        can_recruit = has_recruitable_hex and cooldown_elapsed
+
         can_promote = bool(grid.get_promote_hexes(nation))
         can_promote_knight = bool(grid.get_promote_knight_hexes(nation))
 
@@ -704,6 +708,7 @@ async def main():
     current_player_idx  = 0
     global_cooldown_name = None
     turn_number         = 1
+    grid.turn_number    = turn_number
     game_state          = STATE_SPLASH
     game_mode           = 'vs_bot'       # set by splash button click
     game_result         = GAME_RESULT_NONE
@@ -799,6 +804,7 @@ async def main():
     running = True
     while running:
         dt = clock.tick(settings.FPS)
+        grid.turn_number = turn_number
 
         # ── Events ───────────────────────────────────────────────────────────
         for event in pygame.event.get():
@@ -830,6 +836,7 @@ async def main():
                     current_player_idx  = 0
                     global_cooldown_name = None
                     turn_number         = 1
+                    grid.turn_number    = turn_number
                     game_result         = GAME_RESULT_NONE
                     game_state          = STATE_SPLASH
                     game_mode           = 'vs_bot'
@@ -999,7 +1006,7 @@ async def main():
                         # Drag-and-drop army recruitment: start drag immediately
                         drag_recruit_nation = btn['nation']
                         drag_mouse_pos = (mx, my)
-                        highlight_muster = set(grid.get_recruit_hexes(drag_recruit_nation))
+                        highlight_muster = set(grid.get_recruit_hexes(drag_recruit_nation, turn_number=turn_number))
                         action_pending = pending_nation = None
                         highlight_promo = set()
                     elif btn['type'] == 'promote_knight':
@@ -1203,7 +1210,7 @@ async def main():
                 moved_nation = None
 
                 if (tq, tr) in highlight_muster:
-                    grid.recruit_army(drag_recruit_nation, tq, tr)
+                    grid.recruit_army(drag_recruit_nation, tq, tr, turn_number=turn_number)
                     moved_nation = drag_recruit_nation
                     _move_data = moves_mod.serialize_move(
                         'recruit', moved_nation.color_name,
@@ -1592,7 +1599,7 @@ async def main():
                 grid.draw_hex_polygon(screen, cx, cy, hw - 2, hh - 2, (220, 185, 40), 3)
 
             # Recompute sidebar buttons every frame (cheap) and draw them
-            sidebar_buttons = compute_sidebar_buttons(grid, eligible_now)
+            sidebar_buttons = compute_sidebar_buttons(grid, eligible_now, turn_number=turn_number)
             font_tiny = util.get_font(11)
             draw_sidebar_buttons(screen, grid, sidebar_buttons,
                                  action_pending, pending_nation, font_tiny,

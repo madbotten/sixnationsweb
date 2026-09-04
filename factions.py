@@ -21,6 +21,14 @@ class Nation:
         self.neutrals: list = []
         self.enemies:  list = []
 
+    def __eq__(self, other):
+        if isinstance(other, Nation):
+            return self.color_name == other.color_name
+        return False
+
+    def __hash__(self):
+        return hash(self.color_name)
+
     # -------------------------------------------------------------------
     # Stance queries
     # -------------------------------------------------------------------

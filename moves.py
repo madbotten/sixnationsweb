@@ -59,23 +59,23 @@ def _find_nation(nation_list, nation_name):
     return None
 
 
-def apply_serialized_move(grid, move_data, nation_list):
+def apply_serialized_move(grid, move_data, nation_list, turn_number=None):
     """
-    Execute a move described by a serialized dict.
+    Apply a deserialized move dictionary to the grid.
 
-    Returns (success: bool, msg: str, moved_nation, destroyed: list).
-      - moved_nation is the Nation object that was moved (or None on failure).
-      - destroyed is a list of destroyed unit objects (empty for non-attacks).
+    Returns:
+        (success: bool, message: str, moved_nation: Nation or None,
+         destroyed_units: list)
     """
-    mtype     = move_data['type']
-    nation_name = move_data['nation_name']
-    unit_type = move_data.get('unit_type')
-    from_hex  = tuple(move_data['from']) if move_data.get('from') else None
-    to_hex    = tuple(move_data['to'])   if move_data.get('to')   else None
-    nation    = _find_nation(nation_list, nation_name)
+    mtype       = move_data.get('type')
+    nation_name = move_data.get('nation_name')
+    unit_type   = move_data.get('unit_type')
+    from_hex    = tuple(move_data['from']) if move_data.get('from') else None
+    to_hex      = tuple(move_data['to'])   if move_data.get('to')   else None
 
+    nation = _find_nation(nation_list, nation_name)
     if nation is None:
-        return False, f"Unknown nation '{nation_name}'", None, []
+        return False, f"Unknown nation '{nation_name}'.", None, []
 
     # ── Move ──────────────────────────────────────────────────────────────
     if mtype == 'move':
@@ -105,7 +105,15 @@ def apply_serialized_move(grid, move_data, nation_list):
     if mtype == 'recruit':
         if to_hex is None:
             return False, "Recruit requires a target hex.", None, []
-        grid.recruit_army(nation, *to_hex)
+        eff_turn = turn_number if turn_number is not None else getattr(grid, 'turn_number', 1)
+        if hasattr(grid, 'is_recruit_cooldown_elapsed') and not grid.is_recruit_cooldown_elapsed(nation, eff_turn):
+            rem = grid.turns_until_recruit(nation, eff_turn)
+            return False, f"Cannot recruit for {nation.color_name}: cooldown active ({rem} turns remaining).", None, []
+        q, r = to_hex
+        if hasattr(grid, '_has_enemy_unit_at'):
+            if grid._has_enemy_unit_at(q, r, nation) or any(grid._has_enemy_unit_at(nq, nr, nation) for nq, nr in grid.get_neighbors(q, r)):
+                return False, f"Cannot recruit at {to_hex}: enemy unit adjacent or on hex.", None, []
+        grid.recruit_army(nation, *to_hex, turn_number=eff_turn)
         return True, "Recruited.", nation, []
 
     # ── Promote to Champion ───────────────────────────────────────────────

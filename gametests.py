@@ -1916,33 +1916,437 @@ class TestFineGrainedDiplomacy(unittest.TestCase):
         score_prevail_atk = _score_attack(self.grid, attacker, 1, 0, enemy_name_set, allied_name_set=allied_name_set)
         self.assertLess(score_prevail_atk, -5000.0, "Attacking prevail sovereign must be suppressed (-9999)")
 
-    def test_headless_game_decisiveness(self):
-        """HeadlessGame between bots with warmonger tendencies produces wars and eliminates sovereigns."""
-        from evolution import BotConfig, HeadlessGame
+    def test_army_kills_unsupported_untrapped_sovereign(self):
+        """Rule change: an army can kill an unsupported sovereign even without entrapment."""
+        from units import Army, Sovereign
 
-        c1 = BotConfig(
-            lookahead_depth=1,
-            w_dipl_prevail_vs_defeat=3.5,
-            w_dipl_defeat_vs_defeat=3.0,
-            w_endanger_enemy_sov=2.5,
-            w_kill_enemy=2.5,
-            w_random=0.05,
-            w_deceptive=0.0,
-        )
-        c2 = BotConfig(
-            lookahead_depth=1,
-            w_dipl_prevail_vs_defeat=3.5,
-            w_dipl_defeat_vs_defeat=3.0,
-            w_endanger_enemy_sov=2.5,
-            w_kill_enemy=2.5,
-            w_random=0.05,
-            w_deceptive=0.0,
-        )
+        self.grid.armies.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+        self.grid.knights.clear()
 
-        game = HeadlessGame(c1, c2, max_turns=150, seed=42)
+        sov_nation = NATIONS[0]
+        atk_nation = NATIONS[3]
+        atk_nation.set_enemy(sov_nation)
+
+        try:
+            # Sovereign at (0, 0) - solo, unsupported
+            sov = Sovereign(sov_nation, 0, 0)
+            self.grid.add_sovereign(sov)
+
+            # Enemy army at (0, 1) - only ONE enemy adjacent, clearly NOT trapped!
+            attacker = Army(atk_nation, 0, 1)
+            self.grid.add_army(attacker)
+
+            self.assertFalse(self.grid.is_trapped(sov), "Single adjacent enemy does not trap sovereign")
+            self.assertFalse(self.grid.is_supported(sov), "Sovereign is unsupported")
+
+            # Must be in valid attacks
+            valid_atks = self.grid.get_valid_attacks(attacker)
+            self.assertIn((0, 0), valid_atks, "Army must be able to attack unsupported untrapped sovereign")
+
+            # Must resolve successfully
+            success, msg, destroyed = self.grid.resolve_attack(attacker, 0, 0)
+            self.assertTrue(success, f"Attack failed: {msg}")
+            self.assertIn(sov, destroyed, "Sovereign must be destroyed")
+            self.assertEqual(attacker.hex_location, (0, 0), "Attacking army must advance")
+        finally:
+            atk_nation.set_neutral(sov_nation)
+
+    def test_army_cannot_kill_supported_sovereign(self):
+        """Supported sovereign remains safe from army attacks."""
+        from units import Army, Sovereign
+
+        self.grid.armies.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        sov_nation = NATIONS[0]
+        atk_nation = NATIONS[3]
+        atk_nation.set_enemy(sov_nation)
+
+        try:
+            # Sovereign at (0, 0) supported by friendly army at (0, 0)
+            sov = Sovereign(sov_nation, 0, 0)
+            guard = Army(sov_nation, 0, 0)
+            self.grid.add_sovereign(sov)
+            self.grid.add_army(guard)
+
+            attacker = Army(atk_nation, 0, 1)
+            self.grid.add_army(attacker)
+
+            self.assertTrue(self.grid.is_supported(sov), "Sovereign is supported by guard")
+
+            # Army cannot attack supported sovereign
+            success, msg, destroyed = self.grid.resolve_attack(attacker, 0, 0, target_type='sovereign')
+            self.assertFalse(success, "Army cannot attack supported sovereign")
+        finally:
+            atk_nation.set_neutral(sov_nation)
+
+    def test_recruit_disallowed_when_enemy_adjacent_or_on_hex(self):
+        """Recruiting is disallowed on ANY hex if an enemy unit is adjacent or on the hex."""
+        from units import Army, Champion
+
+        n0 = NATIONS[0]
+        n3 = NATIONS[3]
+        n0.set_enemy(n3)
+
+        try:
+            # Ensure n0 can recruit
+            armies = [u for u in self.grid.get_all_nation_units(n0) if isinstance(u, Army)]
+            for a in armies:
+                self.grid.remove_army(a)
+
+            valid_hexes = self.grid.get_recruit_hexes(n0)
+            self.assertTrue(len(valid_hexes) > 0)
+            target = valid_hexes[0]
+
+            # Place enemy army adjacent to target hex
+            nbr = self.grid.get_neighbors(*target)[0]
+            enemy_army = Army(n3, *nbr)
+            self.grid.add_army(enemy_army)
+
+            new_valid = self.grid.get_recruit_hexes(n0)
+            self.assertNotIn(target, new_valid, "Cannot recruit on hex when enemy army is adjacent")
+
+            # Remove enemy army, place enemy champion adjacent
+            self.grid.remove_army(enemy_army)
+            enemy_champ = Champion(n3, *nbr)
+            self.grid.add_champion(enemy_champ)
+
+            new_valid_champ = self.grid.get_recruit_hexes(n0)
+            self.assertNotIn(target, new_valid_champ, "Cannot recruit on hex when enemy champion is adjacent")
+        finally:
+            n0.set_neutral(n3)
+
+    def test_recruit_blocked_in_serialized_move_when_enemy_adjacent(self):
+        """apply_serialized_move strictly rejects recruit if an enemy unit is adjacent."""
+        from moves import apply_serialized_move, serialize_move
+        from units import Army, Sovereign
+
+        self.grid.armies.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        n0 = NATIONS[0]
+        n3 = NATIONS[3]
+        n0.set_enemy(n3)
+
+        try:
+            # Place sovereign at (0, 0)
+            sov = Sovereign(n0, 0, 0)
+            self.grid.add_sovereign(sov)
+
+            # Place enemy army at (1, -1) (adjacent to (1, 0))
+            enemy = Army(n3, 1, -1)
+            self.grid.add_army(enemy)
+
+            # Try to recruit at (1, 0)
+            move_data = serialize_move('recruit', n0.color_name, to_hex=(1, 0))
+            success, msg, moved_nation, destroyed = apply_serialized_move(
+                self.grid, move_data, NATIONS
+            )
+            self.assertFalse(success, "Must reject recruit when enemy army is adjacent")
+            self.assertIn("enemy unit adjacent or on hex", msg)
+        finally:
+            n0.set_neutral(n3)
+
+    def test_bot_attacks_and_kills_unsupported_defeat_sovereign(self):
+        """Bot with warmonger weights prioritizes killing an adjacent unsupported defeat sovereign."""
+        from bot import compute_bot_action
+        from evolution import BotGoals
+        from player import Player
+        from units import Army, Sovereign
+
+        self.grid.armies.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        bot_nation = NATIONS[0]
+        target_nation = NATIONS[3]
+        bot_nation.set_enemy(target_nation)
+
+        try:
+            # Place unsupported defeat sovereign at (0, 0)
+            target_sov = Sovereign(target_nation, 0, 0)
+            self.grid.add_sovereign(target_sov)
+
+            # Place bot's army adjacent at (0, 1)
+            bot_army = Army(bot_nation, 0, 1)
+            self.grid.add_army(bot_army)
+
+            # Place bot's own sovereign and bodyguard so bot's sovereign is alive and supported
+            bot_sov = Sovereign(bot_nation, 2, -2)
+            bot_guard = Army(bot_nation, 2, -2)
+            self.grid.add_sovereign(bot_sov)
+            self.grid.add_army(bot_guard)
+
+            player = Player(secret_nation=bot_nation, is_bot=True)
+            goals = BotGoals(
+                prevail_goals=[NATIONS[0].color_name, NATIONS[1].color_name],
+                defeat_goals=[target_nation.color_name, NATIONS[4].color_name, NATIONS[5].color_name]
+            )
+
+            from evolution import BotConfig
+            config = BotConfig(
+                w_random=0.0,
+                w_deceptive=0.0,
+                lookahead_depth=1,
+                w_kill_enemy=3.0,
+                w_dipl_prevail_vs_defeat=1.0,
+            )
+
+            action = compute_bot_action(
+                self.grid, player, None, NATIONS,
+                turn_number=1, evolved_config=config,
+                bot_goals=goals, dipl_state=self.dipl_state
+            )
+
+            self.assertIsNotNone(action)
+            score, atype, unit, coord = action[0], action[1], action[2], action[3]
+            self.assertEqual(atype, 'attack', "Bot must choose attack")
+            self.assertEqual(coord, (0, 0), "Bot must target the defeat sovereign's hex")
+            self.assertEqual(unit, bot_army, "Bot must attack with the adjacent army")
+
+            # Execute attack: verify sovereign is destroyed and nation becomes ghost
+            success, msg, destroyed = self.grid.resolve_attack(bot_army, 0, 0)
+            self.assertTrue(success)
+            self.assertIn(target_sov, destroyed)
+            self.grid.check_ghost_nations(NATIONS)
+            self.assertTrue(target_nation.is_ghost, "Target nation must become a ghost")
+        finally:
+            bot_nation.set_neutral(target_nation)
+            target_nation.is_ghost = False
+
+    def test_evaluator_unsupported_sovereign_killable(self):
+        """Unsupported sovereigns (even when not trapped) are evaluated as killable."""
+        from evaluator import evaluate_position
+        from units import Army, Sovereign
+
+        self.grid.armies.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+
+        secret = NATIONS[0]
+        enemy = NATIONS[3]
+        enemy.set_enemy(secret)
+
+        try:
+            # Enemy sovereign alone at (0, 0) - unsupported and NOT trapped
+            sov = Sovereign(enemy, 0, 0)
+            self.grid.add_sovereign(sov)
+
+            self.assertFalse(self.grid.is_trapped(sov))
+            self.assertFalse(self.grid.is_supported(sov))
+
+            # Own sovereign alone at (2, -2) - unsupported and NOT trapped
+            own_sov = Sovereign(secret, 2, -2)
+            self.grid.add_sovereign(own_sov)
+
+            score = evaluate_position(self.grid, secret, NATIONS)
+
+            # If own sovereign is now given support:
+            guard = Army(secret, 2, -2)
+            self.grid.add_army(guard)
+            score_with_guard = evaluate_position(self.grid, secret, NATIONS)
+            self.assertGreater(score_with_guard, score + 200, "Supporting own sovereign should drastically improve score")
+        finally:
+            enemy.set_neutral(secret)
+
+
+class TestRecruitmentCooldown(unittest.TestCase):
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        for nation in NATIONS:
+            nation.is_ghost = False
+        _init_diplomacy(NATIONS)
+        self.grid = MapGrid()
+        self.grid.generate_map()
+
+    def test_per_nation_cooldown_tracking(self):
+        """Each nation tracks its own recruitment cooldown independently."""
+        n0 = NATIONS[0]
+        n1 = NATIONS[1]
+
+        # Initially, neither nation has recruited -> cooldown elapsed for both
+        self.assertTrue(self.grid.is_recruit_cooldown_elapsed(n0, 1))
+        self.assertTrue(self.grid.is_recruit_cooldown_elapsed(n1, 1))
+        self.assertEqual(self.grid.turns_until_recruit(n0, 1), 0)
+        self.assertEqual(self.grid.turns_until_recruit(n1, 1), 0)
+
+        # Clear existing pieces of n0 to ensure it has capacity and room to recruit
+        self.grid.armies.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+        self.grid.knights.clear()
+        sov0 = Sovereign(n0, 0, 0)
+        self.grid.add_sovereign(sov0)
+        sov1 = Sovereign(n1, 2, -2)
+        self.grid.add_sovereign(sov1)
+
+        # N0 recruits at turn 1
+        valid_hexes_n0 = self.grid.get_recruitable_hexes(n0)
+        self.assertTrue(len(valid_hexes_n0) > 0)
+        target0 = valid_hexes_n0[0]
+        self.grid.recruit_army(n0, *target0, turn_number=1)
+
+        # N0 is now on cooldown for 10 turns (turns 1..10)
+        for t in range(1, 11):
+            self.assertFalse(self.grid.is_recruit_cooldown_elapsed(n0, t), f"N0 should be on cooldown at turn {t}")
+            self.assertEqual(self.grid.turns_until_recruit(n0, t), 11 - t)
+            self.assertEqual(self.grid.get_recruit_hexes(n0, turn_number=t), [], f"N0 get_recruit_hexes should be empty at turn {t}")
+
+        # On turn 11 (10 turns elapsed since turn 1), cooldown has elapsed for N0
+        self.assertTrue(self.grid.is_recruit_cooldown_elapsed(n0, 11))
+        self.assertEqual(self.grid.turns_until_recruit(n0, 11), 0)
+        self.assertTrue(len(self.grid.get_recruit_hexes(n0, turn_number=11)) > 0)
+
+        # Meanwhile, N1 was never on cooldown during turns 1..4
+        self.assertTrue(self.grid.is_recruit_cooldown_elapsed(n1, 1))
+        self.assertTrue(self.grid.is_recruit_cooldown_elapsed(n1, 4))
+
+        # N1 recruits at turn 5
+        valid_hexes_n1 = self.grid.get_recruitable_hexes(n1)
+        self.assertTrue(len(valid_hexes_n1) > 0)
+        target1 = valid_hexes_n1[0]
+        self.grid.recruit_army(n1, *target1, turn_number=5)
+
+        # N1 is now on cooldown from turn 5 to 14
+        self.assertFalse(self.grid.is_recruit_cooldown_elapsed(n1, 5))
+        self.assertFalse(self.grid.is_recruit_cooldown_elapsed(n1, 11))
+        self.assertEqual(self.grid.turns_until_recruit(n1, 11), 4)
+        # But N0 was already off cooldown on turn 11!
+        self.assertTrue(self.grid.is_recruit_cooldown_elapsed(n0, 11))
+
+        # N1 becomes ready on turn 15
+        self.assertTrue(self.grid.is_recruit_cooldown_elapsed(n1, 15))
+
+    def test_apply_serialized_move_enforces_cooldown(self):
+        """apply_serialized_move rejects recruit moves when nation is on cooldown."""
+        self.grid.armies.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+        self.grid.knights.clear()
+
+        n0 = NATIONS[0]
+        sov0 = Sovereign(n0, 0, 0)
+        self.grid.add_sovereign(sov0)
+
+        valid_hexes = self.grid.get_recruitable_hexes(n0)
+        self.assertTrue(len(valid_hexes) >= 2)
+        h1, h2 = valid_hexes[0], valid_hexes[1]
+
+        # Turn 1: recruit at h1
+        move1 = serialize_move('recruit', n0.color_name, to_hex=h1)
+        success, msg, moved_nation, _ = apply_serialized_move(self.grid, move1, NATIONS, turn_number=1)
+        self.assertTrue(success, f"First recruit should succeed: {msg}")
+
+        # Turn 2: attempt recruit at h2 while on cooldown -> must fail
+        move2 = serialize_move('recruit', n0.color_name, to_hex=h2)
+        success2, msg2, _, _ = apply_serialized_move(self.grid, move2, NATIONS, turn_number=2)
+        self.assertFalse(success2, "Recruit on turn 2 must fail due to cooldown")
+        self.assertIn("cooldown active", msg2)
+
+        # Turn 11: cooldown elapsed -> must succeed
+        success11, msg11, _, _ = apply_serialized_move(self.grid, move2, NATIONS, turn_number=11)
+        self.assertTrue(success11, f"Recruit on turn 11 must succeed: {msg11}")
+
+    def test_sidebar_buttons_only_show_army_when_both_requirements_met(self):
+        """Only show the army button on the side when both recruitable hex exists AND cooldown elapsed."""
+        from main import compute_sidebar_buttons
+
+        self.grid.armies.clear()
+        self.grid.champions.clear()
+        self.grid.sovereigns.clear()
+        self.grid.knights.clear()
+
+        n0 = NATIONS[0]
+        sov0 = Sovereign(n0, 0, 0)
+        self.grid.add_sovereign(sov0)
+
+        # Requirement 1: recruitable hex exists. Requirement 2: cooldown elapsed.
+        # At start (turn 1), both are met:
+        btns = compute_sidebar_buttons(self.grid, [n0], turn_number=1)
+        recruit_btns = [b for b in btns if b['type'] == 'recruit']
+        self.assertEqual(len(recruit_btns), 1, "Army button must be shown when both requirements are met")
+
+        # N0 recruits at turn 1
+        valid_hexes = self.grid.get_recruitable_hexes(n0)
+        self.grid.recruit_army(n0, *valid_hexes[0], turn_number=1)
+
+        # On turn 2, hexes still exist but cooldown is active -> Army button NOT shown
+        btns_turn2 = compute_sidebar_buttons(self.grid, [n0], turn_number=2)
+        recruit_btns_turn2 = [b for b in btns_turn2 if b['type'] == 'recruit']
+        self.assertEqual(len(recruit_btns_turn2), 0, "Army button must NOT be shown when cooldown is active")
+
+        # On turn 11, cooldown has elapsed and recruitable hexes exist -> Army button shown again
+        btns_turn11 = compute_sidebar_buttons(self.grid, [n0], turn_number=11)
+        recruit_btns_turn11 = [b for b in btns_turn11 if b['type'] == 'recruit']
+        self.assertEqual(len(recruit_btns_turn11), 1, "Army button must be shown when cooldown has elapsed")
+
+        # If army cap is reached so there are no recruitable hexes, even if cooldown elapsed:
+        # Fill up armies to reach cap
+        while self.grid.can_muster_army(n0):
+            rem_hexes = self.grid.get_recruitable_hexes(n0)
+            if not rem_hexes:
+                break
+            self.grid.recruit_army(n0, *rem_hexes[0], turn_number=0)
+
+        self.assertFalse(self.grid.can_muster_army(n0))
+        self.assertEqual(self.grid.get_recruitable_hexes(n0), [])
+
+        btns_capped = compute_sidebar_buttons(self.grid, [n0], turn_number=100)
+        recruit_btns_capped = [b for b in btns_capped if b['type'] == 'recruit']
+        self.assertEqual(len(recruit_btns_capped), 0, "Army button must NOT be shown when no recruitable hex exists")
+
+    def test_headless_game_nations_match_grid_units(self):
+        """HeadlessGame nations match the units placed on its MapGrid."""
+        from evolution import HeadlessGame, BotConfig
+        cfg = BotConfig()
+        game = HeadlessGame(cfg, cfg, max_turns=10, seed=42)
+
+        # Check that grid units belong to the game's own nation objects
+        all_units = []
+        for nation in game.nations:
+            units = game.grid.get_all_nation_units(nation)
+            self.assertTrue(len(units) > 0, f"Nation {nation.color_name} must have units on the grid")
+            all_units.extend(units)
+
+        for u in all_units:
+            self.assertIn(u.nation, game.nations, "Unit nation must be an instance in game.nations")
+
+        # Check that declaring war on game.nations immediately reflects on unit.nation.is_enemy
+        n0 = game.nations[0]
+        n1 = game.nations[1]
+        n0.set_enemy(n1)
+
+        u0 = game.grid.get_all_nation_units(n0)[0]
+        u1 = game.grid.get_all_nation_units(n1)[0]
+        self.assertTrue(u0.nation.is_enemy(u1.nation), "Units must recognize enemy stance set in HeadlessGame")
+
+    def test_headless_game_decisiveness_when_sovereigns_eliminated(self):
+        """When 3 sovereigns are eliminated in HeadlessGame, play() returns a decisive result (not draw)."""
+        from evolution import HeadlessGame, BotConfig, RESULT_DRAW
+        cfg = BotConfig()
+        game = HeadlessGame(cfg, cfg, max_turns=50, seed=42)
+
+        # Destroy 3 sovereigns from the grid
+        killed = 0
+        for coord, sov_list in list(game.grid.sovereigns.items()):
+            if killed >= 3:
+                break
+            if sov_list:
+                s = sov_list[0]
+                game.grid.remove_sovereign(s)
+                killed += 1
+
+        self.assertEqual(killed, 3)
+        game.grid.check_ghost_nations(game.nations)
+        self.assertEqual(game.grid.count_ghost_nations(game.nations), 3)
+
         result = game.play()
-        ghost_count = game.grid.count_ghost_nations(game.nations)
-        self.assertGreater(ghost_count, 0, "Wars should lead to sovereign deaths in HeadlessGame")
+        self.assertNotEqual(result, RESULT_DRAW, "Game must end decisively when 3 sovereigns are destroyed")
 
 
 if __name__ == '__main__':

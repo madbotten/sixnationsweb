@@ -147,22 +147,18 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
         for sov in sov_list:
             ri = sov.nation.color_name
             if ri in enemy_name_set:
-                trapped = grid.is_trapped(sov)
                 supported = grid.is_supported(sov)
-                if trapped and not supported:
+                if not supported:
                     score += w['enemy_killable']
-                elif trapped:
+                elif grid.is_trapped(sov):
                     score += w['enemy_trapped']
-                elif not supported:
-                    score += w['enemy_unsupported']
 
             elif ri == secret_nation.color_name:
                 # Own sovereign safety
-                trapped = grid.is_trapped(sov)
                 supported = grid.is_supported(sov)
-                if trapped and not supported:
+                if not supported:
                     score += w['own_sov_killable']
-                elif trapped:
+                elif grid.is_trapped(sov):
                     score += w['own_sov_trapped']
 
     # -----------------------------------------------------------------------

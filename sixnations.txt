@@ -2,12 +2,11 @@ THE SIX NATIONS
 
 In this game, six nations are placed around a symmetrical map composed of 37 smaller hexes arranged in a large hexagon shape. Each nation starts in control of four hexes, one corner hex and the three surrounding hexes.
 
-THE DIPLOMACY RING
+At game start, players secretly choose which nations they want to prevail and which ones they want to be defeated. Meeting these goals will determine the score once three sovereigns fall.
 
-The nations are allies with each of their two neighboring nations.
-Their colors are selected so each nation is closer in color to its allies. The ring of six nations are yellow, green, sky blue, cobalt, magenta, crimson in that order around the map so that each nation is similar in color to its allies.
+The nations start all neutral to each other.
 
-
+Nations may declare war or form alliances. There are cooldowns on war and alliance declarations, after which things may change.
 
 THE MAP
 
@@ -36,7 +35,7 @@ Unit - An Army, Champion, or Sovereign.
 
 Army - A unit used for combat. Only one army or knight unit can occupy a hex at one time.
 
-Knight - A slightly improved army. Knights cannot be killed by unsupported armies and they can kill unsupported, untrapped sovereigns.
+Knight - A slightly improved army. Knights cannot be killed by unsupported armies and they can kill unsupported sovereigns.
 
 Champion - A very effective offensive unit.
 
@@ -47,8 +46,6 @@ Allied Unit - A unit is allied with another unit if it belongs to the same natio
 Enemy Unit - Any non-allied unit.
 
 Supported - A unit is supported if it has another allied unit of any type with it in the same hex. Note that armies never support other armies, because only one army may be in a hex at once.
-
-Trapped - An unsupported sovereign is trapped if the sovereign has at least two enemy units on opposite sides of it. Supported sovereigns are never trapped.
 
 Ghost Nation - A nation that has lost its sovereign. A ghost nation no longer controls territory and may no longer muster or promote units.
 
@@ -69,11 +66,16 @@ A game turn move is any one of the following:
 3. A sovereign can move from its current hex into an adjacent hex that does not have an enemy unit in it. However, sovereigns of enemy nations cannot be moved to a hex where they would not have support.
 4. A champion can move from its current hex into any adjacent hex that does not have an enemy unit in it.
 5. A champion may qualify to attack any hex adjacent to it with enemy units in it.
-6. Army Replacement: If a non-ghost nation it not at its army limit, then as a move, one new army may be placed on any hex with no other armies and no enemy units on it, that belongs to that nation.
+6. Army Replacement: If a non-ghost nation is not at its army limit, then as a move, one new army may be placed on any hex with no other armies and no enemy units on it, that belongs to that nation, provided NO enemy unit is adjacent.
 7. Champion Promotion: If a non-ghost nation has lost its champion, one army in a hex controlled by that nation may be promoted to a new champion.
 8. Knight Promotion: An army in a hex controlled by a nation may be promoted to a knight, but nations can only have one knight at a time.
+9. A nation may conduct diplomacy, declaring war or alliance with one other nation.
 
 Note that armies/knights can NEVER share hexes. Only champions and sovereigns may share hexes with armies, and only with allied armies, champions, or sovereigns. Thus, the maximum number of units that can coexist in a hex is 5: one army, two allied sovereigns, and two allied champions.
+
+DIPLOMACY
+
+TODO: Describe diplomacy moves here including cooldown restrictions.
 
 ATTACKS
 
@@ -93,7 +95,7 @@ An army may not attack a champion.
 An unsupported army may not attack a knight. A supported army may attack a knight:
 If the knight is unsupported: the knight is destroyed and the army advances.
 If the knight is supported: both units are destroyed.
-An army may not attack a sovereign, unless the sovereign is unsupported and trapped. If the army attacks an unsupported, trapped sovereign, the sovereign is destroyed and the army moves forward.
+An army may not attack a sovereign, unless the sovereign is unsupported. If the army attacks an unsupported sovereign, the sovereign is destroyed and the army moves forward.
 
 A knight can attack an adjacent enemy army:
 If an unsupported knight attacks an unsupported army: both are destroyed.
@@ -106,7 +108,7 @@ An unsupported knight may not attack a supported knight: this is not a legal mov
 If a supported knight attacks an unsupported knight: the enemy knight is destroyed and the attacker advances.
 If a supported knight attacks a supported knight: both knights are destroyed.
 A knight may not attack a champion.
-A knight may attack any unsupported sovereign (trapped or not): the sovereign is destroyed and the knight advances.
+A knight may attack any unsupported sovereign: the sovereign is destroyed and the knight advances.
 
 If an army destroys another army or sovereign, if the attacking army survives, it must move into the hex unless there is another army or enemy unit in that hex.
 

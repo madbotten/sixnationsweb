@@ -69,16 +69,29 @@ class MapGrid:
         self.sovereigns   = {}   # (q,r) -> [Sovereign, ...]
         self.hex_width    = settings.HEX_WIDTH
         self.hex_height   = settings.HEX_HEIGHT
+        self.turn_number  = 1
+        self.last_recruit_turn = {}   # nation_name -> turn_number of last recruitment
 
     # =======================================================================
     # Map generation
     # =======================================================================
 
-    def generate_map(self):
-        """Place all 37 hex tiles, starting control, and starting units."""
+    def generate_map(self, nations=None):
+        """Place all 37 hex tiles, starting control, and starting units.
+
+        nations: optional list of Nation objects to use for map ownership
+                 and units. Defaults to the canonical NATIONS singletons.
+        """
         from units import Army
         from units import Champion, Sovereign
         from units import Knight
+
+        if nations is not None:
+            self.nations = list(nations)
+            self.nations_by_name = {n.color_name: n for n in nations}
+        else:
+            self.nations = list(NATIONS)
+            self.nations_by_name = dict(NATIONS_BY_NAME)
 
         self.tiles.clear()
         self.tile_control.clear()
@@ -86,6 +99,8 @@ class MapGrid:
         self.knights.clear()
         self.champions.clear()
         self.sovereigns.clear()
+        self.turn_number  = 1
+        self.last_recruit_turn.clear()
 
         nation_coords = {coord for hexes in self.NATION_HEXES for coord in hexes}
 
@@ -97,7 +112,7 @@ class MapGrid:
                 self.tile_control[coord] = None
 
         for nation_name, hexes in self.NATION_HEXES.items():
-            nation = NATIONS_BY_NAME[nation_name]
+            nation = self.nations_by_name[nation_name]
             corner = self.NATION_CORNERS[nation_name]
             for i, coord in enumerate(hexes):
                 q, r = coord
@@ -111,6 +126,12 @@ class MapGrid:
                     self.add_champion(Champion(nation, q, r))
                 else:
                     self.add_army(Army(nation, q, r))
+
+    def get_nation(self, name: str):
+        """Return the Nation object by color name associated with this grid."""
+        if hasattr(self, 'nations_by_name') and name in self.nations_by_name:
+            return self.nations_by_name[name]
+        return NATIONS_BY_NAME.get(name)
 
     # =======================================================================
     # Snapshot (lightweight deep copy for lookahead simulation)
@@ -130,6 +151,10 @@ class MapGrid:
         clone.tile_control = dict(self.tile_control)
         clone.hex_width    = self.hex_width
         clone.hex_height   = self.hex_height
+        clone.turn_number  = getattr(self, 'turn_number', 1)
+        clone.last_recruit_turn = dict(getattr(self, 'last_recruit_turn', {}))
+        clone.nations      = getattr(self, 'nations', NATIONS)
+        clone.nations_by_name = getattr(self, 'nations_by_name', NATIONS_BY_NAME)
 
         unit_map = {}
 
@@ -227,30 +252,34 @@ class MapGrid:
         """Return all units (sovereigns, champions, knights, armies) belonging to nation."""
         units = []
         for slist in self.sovereigns.values():
-            units.extend(s for s in slist if s.nation is nation)
+            units.extend(s for s in slist if s.nation == nation)
         for clist in self.champions.values():
-            units.extend(c for c in clist if c.nation is nation)
+            units.extend(c for c in clist if c.nation == nation)
         for klist in self.knights.values():
-            units.extend(k for k in klist if k.nation is nation)
+            units.extend(k for k in klist if k.nation == nation)
         for alist in self.armies.values():
-            units.extend(a for a in alist if a.nation is nation)
+            units.extend(a for a in alist if a.nation == nation)
         return units
+
+    def get_nation_armies(self, nation) -> list:
+        """Return all active armies belonging to nation."""
+        return [a for alist in self.armies.values() for a in alist if a.nation == nation]
 
     def _army_count(self, nation) -> int:
         """Count active armies and knights for nation (knights count toward army cap)."""
-        armies_cnt  = sum(1 for alist in self.armies.values()  for a in alist if a.nation is nation)
-        knights_cnt = sum(1 for klist in self.knights.values() for k in klist if k.nation is nation)
+        armies_cnt  = sum(1 for alist in self.armies.values()  for a in alist if a.nation == nation)
+        knights_cnt = sum(1 for klist in self.knights.values() for k in klist if k.nation == nation)
         return armies_cnt + knights_cnt
 
     def _has_knight(self, nation) -> bool:
         return any(
-            k.nation is nation
+            k.nation == nation
             for klist in self.knights.values() for k in klist
         )
 
     def _has_champion(self, nation) -> bool:
         return any(
-            c.nation is nation
+            c.nation == nation
             for clist in self.champions.values() for c in clist
         )
 
@@ -432,7 +461,7 @@ class MapGrid:
             elif isinstance(unit, (Army, Knight)):
                 # Army/Knight: blocked from neutral-owned territory
                 if owner_name is not None and owner_name != nation.color_name:
-                    owner_nation = NATIONS_BY_NAME[owner_name]
+                    owner_nation = self.get_nation(owner_name)
                     if nation.get_stance(owner_nation) == 'neutral':
                         continue
 
@@ -479,9 +508,9 @@ class MapGrid:
                 for ek in e_knights:
                     if atk_supp:
                         valid.add((nq, nr)); break
-                # vs trapped+unsupported sovereign (army can't attack champion)
+                # vs unsupported sovereign (army can now kill any unsupported sovereign)
                 for es in e_sovs:
-                    if not self.is_supported(es) and self.is_trapped(es):
+                    if not self.is_supported(es):
                         valid.add((nq, nr)); break
 
             elif isinstance(unit, Knight):
@@ -549,7 +578,7 @@ class MapGrid:
             if isinstance(unit, (Army, Knight, Champion)):
                 self.tile_control[(tq, tr)] = unit_name
         elif curr_name != unit_name:
-            owner_nation = NATIONS_BY_NAME[curr_name]
+            owner_nation = self.get_nation(curr_name)
             if owner_nation.is_ghost:
                 # Ghost-owned: treat as unclaimed
                 if isinstance(unit, (Army, Knight, Champion)):
@@ -670,8 +699,8 @@ class MapGrid:
                 if not e_sovs:
                     return False, "No enemy sovereign in that hex.", []
                 target = e_sovs[0]
-                if self.is_supported(target) or not self.is_trapped(target):
-                    return False, "Illegal: army can only attack an unsupported, trapped sovereign.", []
+                if self.is_supported(target):
+                    return False, "Illegal: army can only attack an unsupported sovereign.", []
                 self.remove_sovereign(target); destroyed.append(target)
                 advance = True
                 messages.append(f"{target.nation.color_name} sovereign destroyed!")
@@ -870,6 +899,8 @@ class MapGrid:
             if self.knights.get(coord):
                 continue  # already has a knight
             q, r = coord
+            if self._has_enemy_unit_at(q, r, nation):
+                continue  # enemy unit on hex itself
             # Check adjacency to any enemy piece
             has_adjacent_enemy = False
             for nq, nr in self.get_neighbors(q, r):
@@ -880,15 +911,42 @@ class MapGrid:
                 valid.append(coord)
         return valid
 
-    def get_recruit_hexes(self, nation) -> list:
-        """Alias for get_valid_muster_hexes for backward compatibility."""
+    def is_recruit_cooldown_elapsed(self, nation, turn_number=None) -> bool:
+        """True if at least RECRUIT_COOLDOWN_TURNS have elapsed since nation last recruited."""
+        current_turn = turn_number if turn_number is not None else getattr(self, 'turn_number', 1)
+        last_turn = getattr(self, 'last_recruit_turn', {}).get(nation.color_name)
+        if last_turn is None:
+            return True
+        return (current_turn - last_turn) >= settings.RECRUIT_COOLDOWN_TURNS
+
+    def turns_until_recruit(self, nation, turn_number=None) -> int:
+        """Return number of turns remaining on recruitment cooldown (0 if ready)."""
+        current_turn = turn_number if turn_number is not None else getattr(self, 'turn_number', 1)
+        last_turn = getattr(self, 'last_recruit_turn', {}).get(nation.color_name)
+        if last_turn is None:
+            return 0
+        elapsed = current_turn - last_turn
+        return max(0, settings.RECRUIT_COOLDOWN_TURNS - elapsed)
+
+    def get_recruitable_hexes(self, nation) -> list:
+        """Return hexes where a new army may be mustered for nation based on board state alone."""
         return self.get_valid_muster_hexes(nation)
 
-    def recruit_army(self, nation, q, r):
-        """Place a new Army for nation at (q,r). Returns the new Army."""
+    def get_recruit_hexes(self, nation, turn_number=None) -> list:
+        """Return valid recruit hexes for nation if recruitment cooldown has elapsed, else empty list."""
+        if not self.is_recruit_cooldown_elapsed(nation, turn_number):
+            return []
+        return self.get_valid_muster_hexes(nation)
+
+    def recruit_army(self, nation, q, r, turn_number=None):
+        """Place a new Army for nation at (q,r). Records the recruit turn for cooldown. Returns the new Army."""
         from units import Army
         army = Army(nation, q, r)
         self.add_army(army)
+        eff_turn = turn_number if turn_number is not None else getattr(self, 'turn_number', 1)
+        if not hasattr(self, 'last_recruit_turn'):
+            self.last_recruit_turn = {}
+        self.last_recruit_turn[nation.color_name] = eff_turn
         return army
 
     def get_promote_hexes(self, nation) -> list:
@@ -901,7 +959,7 @@ class MapGrid:
             return []
         return [
             coord for coord in self.NATION_HEXES[nation.color_name]
-            if any(a.nation is nation
+            if any(a.nation == nation
                    for a in self.armies.get(coord, []))
         ]
 
@@ -924,7 +982,7 @@ class MapGrid:
             return []
         return [
             coord for coord in self.NATION_HEXES[nation.color_name]
-            if any(a.nation is nation
+            if any(a.nation == nation
                    for a in self.armies.get(coord, []))
         ]
 
@@ -1065,7 +1123,7 @@ class MapGrid:
 
             owner_name = self.tile_control.get((q, r))
             if owner_name is not None and owner_name not in _ghost_names:
-                owner_nation = NATIONS_BY_NAME[owner_name]
+                owner_nation = self.get_nation(owner_name)
                 fill   = owner_nation.color_light
                 border = owner_nation.color_rgb
                 bwidth = 3 if tile.is_corner else 2
@@ -1165,16 +1223,16 @@ def _resolve_declare_war_combat(grid, nation_a, nation_b, all_nations):
             coords_to_check.add(coord)
 
     for q, r in coords_to_check:
-        champs_a = [c for c in grid.champions.get((q, r), []) if c.nation is nation_a]
-        champs_b = [c for c in grid.champions.get((q, r), []) if c.nation is nation_b]
+        champs_a = [c for c in grid.champions.get((q, r), []) if c.nation == nation_a]
+        champs_b = [c for c in grid.champions.get((q, r), []) if c.nation == nation_b]
 
-        armies_a = ([a for a in grid.armies.get((q, r), []) if a.nation is nation_a] +
-                    [k for k in grid.knights.get((q, r), []) if k.nation is nation_a])
-        armies_b = ([a for a in grid.armies.get((q, r), []) if a.nation is nation_b] +
-                    [k for k in grid.knights.get((q, r), []) if k.nation is nation_b])
+        armies_a = ([a for a in grid.armies.get((q, r), []) if a.nation == nation_a] +
+                    [k for k in grid.knights.get((q, r), []) if k.nation == nation_a])
+        armies_b = ([a for a in grid.armies.get((q, r), []) if a.nation == nation_b] +
+                    [k for k in grid.knights.get((q, r), []) if k.nation == nation_b])
 
-        sovs_a = [s for s in grid.sovereigns.get((q, r), []) if s.nation is nation_a]
-        sovs_b = [s for s in grid.sovereigns.get((q, r), []) if s.nation is nation_b]
+        sovs_a = [s for s in grid.sovereigns.get((q, r), []) if s.nation == nation_a]
+        sovs_b = [s for s in grid.sovereigns.get((q, r), []) if s.nation == nation_b]
         all_sovs = grid.sovereigns.get((q, r), [])
 
         # -------------------------------------------------------------------
@@ -1278,8 +1336,8 @@ def _reconcile_territory_seizure(grid, nation_a, nation_b):
                       grid.knights.get(coord, []) +
                       grid.armies.get(coord, []))
 
-        has_a = any(u.nation is nation_a for u in units_here)
-        has_b = any(u.nation is nation_b for u in units_here)
+        has_a = any(u.nation == nation_a for u in units_here)
+        has_b = any(u.nation == nation_b for u in units_here)
 
         if curr_owner == nation_b.color_name and has_a and not has_b:
             grid.tile_control[coord] = nation_a.color_name

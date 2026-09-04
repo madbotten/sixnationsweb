@@ -37,6 +37,10 @@ DIPL_FLAG_GAP       = 12
 DIPL_COOLDOWN_MIN   = 10    # random cooldown range (counts ALL turns: human + bot)
 DIPL_COOLDOWN_MAX   = 12    # actual value chosen secretly; red border visible, count hidden
 
+# -- Recruitment Cooldown -----------------------------------------------------
+# A nation can only recruit one army per every 10 turns (each player move is a turn).
+RECRUIT_COOLDOWN_TURNS = 10
+
 
 # -- Nation colours (by name) -------------------------------------------------
 # Insertion order is canonical nation order throughout the game.
@@ -88,7 +92,7 @@ DEPLOYMENT = 'EXPORT'
 # Default parameters for evolution.py (overridable via CLI flags).
 EVO_POPULATION       = 24     # bots per generation
 EVO_GENERATIONS      = 50     # number of generations to evolve
-EVO_GAMES_PER_PAIR   = 2      # games per matchup in round-robin
+EVO_GAMES_PER_PAIR   = 1      # games per matchup in round-robin
 EVO_MAX_TURNS        = 200    # turn limit per headless game
 EVO_ELITE_COUNT      = 4      # top N configs carried forward unchanged
 EVO_MUTATION_RATE    = 0.15   # probability of mutating each gene

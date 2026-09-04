@@ -590,9 +590,10 @@ class EvolvableBot:
             if military is None:
                 return (*best_dipl, 'intent')
             if self.config.hybrid_ratio > 0.0 and self.config.lookahead_mode == 'position':
-                from evaluator import evaluate_position
+                from evaluator import evaluate_position, _derive_ghost_set
                 root_pos = evaluate_position(grid, self.player.secret_nation, nation_list,
                                              weights=self._eval_weights,
+                                             ghost_name_set=_derive_ghost_set(grid),
                                              bot_goals=bot_goals)
                 dipl_eff_score = (1.0 - self.config.hybrid_ratio) * best_dipl[0] + self.config.hybrid_ratio * root_pos
             else:
@@ -615,7 +616,7 @@ class EvolvableBot:
         if bot_goals is not None:
             allied_name_set = set(bot_goals.prevail_goals) | {bot_ri}
         else:
-            allied_name_set = {n.color_name for n in self.player.secret_nation.allies} | {bot_ri}
+            allied_name_set = {n.color_name for n in nation_list if not self.player.secret_nation.is_enemy(n)}
 
         pool = []
         for nation in eligible:
@@ -628,7 +629,7 @@ class EvolvableBot:
                                    and unit.nation.is_enemy(s.nation)]
                     if not allied_sovs:
                         pool.append((0, 'attack', unit, c))
-            for coord in grid.get_recruit_hexes(nation):
+            for coord in grid.get_recruit_hexes(nation, turn_number=turn):
                 pool.append((0, 'recruit', nation, coord))
             for coord in grid.get_promote_hexes(nation):
                 pool.append((0, 'promote', nation, coord))
@@ -742,9 +743,10 @@ class HeadlessGame:
 
 
         self.grid = MapGrid()
-        self.grid.generate_map()
+        self.grid.generate_map(nations=self.nations)
 
         self.turn_number = 1
+        self.grid.turn_number = self.turn_number
         self.global_cooldown_name = None
 
         # Diplomacy state (pure-Python, no pygame)
@@ -762,6 +764,7 @@ class HeadlessGame:
         current = 0
 
         for _ in range(self.max_turns):
+            self.grid.turn_number = self.turn_number
             bot = bots[current]
             bot_goal = goals[current]
             opponent = bots[1 - current]
@@ -865,7 +868,7 @@ class HeadlessGame:
 class Tournament:
     """Round-robin tournament for a population of BotConfigs."""
 
-    def __init__(self, configs: list, games_per_pair: int = 2,
+    def __init__(self, configs: list, games_per_pair: int = 1,
                  max_turns: int = MAX_TURNS):
         self.configs = configs
         self.games_per_pair = games_per_pair
