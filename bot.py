@@ -111,6 +111,55 @@ class BotMemory:
                 return n
         return None
 
+    def guess_top3_factions(self, nation_list, exclude_names=()):
+        """
+        Return a list of up to 3 (Nation, score) tuples in descending score order.
+        Combines suspicion scores with move-frequency counts.
+        exclude_names: iterable of color_name strings to skip.
+        """
+        counts = self.nation_move_counts()
+        # Blend: suspicion score + 0.5 * move count
+        all_scores = {}
+        all_names = {n.color_name for n in nation_list} - set(exclude_names)
+        for name in all_names:
+            s = self.nation_scores.get(name, 0) + 0.5 * counts.get(name, 0)
+            all_scores[name] = s
+        if not all_scores:
+            return []
+        sorted_names = sorted(all_scores, key=lambda n: all_scores[n], reverse=True)
+        result = []
+        for name in sorted_names[:3]:
+            for n in nation_list:
+                if n.color_name == name:
+                    result.append((n, all_scores[name]))
+                    break
+        return result
+
+    def guess_bottom3_factions(self, nation_list, exclude_names=()):
+        """
+        Return a list of up to 3 (Nation, score) tuples in ASCENDING score order.
+        These are the nations the human appears to care about LEAST — inferred
+        as the opponent's defeat-goal targets.
+        exclude_names: iterable of color_name strings to skip.
+        """
+        counts = self.nation_move_counts()
+        all_scores = {}
+        all_names = {n.color_name for n in nation_list} - set(exclude_names)
+        for name in all_names:
+            s = self.nation_scores.get(name, 0) + 0.5 * counts.get(name, 0)
+            all_scores[name] = s
+        if not all_scores:
+            return []
+        sorted_names = sorted(all_scores, key=lambda n: all_scores[n])  # ascending
+        result = []
+        for name in sorted_names[:3]:
+            for n in nation_list:
+                if n.color_name == name:
+                    result.append((n, all_scores[name]))
+                    break
+        return result
+
+
     # ------------------------------------------------------------------
     # Utility
     # ------------------------------------------------------------------
@@ -127,6 +176,28 @@ class BotMemory:
         """Return list of (color_name, count) sorted by count descending."""
         counts = self.nation_move_counts()
         return sorted(counts.items(), key=lambda x: -x[1])[:top_n]
+
+    def observe_diplomacy(self, flag_nation, box_nation, new_stance):
+        """Update suspicion scores from a human diplomacy move.
+
+        Alliance signal: both nations in an ally declaration earn +3 prevail
+        suspicion.  The player chose to ally them — a strong signal they want
+        both to survive and thrive.
+
+        War signal: deliberately uninformative.  A war could be the player
+        pitting two enemies against each other, OR fighting their own defeat
+        goals.  Without more context we cannot tell which side the player
+        is rooting for, so no points are awarded.
+
+        Peace signal: also skipped — could be cancelling an old war/ally for
+        many reasons with no clear prevail direction.
+        """
+        if new_stance == 'ally':
+            self.add_score(flag_nation.color_name, 3)
+            self.add_score(box_nation.color_name,  3)
+            if self.debug:
+                print(f"  [Dipl-observe] Alliance {flag_nation.color_name} ↔ "
+                      f"{box_nation.color_name} → +3 each")
 
 
 # ---------------------------------------------------------------------------
@@ -176,19 +247,40 @@ def _enemy_names(nation, all_nations):
     """Return the set of color_names of nations that are enemies of the given nation."""
     return {n.color_name for n in nation.enemy_nations(all_nations)}
 
+# Backwards-compat alias imported by evolution.py
+_enemy_set = _enemy_names
+
+
 
 def _adaptive_sovereign_adjustments(grid, actions, bot_name, suspected_human_name,
-                                    turn_number, nation_list=None, adaptive_turn=None):
+                                    turn_number, nation_list=None, adaptive_turn=None,
+                                    top3_names=None, top3_spread=0.5):
     """
     Apply sovereign-targeting intelligence based on the suspected human faction.
+
+    top3_names: list of up to 3 color_name strings (best guess → worst guess).
+                When provided, suspected_human_name is ignored and the list is
+                used instead with decaying weights: rank 0 = 1.0x, rank 1 = top3_spread x,
+                rank 2 = top3_spread^2 x.
     """
-    if suspected_human_name is None:
+    # Build the effective list of (human_name, weight) pairs
+    if top3_names:
+        weighted_humans = [
+            (name, top3_spread ** i)
+            for i, name in enumerate(top3_names[:3])
+        ]
+    elif suspected_human_name is not None:
+        weighted_humans = [(suspected_human_name, 1.0)]
+    else:
         return actions
 
-    bot_enemy_names   = {n.color_name for n in NATIONS_BY_NAME[bot_name].enemy_nations(nation_list)}
-    human_enemy_names = {n.color_name for n in NATIONS_BY_NAME[suspected_human_name].enemy_nations(nation_list)}
+    bot_enemy_names = {n.color_name for n in NATIONS_BY_NAME[bot_name].enemy_nations(nation_list)}
 
-    # Count how many of the suspected human's and bot's 3 targets are already ghost nations
+    # Aggregate human enemy names across all guesses (weighted by rank)
+    # We use the top guess (weight 1.0) for the critical blocking logic
+    top_human_name = weighted_humans[0][0]
+    human_enemy_names = {n.color_name for n in NATIONS_BY_NAME[top_human_name].enemy_nations(nation_list)}
+
     human_kills_so_far = 0
     bot_kills_so_far   = 0
     if nation_list:
@@ -200,9 +292,7 @@ def _adaptive_sovereign_adjustments(grid, actions, bot_name, suspected_human_nam
             1 for n in nation_list
             if n.color_name in bot_enemy_names and n.is_ghost
         )
-    # If human already has 1 kill, any remaining human-target sovereign kill wins for them
     human_one_away = (human_kills_so_far >= 1)
-    # If bot also has 1 kill, killing a shared target gives a tie — that's acceptable
     bot_one_away   = (bot_kills_so_far >= 1)
 
     cutoff = adaptive_turn if adaptive_turn is not None else settings.BOT_ADAPTIVE_TURN
@@ -220,29 +310,31 @@ def _adaptive_sovereign_adjustments(grid, actions, bot_name, suspected_human_nam
                     continue
                 sov_name = sov.nation.color_name
 
-                if sov_name == suspected_human_name and is_adaptive_phase:
-                    score += 2000.0
+                # Check against each ranked human guess
+                for h_name, h_weight in weighted_humans:
+                    if sov_name == h_name and is_adaptive_phase:
+                        score += 2000.0 * h_weight
+                        break
 
-                elif sov_name in human_enemy_names:
-                    if sov_name not in bot_enemy_names:
-                        if is_adaptive_phase or human_one_away:
+                    h_enemy_names = {n.color_name for n in NATIONS_BY_NAME[h_name].enemy_nations(nation_list)}
+                    if sov_name in h_enemy_names:
+                        if sov_name not in bot_enemy_names:
+                            if is_adaptive_phase or human_one_away:
+                                score = -9999.0
+                        elif human_one_away and bot_one_away:
+                            score += 1000.0 * h_weight
+                        elif human_one_away:
                             score = -9999.0
-                    elif human_one_away and bot_one_away:
-                        score += 1000.0
-                    elif human_one_away:
-                        score = -9999.0
+                        break
 
         result.append((score, atype, *payload))
     return result
 
 
-def _score_attack(grid, attacker, tq, tr, enemy_name_set, allied_name_set=None,
-                   weights=None, allied_ring_set=None) -> float:
+def _score_attack(grid, attacker, tq, tr, enemy_name_set,
+                   weights=None, allied_name_set=None) -> float:
     """Score for attacker targeting hex (tq, tr)."""
-    if allied_name_set is None:
-        allied_name_set = allied_ring_set
-    from armies    import Army
-    from champions import Champion, Sovereign
+    from units import Army, Champion, Sovereign
 
     w_kill = (weights or {}).get('kill_enemy', 1.0)
 
@@ -275,7 +367,7 @@ def _score_attack(grid, attacker, tq, tr, enemy_name_set, allied_name_set=None,
     return float(score)
 
 
-def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
+def _score_move(grid, unit, tq, tr, enemy_name_set, allied_name_set,
                 weights=None) -> float:
     """Score for moving unit to (tq, tr).
 
@@ -287,9 +379,9 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
       'unsupport_enemy_champ'— moving enemy champions off supported hexes
     When None every multiplier defaults to 1.0 (original hardcoded behaviour).
     """
-    from armies    import Army
-    from champions import Champion, Sovereign
-    from knights   import Knight
+    from units import Army
+    from units import Champion, Sovereign
+    from units import Knight
 
     w = weights or {}
     w_advance   = w.get('advance_allied', 1.0)
@@ -300,7 +392,7 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
     w_territory = w.get('claim_territory', 1.0)
 
     nation    = unit.nation
-    is_allied = nation.color_name in allied_ring_set
+    is_allied = nation.color_name in allied_name_set
     score     = 0.0
 
     if isinstance(unit, Sovereign):
@@ -340,8 +432,8 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
 
     elif isinstance(unit, Champion):
         if is_allied:
-            old_d = _nearest_enemy_sov_dist(grid, unit.q, unit.r, enemy_ring_set)
-            new_d = _nearest_enemy_sov_dist(grid, tq, tr, enemy_ring_set)
+            old_d = _nearest_enemy_sov_dist(grid, unit.q, unit.r, enemy_name_set)
+            new_d = _nearest_enemy_sov_dist(grid, tq, tr, enemy_name_set)
             if new_d < old_d:
                 score += (90 + (old_d - new_d) * 10) * w_advance
             allies_at = sum(
@@ -361,8 +453,8 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
 
     elif isinstance(unit, (Army, Knight)):
         if is_allied:
-            old_d = _nearest_enemy_sov_dist(grid, unit.q, unit.r, enemy_ring_set)
-            new_d = _nearest_enemy_sov_dist(grid, tq, tr, enemy_ring_set)
+            old_d = _nearest_enemy_sov_dist(grid, unit.q, unit.r, enemy_name_set)
+            new_d = _nearest_enemy_sov_dist(grid, tq, tr, enemy_name_set)
             base_adv = 85 if isinstance(unit, Knight) else 80
             if new_d < old_d:
                 score += (base_adv + (old_d - new_d) * 10) * w_advance
@@ -388,7 +480,7 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
                 # Seizing enemy territory
                 if is_allied:
                     score += 70.0 * w_territory
-                elif curr_owner in enemy_ring_set:
+                elif curr_owner in enemy_name_set:
                     score += 30.0 * w_territory
 
     score += random.uniform(0, 0.01)  # tiny tie-break only; was uniform(0,2) which corrupted beam ordering
@@ -400,7 +492,9 @@ def _score_move(grid, unit, tq, tr, enemy_ring_set, allied_ring_set,
 # ---------------------------------------------------------------------------
 
 def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
-                    suspected_human_ri=None, turn_number=0, weights=None):
+                    suspected_human_ri=None, turn_number=0, weights=None,
+                    dipl_state=None, bot_goals=None,
+                    top3_names=None, bottom3_names=None):
     """
     Build a scored list of all legal bot actions.
     Returns list of (score, action_type, *payload).
@@ -409,31 +503,36 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
     weights: optional dict of score-category multipliers (see _score_attack,
     _score_move).  Also supports 'muster_promote' key for recruit/promote.
     When None, original hardcoded scores are used.
+
+    dipl_state: DiplomacyState instance for cooldown checking (None = no diplomacy actions).
+    bot_goals:  BotGoals instance with prevail_goals/defeat_goals lists (None = skip diplomacy).
+    top3_names:    list of up to 3 color_name strings (top human-faction guesses = inferred prevail).
+    bottom3_names: list of up to 3 color_name strings (bottom human-faction guesses = inferred defeat).
     """
     eligible        = _eligible_nations(bot_player, global_cooldown_name, nation_list)
     bot_secret      = bot_player.secret_nation
     bot_ri          = bot_secret.color_name
-    enemy_ring_set  = {n.color_name for n in bot_secret.enemy_nations(nation_list)}
-    allied_ring_set = {n.color_name for n in nation_list if not bot_secret.is_enemy(n)}
+    enemy_name_set  = {n.color_name for n in bot_secret.enemy_nations(nation_list)}
+    allied_name_set = {n.color_name for n in nation_list if not bot_secret.is_enemy(n)}
 
     w_muster = (weights or {}).get('muster_promote', 1.0)
 
     actions = []
 
     for nation in eligible:
-        is_allied = nation.color_name in allied_ring_set
+        is_allied = nation.color_name in allied_name_set
         units     = grid.get_all_nation_units(nation)
 
         for unit in units:
             for coord in grid.get_valid_attacks(unit):
-                s = _score_attack(grid, unit, *coord, enemy_ring_set,
-                                  allied_name_set=allied_ring_set,
+                s = _score_attack(grid, unit, *coord, enemy_name_set,
+                                  allied_name_set=allied_name_set,
                                   weights=weights)
                 actions.append((s, 'attack', unit, coord))
 
             for coord in grid.get_valid_moves(unit):
-                s = _score_move(grid, unit, *coord, enemy_ring_set,
-                                allied_ring_set, weights=weights)
+                s = _score_move(grid, unit, *coord, enemy_name_set,
+                                allied_name_set, weights=weights)
                 actions.append((s, 'move', unit, coord))
 
         for coord in grid.get_recruit_hexes(nation):
@@ -448,13 +547,162 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
             s = (65.0 if is_allied else 18.0) * w_muster
             actions.append((s, 'promote_knight', nation, coord))
 
+    # --- Diplomacy actions ---
+    if dipl_state is not None and bot_goals is not None and weights is not None:
+        w_ally   = weights.get('w_diplomacy_ally',  1.0)
+        w_war    = weights.get('w_diplomacy_war',   1.0)
+        w_peace  = weights.get('w_diplomacy_peace', 0.5)
+        top3_set = set(top3_names[:3]) if top3_names else set()
+
+        # bot_secret acts as the flag nation for diplomacy changes.
+        # Locked pairs are skipped — bots cannot touch a flag that's still on cooldown.
+        # Unlocked pairs with an existing stance can be RENEWED (re-locked in place)
+        # or changed; this is a meaningful strategic choice.
+        for other in nation_list:
+            if other is bot_secret or other.is_ghost:
+                continue
+            if dipl_state.is_locked(bot_secret, other):
+                continue        # can't touch; wait for cooldown to expire naturally
+            other_name  = other.color_name
+            curr_stance = bot_secret.get_stance(other)
+
+            if curr_stance == 'neutral':
+                # --- Fresh declarations from neutral ---
+                # Declare ally
+                if other_name in bot_goals.prevail_goals:
+                    score = 55.0 * w_ally
+                else:
+                    score = 5.0 * w_ally
+                actions.append((score, 'diplomacy', bot_secret, other, 'ally'))
+
+                # Declare war
+                if other_name in bot_goals.defeat_goals:
+                    score = 60.0 * w_war
+                elif other_name in top3_set:
+                    score = 30.0 * w_war
+                else:
+                    score = 0.0
+                if score > 0:
+                    actions.append((score, 'diplomacy', bot_secret, other, 'enemy'))
+
+            elif curr_stance == 'ally':
+                # --- Unlocked alliance: renew or drop ---
+                # Renew (re-lock) the alliance — valuable if other is a prevail goal
+                if other_name in bot_goals.prevail_goals:
+                    score = 50.0 * w_ally    # high: keep a goal ally locked in
+                else:
+                    score = 8.0 * w_ally     # low: marginal benefit to re-lock
+                actions.append((score, 'diplomacy', bot_secret, other, 'ally'))
+
+                # Drop alliance (make peace / back to neutral)
+                score = 10.0 * w_peace
+                actions.append((score, 'diplomacy', bot_secret, other, 'neutral'))
+
+            elif curr_stance == 'enemy':
+                # --- Unlocked war: renew or make peace ---
+                # Renew (re-lock) the war — strongly incentivised for defeat goals
+                if other_name in bot_goals.defeat_goals:
+                    score = 55.0 * w_war     # high: keep a defeat-goal war locked in
+                    actions.append((score, 'diplomacy', bot_secret, other, 'enemy'))
+                elif other_name in top3_set:
+                    score = 25.0 * w_war     # moderate: renew war on suspected human
+                    actions.append((score, 'diplomacy', bot_secret, other, 'enemy'))
+
+                # Make peace (back to neutral) — only if not a core defeat goal
+                if other_name not in bot_goals.defeat_goals:
+                    score = 20.0 * w_peace
+                    actions.append((score, 'diplomacy', bot_secret, other, 'neutral'))
+
+    # --- Third-party diplomacy actions ---
+    # The bot can move ANY nation's flag, not just its own secret nation.
+    # Strategies:
+    #   1. Wars between defeat-goal nations (weaken both)
+    #   3. Alliances between prevail-goal nations (keep them strong together)
+    #   4. Wars between suspected-human prevail nations (disrupt opponent)
+    if dipl_state is not None and bot_goals is not None and weights is not None:
+        w_ally_3p = weights.get('w_diplomacy_ally', 1.0)
+        w_war_3p  = weights.get('w_diplomacy_war',  1.0)
+
+        def _try_third_party(na, nb, desired_stance, base_score, weight):
+            """Append a third-party diplomacy action if pair is unlocked."""
+            if na is nb:
+                return
+            if dipl_state.is_locked(na, nb):
+                return
+            curr = na.get_stance(nb)
+            if curr == desired_stance:
+                # Already in desired stance — offer renew at slightly discounted score
+                if base_score * weight >= 20.0:
+                    actions.append((base_score * weight * 0.8, 'diplomacy',
+                                    na, nb, desired_stance))
+            else:
+                actions.append((base_score * weight, 'diplomacy',
+                                na, nb, desired_stance))
+
+        # Pre-compute nation groups used by multiple strategies
+        d_nations = [n for n in nation_list
+                     if n.color_name in bot_goals.defeat_goals and not n.is_ghost]
+        p_nations = [n for n in nation_list
+                     if n.color_name in bot_goals.prevail_goals and not n.is_ghost]
+
+        # Strategy 1: Wars between bot's defeat-goal nations
+        for i, da in enumerate(d_nations):
+            for db in d_nations[i+1:]:
+                _try_third_party(da, db, 'enemy', 45.0, w_war_3p)
+
+        # Strategy 2: Wars between prevail-goal and defeat-goal nations,
+        # but only when the prevail nation is measurably stronger.
+        # Strength = territory controlled + weighted unit count.
+        def _nation_strength(nation):
+            territory = sum(1 for owner in grid.tile_control.values()
+                            if owner == nation.color_name) if hasattr(grid, 'tile_control') else 0
+            armies    = len([u for ul in grid.armies.values()
+                             for u in ul if u.nation is nation])
+            champions = len([u for ul in grid.champions.values()
+                             for u in ul if u.nation is nation])
+            sov       = len([u for ul in grid.sovereigns.values()
+                             for u in ul if u.nation is nation])
+            return territory + armies + champions * 2 + sov * 3
+
+        for pn in p_nations:
+            for dn in d_nations:
+                if _nation_strength(pn) > _nation_strength(dn):
+                    _try_third_party(pn, dn, 'enemy', 40.0, w_war_3p)
+
+        # Strategy 3: Alliances between bot's prevail-goal nations
+        for i, pa in enumerate(p_nations):
+            for pb in p_nations[i+1:]:
+                _try_third_party(pa, pb, 'ally', 45.0, w_ally_3p)
+
+        # Strategy 4: Wars between suspected-human prevail nations (disrupt opponent)
+        if top3_names:
+            h_nations = [n for n in nation_list
+                         if n.color_name in top3_names and not n.is_ghost]
+            for i, ha in enumerate(h_nations):
+                for hb in h_nations[i+1:]:
+                    _try_third_party(ha, hb, 'enemy', 30.0, w_war_3p)
+
+        # Strategy 5: Alliances between inferred human defeat nations
+        # The bottom-3 nations by score are those the human cares least about
+        # (moved rarely, got wars put on them, not allied by the human).
+        # Allying them together makes them harder to eliminate.
+        if bottom3_names:
+            b_nations = [n for n in nation_list
+                         if n.color_name in bottom3_names and not n.is_ghost]
+            for i, ba in enumerate(b_nations):
+                for bb in b_nations[i+1:]:
+                    _try_third_party(ba, bb, 'ally', 35.0, w_ally_3p)
+
     # Apply adaptive sovereign intelligence
-    adaptive_t = weights.get('adaptive_turn') if weights else None
+    adaptive_t  = weights.get('adaptive_turn') if weights else None
+    top3_spread = (weights.get('top3_spread', 0.5) if weights else 0.5)
     actions = _adaptive_sovereign_adjustments(
         grid, actions, bot_ri, suspected_human_ri, turn_number,
-        nation_list=nation_list, adaptive_turn=adaptive_t)
+        nation_list=nation_list, adaptive_turn=adaptive_t,
+        top3_names=top3_names, top3_spread=top3_spread)
 
     return actions
+
 
 
 # ---------------------------------------------------------------------------
@@ -540,7 +788,7 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
         # If depth == 0 with hybrid evaluation (evaluate position immediately without opponent counter)
         if depth <= 0:
             pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights,
-                                          ghost_ri_set=_derive_ghost_set(snap))
+                                          ghost_name_set=_derive_ghost_set(snap))
             net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * pos_score
             if net > best_net:
                 best_net = net
@@ -558,7 +806,7 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
         if opp_nation is None:
             # No guess — evaluate our immediate position
             pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights,
-                                          ghost_ri_set=_derive_ghost_set(snap))
+                                          ghost_name_set=_derive_ghost_set(snap))
             if mode == 'action':
                 net = my_move_score
             else:
@@ -578,7 +826,7 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
 
             if not opp_actions:
                 pos_score = evaluate_position(snap, bot_secret, nation_list, weights=eval_weights,
-                                              ghost_ri_set=_derive_ghost_set(snap))
+                                              ghost_name_set=_derive_ghost_set(snap))
             else:
                 opp_valid = [a for a in opp_actions if a[0] > -1000]
                 if opp_valid:
@@ -633,7 +881,7 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
                                     _execute(opp_snap, opp_followups[0])
 
                     branch_pos = evaluate_position(opp_snap, bot_secret, nation_list, weights=eval_weights,
-                                                    ghost_ri_set=_derive_ghost_set(opp_snap))
+                                                    ghost_name_set=_derive_ghost_set(opp_snap))
                     if branch_pos < worst_pos_score:
                         worst_pos_score = branch_pos
 
@@ -728,7 +976,37 @@ def _execute(grid, action):
             return nation, 'promote_knight', f"{tag} Promote Knight {nation.color_name} at {coord}"
         return None, None, f"{tag} Promote Knight: no army found"
 
+    if atype == 'diplomacy':
+        # payload = (nation_a, nation_b, new_stance[, dipl_state])
+        # dipl_state is optional — headless games pass it; main.py handles locking via panel
+        nation_a, nation_b, new_stance = payload[0], payload[1], payload[2]
+        dipl_state_local = payload[3] if len(payload) > 3 else None
+        if new_stance == 'ally':
+            nation_a.set_ally(nation_b)
+        elif new_stance == 'enemy':
+            nation_a.set_enemy(nation_b)
+        else:
+            nation_a.set_neutral(nation_b)
+        if dipl_state_local is not None:
+            if new_stance == 'neutral':
+                dipl_state_local.unlock_pair(nation_a, nation_b)
+            else:
+                dipl_state_local.lock_pair(nation_a, nation_b)
+        try:
+            from map import reconcile_stance_change
+            events = reconcile_stance_change(
+                grid, nation_a, nation_b, new_stance,
+                list(NATIONS_BY_NAME.values()))
+            for ev in events:
+                if settings.DEPLOYMENT == 'DEBUG':
+                    print(f"[Bot-diplomacy] {ev}")
+        except (ImportError, AttributeError):
+            pass
+        return nation_a, 'diplomacy', \
+            f"{tag} Diplomacy: {nation_a.color_name} → {new_stance} → {nation_b.color_name}"
+
     return None, None, f"{tag} Unknown action: {atype}"
+
 
 
 # ---------------------------------------------------------------------------
@@ -757,7 +1035,7 @@ def _turn_random(grid, bot_player, global_cooldown_name, nation_list):
         return None, None, "[Bot-random] No eligible nations."
 
     bot_secret      = bot_player.secret_nation
-    allied_ring_set = {n.color_name for n in nation_list if not bot_secret.is_enemy(n)}
+    allied_name_set = {n.color_name for n in nation_list if not bot_secret.is_enemy(n)}
 
     random.shuffle(eligible)
     pool = []
@@ -768,7 +1046,7 @@ def _turn_random(grid, bot_player, global_cooldown_name, nation_list):
                 # Never randomly attack an allied sovereign
                 tq, tr = c
                 allied_sovs = [s for s in grid.sovereigns.get((tq, tr), [])
-                               if s.nation.color_name in allied_ring_set
+                               if s.nation.color_name in allied_name_set
                                and unit.nation.is_enemy(s.nation)]
                 if not allied_sovs:
                     pool.append(('attack', unit, c))
@@ -826,18 +1104,25 @@ def do_bot_turn(grid, bot_player, global_cooldown_name, nation_list, turn_number
 def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn_number,
                        suspected_human_ri=None, weights=None, evolved_config=None,
                        lookahead_depth=None, lookahead_beam=None, lookahead_mode=None,
-                       eval_weights=None, hybrid_ratio=None):
+                       eval_weights=None, hybrid_ratio=None,
+                       dipl_state=None, bot_goals=None,
+                       top3_names=None, bottom3_names=None):
     """
     Select the bot's next action WITHOUT executing it.
 
     Returns an action tuple  (score, atype, *payload)  or None if no legal move.
-    atype is 'move' | 'attack' | 'recruit' | 'promote'.
+    atype is 'move' | 'attack' | 'recruit' | 'promote' | 'diplomacy'.
 
     For 'move'/'attack':   payload = (unit, coord)
     For 'recruit'/'promote': payload = (nation, coord)
+    For 'diplomacy':       payload = (nation_a, nation_b, new_stance)
 
-    suspected_human_ri: ring_index of the bot's best guess for the human's
+    suspected_human_ri: color_name of the bot's best guess for the human's
     secret faction (or None if unknown). Used for adaptive sovereign strategy.
+    Deprecated in favour of top3_names but kept for backward-compat.
+
+    top3_names: list of up to 3 color_name strings (ranked guesses) for the
+    human's secret faction. Supersedes suspected_human_ri when provided.
 
     weights: optional dict of score-category multipliers (from an evolved
     BotConfig).  When None, original hardcoded scores are used.
@@ -845,18 +1130,8 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
     evolved_config: optional BotConfig.  When provided, the random/intent
     blend uses the config's intent_probability() instead of _intent_prob().
 
-    lookahead_depth: how many plies to search (1 = current 1-ply, 2+ = multi-ply).
-    Defaults to settings.BOT_LOOKAHEAD_DEPTH.
-
-    lookahead_beam: how many top candidates to explore at deeper plies.
-    Defaults to settings.BOT_LOOKAHEAD_BEAM.
-
-    lookahead_mode: 'action' (score subtraction) or 'position' (board eval).
-    Defaults to settings.BOT_LOOKAHEAD_MODE.
-
-    eval_weights: optional dict of evaluator weight overrides for position mode.
-
-    hybrid_ratio: float 0.0 to 1.0 (blends move score and position eval).
+    dipl_state: DiplomacyState instance for cooldown checking.
+    bot_goals:  BotGoals with prevail_goals/defeat_goals lists.
     """
     if evolved_config is not None:
         if lookahead_depth is None:
@@ -900,7 +1175,11 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
             actions = _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
                                       suspected_human_ri=suspected_human_ri,
                                       turn_number=turn_number,
-                                      weights=weights)
+                                      weights=weights,
+                                      dipl_state=dipl_state,
+                                      bot_goals=bot_goals,
+                                      top3_names=top3_names,
+                                      bottom3_names=bottom3_names)
             if not actions:
                 return None
             # Discard any disqualified actions (score < -1000)
@@ -916,7 +1195,7 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
     else:
         # Build random pool — also apply adaptive sovereign rules
         bot_ri          = bot_player.secret_nation.color_name
-        allied_ring_set = {n.color_name for n in nation_list
+        allied_name_set = {n.color_name for n in nation_list
                            if not bot_player.secret_nation.is_enemy(n)}
         eligible = _eligible_nations(bot_player, global_cooldown_name, nation_list)
         pool = []
@@ -927,7 +1206,7 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
                     # Never randomly attack an allied sovereign
                     tq, tr = c
                     allied_sovs = [s for s in grid.sovereigns.get((tq, tr), [])
-                                   if s.nation.color_name in allied_ring_set
+                                   if s.nation.color_name in allied_name_set
                                    and unit.nation.is_enemy(s.nation)]
                     if not allied_sovs:
                         pool.append((0, 'attack', unit, c))

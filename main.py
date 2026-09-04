@@ -22,7 +22,7 @@ from diplomacy_panel import DiplomacyPanel, DiplomacyAction
 
 # Evolution module — optional, only needed for "Play vs Evolved Bot"
 try:
-    from evolution import load_top_configs, BotConfig, EvolvableBot
+    from evolution import load_top_configs, BotConfig, EvolvableBot, BotGoals
     _HAS_EVOLUTION = True
 except ImportError:
     _HAS_EVOLUTION = False
@@ -242,7 +242,7 @@ def draw_top_bar(screen, font_large, font_small, active_player,
 def draw_predictions_panel(screen, font_small, player):
     """Floating upper-left panel showing the human player's PREVAIL/DEFEAT goals.
 
-    Mirrors the style of the diplo-ring panel on the upper-right.
+    Mirrors the style of the diplomacy panel on the upper-right.
     Each entry shows: army sprite | nation name | point value (right-aligned).
     """
     MARGIN   = 10
@@ -757,6 +757,10 @@ async def main():
     # Bot memory: records all human moves for future analysis
     bot_memory = BotMemory(debug=(settings.DEPLOYMENT == 'DEBUG'))
 
+    # Bot goals (prevail + defeat, assigned once per game like human picks)
+    # Initialised to empty; will be randomised when vs_bot game starts.
+    bot_goals = None
+
     # Bot animation flash state
     bot_pending_action    = None
     bot_flash_hex         = None
@@ -856,6 +860,7 @@ async def main():
                     evolved_bot_config  = None
                     evolved_bot_weights = None
                     bot_memory          = BotMemory(debug=(settings.DEPLOYMENT == 'DEBUG'))
+                    bot_goals           = None
                     grid.generate_map()
                     dipl_panel.reset()
 
@@ -876,32 +881,20 @@ async def main():
                         player2.defeat_picks  = _sn[3:]
                         game_mode = 'vs_bot'
                         player2.is_bot = True
-                        evolved_bot_config  = None
-                        evolved_bot_weights = None
+                        if _HAS_EVOLUTION:
+                            bot_goals = BotGoals.random_for(p2_nation, nation_list)
                         game_state     = STATE_HUMAN_TURN
                         game_mode_global = game_mode
-                        print(f"[Mode] Playing vs Bot")
-                    elif (buttons_en and splash_evolved_rect
-                          and splash_evolved_rect.collidepoint(mx, my)):
-                        player1.prevail_picks = list(prevail_picks)
-                        player1.defeat_picks  = list(defeat_picks)
-                        _sn = list(nation_list)
-                        import random as _rnd3; _rnd3.shuffle(_sn)
-                        player2.prevail_picks = _sn[:3]
-                        player2.defeat_picks  = _sn[3:]
-                        game_mode = 'vs_bot'
-                        player2.is_bot = True
-                        game_state     = STATE_HUMAN_TURN
-                        game_mode_global = game_mode
-                        _loaded = load_top_configs(_evolved_configs_path)
+                        # Always try to load an evolved config; fall back to basic bot
+                        _loaded = load_top_configs(_evolved_configs_path) if _HAS_EVOLUTION and os.path.exists(_evolved_configs_path) else []
                         if _loaded:
                             evolved_bot_config  = _loaded[0]
                             evolved_bot_weights = evolved_bot_config.to_weights_dict()
-                            print(f"[Mode] Playing vs Champion Evolved Bot")
+                            print(f"[Mode] Playing vs Evolved Bot")
                         else:
                             evolved_bot_config  = None
                             evolved_bot_weights = None
-                            print(f"[Mode] Playing vs Bot (no evolved configs found)")
+                            print(f"[Mode] Playing vs Bot (no evolved configs yet)")
                     elif buttons_en and splash_human_rect.collidepoint(mx, my):
                         player1.prevail_picks = list(prevail_picks)
                         player1.defeat_picks  = list(defeat_picks)
@@ -1179,6 +1172,14 @@ async def main():
                 if action:
                     _apply_diplomacy_move(grid, dipl_panel, action, nation_list)
                     dipl_panel.tick_cooldowns()
+                    # Let the bot observe what the human did diplomatically
+                    if game_mode == 'vs_bot':
+                        _new_stance = ('ally'    if action.to_zone == 'ally'
+                                       else 'enemy' if action.to_zone == 'war'
+                                       else 'neutral')
+                        bot_memory.observe_diplomacy(action.flag_nation,
+                                                     action.box_nation,
+                                                     _new_stance)
 
                     if check_trigger_game_end(grid, nation_list):
                         game_state  = STATE_GAME_OVER
@@ -1424,10 +1425,16 @@ async def main():
             bot_think_timer -= dt
             if bot_think_timer <= 0:
                 # Compute the action (don't execute yet — animate first)
-                _suspected = bot_memory.guess_faction(
+                # Build top-3 suspicion list for this turn
+                _top3_pairs = bot_memory.guess_top3_factions(
                     nation_list,
                     exclude_names=(p2_nation.color_name,))
-                _suspected_name = _suspected.color_name if _suspected else None
+                _top3_names = [n.color_name for n, _ in _top3_pairs]
+                _bottom3_pairs = bot_memory.guess_bottom3_factions(
+                    nation_list,
+                    exclude_names=(p2_nation.color_name,))
+                _bottom3_names = [n.color_name for n, _ in _bottom3_pairs]
+                _suspected_name = _top3_names[0] if _top3_names else None
                 bot_pending_action = bot_ai.compute_bot_action(
                     grid, player2, global_cooldown_name, nation_list,
                     turn_number, suspected_human_ri=_suspected_name,
@@ -1436,7 +1443,11 @@ async def main():
                     lookahead_depth=evolved_bot_config.lookahead_depth if evolved_bot_config else None,
                     lookahead_beam=evolved_bot_config.lookahead_beam if evolved_bot_config else None,
                     lookahead_mode=evolved_bot_config.lookahead_mode if evolved_bot_config else None,
-                    eval_weights=evolved_bot_config.to_evaluator_weights() if evolved_bot_config else None)
+                    eval_weights=evolved_bot_config.to_evaluator_weights() if evolved_bot_config else None,
+                    dipl_state=dipl_panel.state,
+                    bot_goals=bot_goals,
+                    top3_names=_top3_names,
+                    bottom3_names=_bottom3_names)
                 if bot_pending_action is None:
                     # No legal move at all; skip straight to human turn
                     game_state         = STATE_HUMAN_TURN
@@ -1445,16 +1456,42 @@ async def main():
                     dipl_panel.tick_cooldowns()
                 else:
                     _, atype, *payload = bot_pending_action
-                    actor, coord = payload[0], payload[1]
-                    if atype in ('move', 'attack'):
+                    if atype == 'diplomacy':
+                        # Diplomacy actions: no hex flash — execute immediately then show panel
+                        nation_a, nation_b, new_stance = payload[0], payload[1], payload[2]
+                        from diplomacy_panel import DiplomacyAction as _DA
+                        dipl_action = _DA(
+                            box_nation=nation_b,
+                            flag_nation=nation_a,
+                            from_zone='home',   # bot-generated; reconcile handles effects
+                            to_zone='war' if new_stance == 'enemy' else
+                                    'ally' if new_stance == 'ally' else 'home')
+                        _apply_diplomacy_move(grid, dipl_panel, dipl_action, nation_list)
+                        # No flash — immediately transition to post-flash / turn end
+                        if settings.DEPLOYMENT == 'DEBUG':
+                            print(f"[Bot-dipl] {nation_a.color_name} -> {new_stance} -> {nation_b.color_name}")
+                        bot_pending_action   = None
+                        if check_trigger_game_end(grid, nation_list):
+                            game_state  = STATE_GAME_OVER
+                            game_result = True
+                        else:
+                            game_state         = STATE_HUMAN_TURN
+                            current_player_idx = 0
+                            turn_number       += 1
+                            dipl_panel.tick_cooldowns()
+                    elif atype in ('move', 'attack'):
+                        actor, coord = payload[0], payload[1]
                         bot_flash_hex = (actor.q, actor.r)
                         bot_flash_button_key = None
+                        bot_flash_timer = BOT_FLASH_MS
+                        game_state = STATE_BOT_PRE_FLASH
                     else:   # recruit / promote
+                        actor = payload[0]
                         ri = actor.color_name
                         bot_flash_hex = None
                         bot_flash_button_key = (atype if atype == 'recruit' else 'promote', ri)
-                    bot_flash_timer = BOT_FLASH_MS
-                    game_state = STATE_BOT_PRE_FLASH
+                        bot_flash_timer = BOT_FLASH_MS
+                        game_state = STATE_BOT_PRE_FLASH
 
         # ── Bot pre-flash (show source) ───────────────────────────────────
         if game_state == STATE_BOT_PRE_FLASH:
@@ -1472,8 +1509,11 @@ async def main():
 
                 # Determine post-flash hex (destination)
                 _, atype, *payload = bot_pending_action
-                actor, coord = payload[0], payload[1]
-                bot_flash_hex = coord
+                if atype in ('move', 'attack'):
+                    actor, coord = payload[0], payload[1]
+                    bot_flash_hex = coord
+                else:
+                    bot_flash_hex = None
                 bot_flash_button_key = None
 
                 bot_flash_timer = BOT_FLASH_MS
@@ -1530,17 +1570,17 @@ async def main():
             # Nations the active player cannot move right now → rendered as frozen
             active_player = players[current_player_idx]
             eligible_now      = get_eligible_nations(active_player, global_cooldown_name, nation_list)
-            eligible_ring_idx = {n.color_name for n in eligible_now}
-            frozen_ring_idx   = {n.color_name for n in nation_list
-                                 if n.color_name not in eligible_ring_idx}
-            ghost_ring_idx    = {n.color_name for n in nation_list if n.is_ghost}
+            eligible_name_set = {n.color_name for n in eligible_now}
+            frozen_name_set   = {n.color_name for n in nation_list
+                                 if n.color_name not in eligible_name_set}
+            ghost_name_set    = {n.color_name for n in nation_list if n.is_ghost}
 
             grid.draw(screen,
                       highlight_move=highlight_move,
                       highlight_attack=highlight_attack,
                       drag_unit=drag_unit,
-                      frozen_nations=frozen_ring_idx,
-                      ghost_nations=ghost_ring_idx)
+                      frozen_nations=frozen_name_set,
+                      ghost_nations=ghost_name_set)
 
             # Action-pending highlights drawn on top of board
             hw, hh = grid.hex_width, grid.hex_height

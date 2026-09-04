@@ -58,35 +58,31 @@ class DiplomacyAction:
     to_zone: str           # 'home' | 'ally' | 'war'
 
 
-class DiplomacyPanel:
-    """Manages the 6-nation diplomacy boxes on the right sidebar."""
+class DiplomacyState:
+    """Pure-Python (no pygame) diplomacy cooldown tracker.
 
-    def __init__(self, nations: list[Nation]):
-        self.nations = nations
+    Tracks which nation-pairs are on cooldown after a stance change.
+    Used by both DiplomacyPanel (UI layer) and headless HeadlessGame (evolution).
+    """
+
+    def __init__(self):
         # Cooldowns keyed by frozenset({name_a, name_b}) -> turns_remaining (int)
-        self.cooldowns: dict[frozenset, int] = {}
-        self.drag: _DragState | None = None
-        self.mouse_pos: tuple[int, int] = (0, 0)
-
-    # -------------------------------------------------------------------------
-    # Public State API
-    # -------------------------------------------------------------------------
+        self.cooldowns: dict = {}
 
     def reset(self):
-        """Clear all cooldowns and active drag state."""
+        """Clear all cooldowns."""
         self.cooldowns.clear()
-        self.drag = None
 
-    def lock_pair(self, a: Nation, b: Nation):
+    def lock_pair(self, a, b):
         """Lock diplomacy between two nations for a secret random duration."""
         cd = random.randint(settings.DIPL_COOLDOWN_MIN, settings.DIPL_COOLDOWN_MAX)
         self.cooldowns[frozenset({a.color_name, b.color_name})] = cd
 
-    def unlock_pair(self, a: Nation, b: Nation):
+    def unlock_pair(self, a, b):
         """Remove cooldown lock between two nations."""
         self.cooldowns.pop(frozenset({a.color_name, b.color_name}), None)
 
-    def is_locked(self, a: Nation, b: Nation) -> bool:
+    def is_locked(self, a, b) -> bool:
         """True if relationship between nation a and nation b is on cooldown."""
         return self.cooldowns.get(frozenset({a.color_name, b.color_name}), 0) > 0
 
@@ -99,6 +95,43 @@ class DiplomacyPanel:
                 expired.append(pair)
         for pair in expired:
             del self.cooldowns[pair]
+
+
+class DiplomacyPanel:
+    """Manages the 6-nation diplomacy boxes on the right sidebar."""
+
+    def __init__(self, nations: list[Nation]):
+        self.nations = nations
+        self.state   = DiplomacyState()   # pure-Python cooldown tracker
+        self.drag: _DragState | None = None
+        self.mouse_pos: tuple[int, int] = (0, 0)
+
+    # -------------------------------------------------------------------------
+    # Public State API  (delegate to self.state for cooldown ops)
+    # -------------------------------------------------------------------------
+
+    def reset(self):
+        """Clear all cooldowns and active drag state."""
+        self.state.reset()
+        self.drag = None
+
+    def lock_pair(self, a: Nation, b: Nation):
+        """Lock diplomacy between two nations for a secret random duration."""
+        self.state.lock_pair(a, b)
+
+    def unlock_pair(self, a: Nation, b: Nation):
+        """Remove cooldown lock between two nations."""
+        self.state.unlock_pair(a, b)
+
+    def is_locked(self, a: Nation, b: Nation) -> bool:
+        """True if relationship between nation a and nation b is on cooldown."""
+        return self.state.is_locked(a, b)
+
+    def tick_cooldowns(self):
+        """Decrement all active cooldowns by 1. Call after every turn (human or bot)."""
+        self.state.tick_cooldowns()
+
+
 
     # -------------------------------------------------------------------------
     # Layout and Geometry Helpers

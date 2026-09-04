@@ -19,9 +19,7 @@ import pygame
 import settings
 import util
 from factions import NATIONS, NATIONS_BY_NAME
-from armies import Army
-from champions import Champion, Sovereign
-from knights import Knight
+from units import Army, Knight, Champion, Sovereign
 
 
 # ---------------------------------------------------------------------------
@@ -78,9 +76,9 @@ class MapGrid:
 
     def generate_map(self):
         """Place all 37 hex tiles, starting control, and starting units."""
-        from armies    import Army
-        from champions import Champion, Sovereign
-        from knights   import Knight
+        from units import Army
+        from units import Champion, Sovereign
+        from units import Knight
 
         self.tiles.clear()
         self.tile_control.clear()
@@ -308,7 +306,7 @@ class MapGrid:
 
     @staticmethod
     def _are_allied(n1, n2) -> bool:
-        """True if two nations are the same or ring-adjacent (allies)."""
+        """True if two nations are the same or have an explicit ally stance."""
         return n1 is n2 or n1.is_ally(n2)
 
     def is_supported(self, unit) -> bool:
@@ -409,9 +407,9 @@ class MapGrid:
                           (a friendly unit present there). No player may move a sovereign
                           to an unsupported hex.
         """
-        from armies    import Army
-        from champions import Champion, Sovereign
-        from knights   import Knight
+        from units import Army
+        from units import Champion, Sovereign
+        from units import Knight
         q, r   = unit.hex_location
         nation = unit.nation
         valid  = []
@@ -455,9 +453,9 @@ class MapGrid:
         Return list of (q,r) hexes where unit can make a legal attack.
         Only armies, knights, and champions may attack.
         """
-        from armies    import Army
-        from champions import Champion
-        from knights   import Knight
+        from units import Army
+        from units import Champion
+        from units import Knight
         q, r   = unit.hex_location
         nation = unit.nation
         valid  = set()
@@ -539,9 +537,9 @@ class MapGrid:
           - ENEMY             : Army/Knight/Champion seizes it.
           - Ghost-owned       : treated as unclaimed; any Army/Knight/Champion claims it.
         """
-        from armies    import Army
-        from champions import Champion, Sovereign
-        from knights   import Knight
+        from units import Army
+        from units import Champion, Sovereign
+        from units import Knight
 
         curr_name = self.tile_control.get((tq, tr))
         unit_name = unit.nation.color_name
@@ -564,9 +562,9 @@ class MapGrid:
 
     def _move_unit(self, unit, tq, tr):
         """Unconditionally relocate unit to (tq, tr) and update territory control."""
-        from armies    import Army
-        from champions import Champion, Sovereign
-        from knights   import Knight
+        from units import Army
+        from units import Champion, Sovereign
+        from units import Knight
         if isinstance(unit, Army):
             self.remove_army(unit);     unit.q, unit.r = tq, tr; self.add_army(unit)
         elif isinstance(unit, Knight):
@@ -597,9 +595,9 @@ class MapGrid:
         If success is False the attack was illegal and nothing was changed.
         When the attacker survives and must advance, it is moved automatically.
         """
-        from armies    import Army
-        from champions import Champion, Sovereign
-        from knights   import Knight
+        from units import Army
+        from units import Champion, Sovereign
+        from units import Knight
 
         nation       = attacker.nation
         atk_supp     = self.is_supported(attacker)
@@ -888,7 +886,7 @@ class MapGrid:
 
     def recruit_army(self, nation, q, r):
         """Place a new Army for nation at (q,r). Returns the new Army."""
-        from armies import Army
+        from units import Army
         army = Army(nation, q, r)
         self.add_army(army)
         return army
@@ -909,7 +907,7 @@ class MapGrid:
 
     def promote_to_champion(self, army):
         """Remove army and place a Champion in the same hex. Returns the Champion."""
-        from champions import Champion
+        from units import Champion
         q, r = army.hex_location
         self.remove_army(army)
         champ = Champion(army.nation, q, r)
@@ -932,7 +930,7 @@ class MapGrid:
 
     def promote_to_knight(self, army):
         """Remove army and place a Knight in the same hex. Returns the Knight."""
-        from knights import Knight
+        from units import Knight
         q, r = army.hex_location
         self.remove_army(army)
         knight = Knight(army.nation, q, r)
@@ -1121,9 +1119,9 @@ class MapGrid:
 
 def _remove_unit(grid, unit):
     """Remove a unit of any type from the grid."""
-    from armies import Army
-    from champions import Champion, Sovereign
-    from knights import Knight
+    from units import Army
+    from units import Champion, Sovereign
+    from units import Knight
     if isinstance(unit, Champion):
         grid.remove_champion(unit)
     elif isinstance(unit, Sovereign):
