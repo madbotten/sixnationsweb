@@ -1732,6 +1732,220 @@ class TestGhostNationTerritory(unittest.TestCase):
             "Yellow army moving into neutral territory should claim it")
 
 
+class TestFineGrainedDiplomacy(unittest.TestCase):
+    """Unit tests for fine-grained diplomacy genes, 2-step transitions, and evolution integration."""
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        for nation in NATIONS:
+            nation.is_ghost = False
+        _init_diplomacy(NATIONS)
+        self.grid = MapGrid()
+        self.grid.generate_map()
+        from diplomacy_panel import DiplomacyState
+        self.dipl_state = DiplomacyState()
+
+    def test_2step_diplomacy_prevail_war_to_neutral(self):
+        """When prevail picks are at war, bot proposes 'neutral' to end war before allying."""
+        from bot import _gather_actions
+        from evolution import BotGoals
+        from player import Player
+
+        p1_nation = NATIONS[0]  # Yilerond
+        p2_nation = NATIONS[1]  # Aethelgard
+        # Set them at war initially
+        p1_nation.set_enemy(p2_nation)
+
+        player = Player(p1_nation, is_bot=True)
+        goals = BotGoals(prevail_goals=[p1_nation.color_name, p2_nation.color_name],
+                         defeat_goals=[NATIONS[3].color_name, NATIONS[4].color_name, NATIONS[5].color_name])
+        weights = {
+            'w_dipl_prevail_alliance': 2.0,
+            'w_dipl_defeat_vs_defeat': 1.0,
+            'w_dipl_prevail_vs_defeat': 1.0,
+            'w_dipl_peace': 0.5,
+        }
+
+        actions = _gather_actions(self.grid, player, None, NATIONS,
+                                  weights=weights, dipl_state=self.dipl_state,
+                                  bot_goals=goals)
+
+        # Look for diplomacy actions concerning (p1, p2)
+        p1_p2_actions = [a for a in actions if a[1] == 'diplomacy'
+                         and {a[2].color_name, a[3].color_name} == {p1_nation.color_name, p2_nation.color_name}]
+        self.assertTrue(len(p1_p2_actions) > 0, "Should generate diplomacy action for warring prevail nations")
+        # Direct 'ally' jump is forbidden; it must propose 'neutral' (Step 1)
+        stances = [a[4] for a in p1_p2_actions]
+        self.assertIn('neutral', stances, "Must propose 'neutral' as step 1 to end war between prevail picks")
+        self.assertNotIn('ally', stances, "Cannot jump directly from enemy to ally")
+
+    def test_2step_diplomacy_defeat_ally_to_neutral(self):
+        """When defeat picks are allied, bot proposes 'neutral' to break alliance before war."""
+        from bot import _gather_actions
+        from evolution import BotGoals
+        from player import Player
+
+        d1 = NATIONS[3]  # Crestmoor
+        d2 = NATIONS[4]  # Drakenreach
+        # Set them allied initially
+        d1.set_ally(d2)
+
+        player = Player(NATIONS[0], is_bot=True)
+        goals = BotGoals(prevail_goals=[NATIONS[0].color_name, NATIONS[1].color_name, NATIONS[2].color_name],
+                         defeat_goals=[d1.color_name, d2.color_name, NATIONS[5].color_name])
+        weights = {
+            'w_dipl_defeat_vs_defeat': 2.5,
+            'w_dipl_prevail_alliance': 1.0,
+            'w_dipl_prevail_vs_defeat': 1.0,
+        }
+
+        actions = _gather_actions(self.grid, player, None, NATIONS,
+                                  weights=weights, dipl_state=self.dipl_state,
+                                  bot_goals=goals)
+
+        d1_d2_actions = [a for a in actions if a[1] == 'diplomacy'
+                         and {a[2].color_name, a[3].color_name} == {d1.color_name, d2.color_name}]
+        self.assertTrue(len(d1_d2_actions) > 0, "Should generate diplomacy action for allied defeat nations")
+        stances = [a[4] for a in d1_d2_actions]
+        self.assertIn('neutral', stances, "Must propose 'neutral' as step 1 to break alliance between defeat picks")
+        self.assertNotIn('enemy', stances, "Cannot jump directly from ally to enemy")
+
+    def test_targeted_diplomacy_weights_scaling(self):
+        """Fine-grained weights properly scale their corresponding targeted actions."""
+        from bot import _gather_actions
+        from evolution import BotGoals
+        from player import Player
+
+        player = Player(NATIONS[0], is_bot=True)
+        goals = BotGoals(prevail_goals=[NATIONS[0].color_name, NATIONS[1].color_name, NATIONS[2].color_name],
+                         defeat_goals=[NATIONS[3].color_name, NATIONS[4].color_name, NATIONS[5].color_name])
+
+        # Test with low defeat vs defeat weight
+        w_low = {'w_dipl_defeat_vs_defeat': 0.5, 'w_dipl_prevail_vs_defeat': 1.0, 'w_dipl_prevail_alliance': 1.0}
+        act_low = _gather_actions(self.grid, player, None, NATIONS,
+                                  weights=w_low, dipl_state=self.dipl_state, bot_goals=goals)
+        d_wars_low = [a[0] for a in act_low if a[1] == 'diplomacy' and a[4] == 'enemy'
+                      and {a[2].color_name, a[3].color_name} == {NATIONS[3].color_name, NATIONS[4].color_name}]
+
+        # Test with high defeat vs defeat weight
+        w_high = {'w_dipl_defeat_vs_defeat': 2.0, 'w_dipl_prevail_vs_defeat': 1.0, 'w_dipl_prevail_alliance': 1.0}
+        act_high = _gather_actions(self.grid, player, None, NATIONS,
+                                   weights=w_high, dipl_state=self.dipl_state, bot_goals=goals)
+        d_wars_high = [a[0] for a in act_high if a[1] == 'diplomacy' and a[4] == 'enemy'
+                       and {a[2].color_name, a[3].color_name} == {NATIONS[3].color_name, NATIONS[4].color_name}]
+
+        self.assertTrue(len(d_wars_low) > 0 and len(d_wars_high) > 0)
+        self.assertAlmostEqual(d_wars_high[0] / d_wars_low[0], 4.0, places=1,
+                               msg="Score should scale 4x when gene quadruples (2.0 vs 0.5)")
+
+    def test_intent_chooses_diplomacy_in_lookahead(self):
+        """EvolvableBot intent move chooses high-scoring diplomacy even with lookahead_depth > 1."""
+        from evolution import BotConfig, EvolvableBot, BotGoals
+
+        config = BotConfig(
+            lookahead_depth=2,
+            lookahead_beam=3,
+            hybrid_ratio=0.5,
+            w_random=0.0,
+            w_deceptive=0.0,
+            w_dipl_prevail_vs_defeat=4.0,  # very high war weight -> ~240 score
+            w_dipl_defeat_vs_defeat=3.0,
+        )
+        bot = EvolvableBot(NATIONS[0], config)
+        goals = BotGoals(prevail_goals=[NATIONS[0].color_name, NATIONS[1].color_name, NATIONS[2].color_name],
+                         defeat_goals=[NATIONS[3].color_name, NATIONS[4].color_name, NATIONS[5].color_name])
+
+        action = bot.compute_action(self.grid, None, NATIONS, turn_number=1,
+                                    dipl_state=self.dipl_state, bot_goals=goals)
+        self.assertIsNotNone(action)
+        _score, atype, *rest = action
+        self.assertEqual(atype, 'diplomacy',
+                         f"Bot with elevated war weight should select diplomacy on turn 1, got {atype}")
+
+    def test_headless_game_diplomacy_locking(self):
+        """_execute with dipl_state properly locks the pair on cooldown."""
+        from bot import _execute
+        action = (100.0, 'diplomacy', NATIONS[0], NATIONS[3], 'enemy')
+        moved, atype, desc = _execute(self.grid, action, dipl_state=self.dipl_state)
+        self.assertEqual(moved, NATIONS[0])
+        self.assertEqual(atype, 'diplomacy')
+        self.assertTrue(self.dipl_state.is_locked(NATIONS[0], NATIONS[3]),
+                        "Diplomacy action should lock the pair on cooldown")
+
+    def test_sovereign_attack_defeat_vs_prevail_protection(self):
+        """Attacking defeat sovereign scores high; attacking prevail sovereign is suppressed with -9999."""
+        from bot import _score_attack
+        from evolution import BotGoals
+        from player import Player
+        from units import Army
+
+        attacker_nation = NATIONS[3]
+        defeat_sov_nation = NATIONS[4]
+        prevail_sov_nation = NATIONS[1]
+
+        attacker_nation.set_enemy(defeat_sov_nation)
+        attacker_nation.set_enemy(prevail_sov_nation)
+
+        player = Player(NATIONS[0], is_bot=True)
+        goals = BotGoals(prevail_goals=[NATIONS[0].color_name, prevail_sov_nation.color_name, NATIONS[2].color_name],
+                         defeat_goals=[attacker_nation.color_name, defeat_sov_nation.color_name, NATIONS[5].color_name])
+
+        allied_name_set = set(goals.prevail_goals) | {player.secret_nation.color_name}
+        enemy_name_set = set(goals.defeat_goals)
+
+        attacker = Army(attacker_nation, 0, 0)
+        self.grid.armies[(0, 0)] = [attacker]
+
+        # 1. Defeat sovereign at (0, 1)
+        d_sov = [s for sl in self.grid.sovereigns.values() for s in sl if s.nation is defeat_sov_nation][0]
+        orig_d_loc = d_sov.hex_location
+        self.grid.sovereigns[orig_d_loc].remove(d_sov)
+        d_sov.q, d_sov.r = 0, 1
+        self.grid.sovereigns.setdefault((0, 1), []).append(d_sov)
+
+        score_defeat_atk = _score_attack(self.grid, attacker, 0, 1, enemy_name_set, allied_name_set=allied_name_set)
+        self.assertGreater(score_defeat_atk, 900.0, "Attacking defeat goal sovereign should have high positive score")
+
+        # 2. Prevail sovereign at (1, 0)
+        p_sov = [s for sl in self.grid.sovereigns.values() for s in sl if s.nation is prevail_sov_nation][0]
+        orig_p_loc = p_sov.hex_location
+        self.grid.sovereigns[orig_p_loc].remove(p_sov)
+        p_sov.q, p_sov.r = 1, 0
+        self.grid.sovereigns.setdefault((1, 0), []).append(p_sov)
+
+        score_prevail_atk = _score_attack(self.grid, attacker, 1, 0, enemy_name_set, allied_name_set=allied_name_set)
+        self.assertLess(score_prevail_atk, -5000.0, "Attacking prevail sovereign must be suppressed (-9999)")
+
+    def test_headless_game_decisiveness(self):
+        """HeadlessGame between bots with warmonger tendencies produces wars and eliminates sovereigns."""
+        from evolution import BotConfig, HeadlessGame
+
+        c1 = BotConfig(
+            lookahead_depth=1,
+            w_dipl_prevail_vs_defeat=3.5,
+            w_dipl_defeat_vs_defeat=3.0,
+            w_endanger_enemy_sov=2.5,
+            w_kill_enemy=2.5,
+            w_random=0.05,
+            w_deceptive=0.0,
+        )
+        c2 = BotConfig(
+            lookahead_depth=1,
+            w_dipl_prevail_vs_defeat=3.5,
+            w_dipl_defeat_vs_defeat=3.0,
+            w_endanger_enemy_sov=2.5,
+            w_kill_enemy=2.5,
+            w_random=0.05,
+            w_deceptive=0.0,
+        )
+
+        game = HeadlessGame(c1, c2, max_turns=150, seed=42)
+        result = game.play()
+        ghost_count = game.grid.count_ghost_nations(game.nations)
+        self.assertGreater(ghost_count, 0, "Wars should lead to sovereign deaths in HeadlessGame")
+
+
 if __name__ == '__main__':
     unittest.main()
+
 

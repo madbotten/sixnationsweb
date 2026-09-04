@@ -59,17 +59,18 @@ class BotGoals:
 
     @staticmethod
     def random_for(secret_nation, all_nations):
-        """Assign 3 random prevail + 3 random defeat goals.
+        """Assign 3 random prevail + 3 random defeat goals across all 6 nations.
 
         Rules:
-        - Neither list contains the bot's own secret nation.
-        - The two lists don't overlap.
+        - Prevail goals include the secret_nation + 2 other nations.
+        - Defeat goals include the remaining 3 nations.
+        - The two lists do not overlap and cover all 6 nations.
         """
         others = [n.color_name for n in all_nations
                   if n.color_name != secret_nation.color_name]
         random.shuffle(others)
-        prevail = others[:3]
-        defeat  = others[3:6]
+        prevail = [secret_nation.color_name] + others[:2]
+        defeat  = others[2:5]
         return BotGoals(prevail_goals=prevail, defeat_goals=defeat)
 
 
@@ -136,11 +137,14 @@ class BotConfig:
     ev_champion_approach:  float = 5.0
     ev_territory_control:  float = 2.0
 
-    # --- Diplomatic genes (4 new genes) ---
-    w_diplomacy_ally:     float = 1.0   # weight for declaring an alliance
-    w_diplomacy_war:      float = 1.0   # weight for declaring war
-    w_diplomacy_peace:    float = 0.5   # weight for making peace (neutral)
-    top3_spread:          float = 0.5   # decay factor for 2nd/3rd human-guess rank
+    # --- Diplomatic genes (6 fine-grained targeted genes + 1 rank decay gene) ---
+    w_dipl_defeat_vs_defeat:  float = 1.8   # wars between nations in defeat list
+    w_dipl_prevail_alliance:  float = 1.5   # alliances among nations in prevail list
+    w_dipl_prevail_vs_defeat: float = 2.0   # wars between prevail and defeat nations
+    w_dipl_opp_prevail_war:   float = 1.2   # wars between suspected opp prevail nations
+    w_dipl_opp_defeat_ally:   float = 1.0   # alliances between suspected opp defeat nations
+    w_dipl_peace:             float = 0.5   # de-escalation / returning to neutral
+    top3_spread:              float = 0.5   # decay factor for 2nd/3rd human-guess rank
 
     # --- Architectural Genes (evolved) ---
     lookahead_depth:       int   = 2     # 1 = 1-ply, 2 = 2-ply minimax, 3 = 3-ply
@@ -154,19 +158,27 @@ class BotConfig:
     def to_weights_dict(self):
         """Return the dict expected by bot.py scoring functions."""
         return {
-            'kill_enemy':           self.w_kill_enemy,
-            'advance_allied':       self.w_advance_allied,
-            'protect_sovereign':    self.w_protect_sovereign,
-            'muster_promote':       self.w_muster_promote,
-            'champion_support':     self.w_champion_support,
-            'endanger_enemy_sov':   self.w_endanger_enemy_sov,
-            'unsupport_enemy_champ': self.w_unsupport_enemy_ch,
-            'claim_territory':      self.w_claim_territory,
-            'adaptive_turn':        self.adaptive_turn,
-            'w_diplomacy_ally':     self.w_diplomacy_ally,
-            'w_diplomacy_war':      self.w_diplomacy_war,
-            'w_diplomacy_peace':    self.w_diplomacy_peace,
-            'top3_spread':          self.top3_spread,
+            'kill_enemy':               self.w_kill_enemy,
+            'advance_allied':           self.w_advance_allied,
+            'protect_sovereign':        self.w_protect_sovereign,
+            'muster_promote':           self.w_muster_promote,
+            'champion_support':         self.w_champion_support,
+            'endanger_enemy_sov':       self.w_endanger_enemy_sov,
+            'unsupport_enemy_champ':    self.w_unsupport_enemy_ch,
+            'claim_territory':          self.w_claim_territory,
+            'adaptive_turn':            self.adaptive_turn,
+            # Targeted fine-grained diplomacy weights
+            'w_dipl_defeat_vs_defeat':  self.w_dipl_defeat_vs_defeat,
+            'w_dipl_prevail_alliance':  self.w_dipl_prevail_alliance,
+            'w_dipl_prevail_vs_defeat': self.w_dipl_prevail_vs_defeat,
+            'w_dipl_opp_prevail_war':   self.w_dipl_opp_prevail_war,
+            'w_dipl_opp_defeat_ally':   self.w_dipl_opp_defeat_ally,
+            'w_dipl_peace':             self.w_dipl_peace,
+            'top3_spread':              self.top3_spread,
+            # Legacy fallbacks
+            'w_diplomacy_war':          self.w_dipl_prevail_vs_defeat,
+            'w_diplomacy_ally':         self.w_dipl_prevail_alliance,
+            'w_diplomacy_peace':        self.w_dipl_peace,
         }
 
     def to_evaluator_weights(self):
@@ -247,10 +259,13 @@ class BotConfig:
             deceptive_early_turns=random.randint(0, 12),
             adaptive_turn=random.randint(10, 40),
             # Diplomacy genes
-            w_diplomacy_ally=random.uniform(0.0, 3.0),
-            w_diplomacy_war=random.uniform(0.0, 3.0),
-            w_diplomacy_peace=random.uniform(0.0, 2.0),
-            top3_spread=random.uniform(0.0, 1.0),
+            w_dipl_defeat_vs_defeat=random.uniform(0.5, 3.0),
+            w_dipl_prevail_alliance=random.uniform(0.5, 3.0),
+            w_dipl_prevail_vs_defeat=random.uniform(0.5, 3.0),
+            w_dipl_opp_prevail_war=random.uniform(0.2, 2.5),
+            w_dipl_opp_defeat_ally=random.uniform(0.2, 2.0),
+            w_dipl_peace=random.uniform(0.0, 1.5),
+            top3_spread=random.uniform(0.1, 0.9),
             # Evaluator weights — randomize around defaults
             ev_ghost_enemy=random.uniform(200, 800),
             ev_own_sov_dead=random.uniform(-15000, -5000),
@@ -293,6 +308,13 @@ class BotConfig:
             c.lookahead_depth = random.randint(1, 4)
             c.lookahead_beam = random.randint(1, 3) if c.lookahead_depth >= 4 else random.randint(1, 4)
             c.hybrid_ratio = random.uniform(0.0, 1.0)
+
+        # All freshstart archetypes get elevated war and coalition tendencies so
+        # they bootstrap wars early and generate fitness signals from turn 1.
+        # Evolution will tune these if peacefulness or disruption is a better strategy.
+        c.w_dipl_prevail_vs_defeat = random.uniform(1.8, 3.5)
+        c.w_dipl_defeat_vs_defeat  = random.uniform(1.5, 3.0)
+        c.w_dipl_prevail_alliance  = random.uniform(1.2, 2.8)
 
         # 4-ply bots can only have a maximum beam width of 3
         if c.lookahead_depth >= 4:
@@ -388,25 +410,30 @@ def describe_bot(config: BotConfig, rank=None) -> str:
     lines.append(f"  • Hunter Intelligence: Unlocks adaptive sovereign targeting on Turn {config.adaptive_turn}")
     lines.append(f"{'='*66}")
     # 6. Diplomacy Style
-    d_ally  = getattr(config, 'w_diplomacy_ally',  0.0)
-    d_war   = getattr(config, 'w_diplomacy_war',   0.0)
-    d_peace = getattr(config, 'w_diplomacy_peace', 0.0)
-    t3      = getattr(config, 'top3_spread',        1.0)
+    d_dvd = getattr(config, 'w_dipl_defeat_vs_defeat',  getattr(config, 'w_diplomacy_war', 1.8))
+    d_pal = getattr(config, 'w_dipl_prevail_alliance',  getattr(config, 'w_diplomacy_ally', 1.5))
+    d_pvd = getattr(config, 'w_dipl_prevail_vs_defeat', getattr(config, 'w_diplomacy_war', 2.0))
+    d_opw = getattr(config, 'w_dipl_opp_prevail_war',   getattr(config, 'w_diplomacy_war', 1.2))
+    d_oda = getattr(config, 'w_dipl_opp_defeat_ally',   getattr(config, 'w_diplomacy_ally', 1.0))
+    d_pea = getattr(config, 'w_dipl_peace',             getattr(config, 'w_diplomacy_peace', 0.5))
+    t3    = getattr(config, 'top3_spread',              0.5)
 
-    if d_ally <= 0.1 and d_war <= 0.1:
-        dipl_style = "Isolationist (ignores diplomacy entirely)"
-    elif d_war >= 2.0 and d_war > d_ally * 1.5:
-        dipl_style = "Warmonger (aggressively declares war)"
-    elif d_ally >= 2.0 and d_ally > d_war * 1.5:
-        dipl_style = "Alliance Seeker (prefers alliances over wars)"
-    elif d_peace >= 2.0:
-        dipl_style = "Peacemaker (actively de-escalates conflicts)"
+    if d_pvd >= 2.2 and d_dvd >= 2.0:
+        dipl_style = "Aggressive Warmonger (incites wars on defeat goals & third parties)"
+    elif d_opw >= 2.0:
+        dipl_style = "Disruptive Chaos Agent (incites wars among opponent factions)"
+    elif d_pal >= 2.0 and d_oda >= 1.5:
+        dipl_style = "Coalition Architect (forges alliances & shields defeat targets)"
+    elif d_pea >= 1.5:
+        dipl_style = "Peacemaker (actively de-escalates unwanted conflicts)"
     else:
-        dipl_style = "Pragmatic (balanced use of diplomacy)"
+        dipl_style = "Pragmatic Machiavellian (balanced targeted diplomacy)"
 
     lines.append(f"  • Diplomacy Style: {dipl_style}")
-    lines.append(f"    - Ally weight:  {d_ally:.2f}  |  War weight: {d_war:.2f}  |  Peace weight: {d_peace:.2f}")
-    lines.append(f"    - Top-3 spread decay: {t3:.2f}  (1.0 = all weight on #1 guess, 0.0 = even spread)")
+    lines.append(f"    - Defeat vs Defeat War:   {d_dvd:.2f}  |  Prevail Alliance:      {d_pal:.2f}")
+    lines.append(f"    - Prevail vs Defeat War:  {d_pvd:.2f}  |  Opp Prevail War:       {d_opw:.2f}")
+    lines.append(f"    - Opp Defeat Shield Ally: {d_oda:.2f}  |  Peace / De-escalate:   {d_pea:.2f}")
+    lines.append(f"    - Opponent rank spread decay: {t3:.2f}")
     lines.append(f"{'='*66}")
 
     return "\n".join(lines)
@@ -454,6 +481,12 @@ class EvolvableBot:
         top3 = self.memory.guess_top3_factions(nation_list, exclude_names=exclude)
         return [n.color_name for n, _ in top3]
 
+    def guess_bottom3_opponents(self, nation_list):
+        """Return list of up to 3 color_name strings (inferred opponent defeat targets)."""
+        exclude = {self.player.secret_nation.color_name}
+        bottom3 = self.memory.guess_bottom3_factions(nation_list, exclude_names=exclude)
+        return [n.color_name for n, _ in bottom3]
+
     def compute_action(self, grid, global_cooldown_name, nation_list, turn_number,
                        dipl_state=None, bot_goals=None):
         """Select an action without executing it.  Returns action tuple or None.
@@ -461,11 +494,13 @@ class EvolvableBot:
         dipl_state: DiplomacyState for cooldown checking (None = skip diplomacy).
         bot_goals:  BotGoals with prevail/defeat goal lists.
         """
-        suspected_ri = None
-        top3_names   = None
+        suspected_ri  = None
+        top3_names    = None
+        bottom3_names = None
         if turn_number >= self.config.adaptive_turn:
-            top3_names   = self.guess_top3_opponents(nation_list)
-            suspected_ri = top3_names[0] if top3_names else None
+            top3_names    = self.guess_top3_opponents(nation_list)
+            bottom3_names = self.guess_bottom3_opponents(nation_list)
+            suspected_ri  = top3_names[0] if top3_names else None
 
         # Decide move type: intent, random, or deceptive
         intent_p = self.config.intent_probability(turn_number)
@@ -484,59 +519,103 @@ class EvolvableBot:
             return self._compute_intent(grid, global_cooldown_name, nation_list,
                                         turn_number, suspected_ri,
                                         dipl_state=dipl_state, bot_goals=bot_goals,
-                                        top3_names=top3_names)
+                                        top3_names=top3_names,
+                                        bottom3_names=bottom3_names)
         elif move_type == 'random':
             return self._compute_random(grid, global_cooldown_name, nation_list,
-                                        turn_number, suspected_ri)
+                                        turn_number, suspected_ri,
+                                        bot_goals=bot_goals)
         else:  # deceptive
             return self._compute_deceptive(grid, global_cooldown_name, nation_list,
-                                           turn_number, suspected_ri)
+                                           turn_number, suspected_ri,
+                                           bot_goals=bot_goals)
 
     def _compute_intent(self, grid, gci, nation_list, turn, suspected_ri,
-                        dipl_state=None, bot_goals=None, top3_names=None):
+                        dipl_state=None, bot_goals=None, top3_names=None,
+                        bottom3_names=None):
         """Strategic intent using config weights, with optional lookahead and hybrid scoring."""
         from bot import _lookahead_best
 
+        # 1. Diplomacy actions are evaluated 1-ply (not mixed into the multi-ply tree)
+        best_dipl = None
+        if dipl_state is not None and bot_goals is not None:
+            dipl_actions = _gather_actions(grid, self.player, gci, nation_list,
+                                           suspected_human_ri=suspected_ri,
+                                           turn_number=turn,
+                                           weights=self._weights,
+                                           dipl_state=dipl_state,
+                                           bot_goals=bot_goals,
+                                           top3_names=top3_names,
+                                           bottom3_names=bottom3_names,
+                                           exclude_diplomacy=False)
+            dipl_valid = [a for a in dipl_actions if a[1] == 'diplomacy' and a[0] > -1000]
+            if dipl_valid:
+                best_dipl = max(dipl_valid, key=lambda a: a[0])
+
+        # 2. Military actions: multi-ply lookahead or 1-ply tactical scoring
         if self.config.lookahead_depth > 1 or self.config.hybrid_ratio > 0.0:
-            chosen = _lookahead_best(
+            military = _lookahead_best(
                 grid, self.player, gci, nation_list,
                 turn, suspected_ri, self._weights,
                 depth=self.config.lookahead_depth - 1,
                 beam_width=self.config.lookahead_beam,
                 mode=self.config.lookahead_mode,
                 eval_weights=self._eval_weights,
-                hybrid_ratio=self.config.hybrid_ratio)
-            if chosen is None:
-                return None
-            return (*chosen, 'intent')
+                hybrid_ratio=self.config.hybrid_ratio,
+                bot_goals=bot_goals,
+                top3_names=top3_names,
+                bottom3_names=bottom3_names)
+        else:
+            mil_actions = _gather_actions(grid, self.player, gci, nation_list,
+                                          suspected_human_ri=suspected_ri,
+                                          turn_number=turn,
+                                          weights=self._weights,
+                                          bot_goals=bot_goals,
+                                          top3_names=top3_names,
+                                          bottom3_names=bottom3_names,
+                                          exclude_diplomacy=True)
+            valid = [a for a in mil_actions if a[0] > -1000]
+            if valid:
+                best = max(a[0] for a in valid)
+                threshold = (best * 0.85) if best > 0 else (best - 50)
+                top_tier = [a for a in valid if a[0] >= threshold]
+                military = random.choice(top_tier)
+            else:
+                military = None
 
-        actions = _gather_actions(grid, self.player, gci, nation_list,
-                                  suspected_human_ri=suspected_ri,
-                                  turn_number=turn,
-                                  weights=self._weights,
-                                  dipl_state=dipl_state,
-                                  bot_goals=bot_goals,
-                                  top3_names=top3_names)
-        if not actions:
-            return None
-        valid = [a for a in actions if a[0] > -1000]
-        if valid:
-            actions = valid
-        best = max(a[0] for a in actions)
-        threshold = (best * 0.85) if best > 0 else (best - 50)
-        top_tier = [a for a in actions if a[0] >= threshold]
-        chosen = random.choice(top_tier)
-        return (*chosen, 'intent')
+        # 3. Choose between best diplomacy and best military
+        # If position-mode lookahead was used, military[0] includes the board evaluation
+        # baseline (~500 pts). We evaluate diplomacy on the same hybrid scale for fair comparison.
+        if best_dipl is not None:
+            if military is None:
+                return (*best_dipl, 'intent')
+            if self.config.hybrid_ratio > 0.0 and self.config.lookahead_mode == 'position':
+                from evaluator import evaluate_position
+                root_pos = evaluate_position(grid, self.player.secret_nation, nation_list,
+                                             weights=self._eval_weights,
+                                             bot_goals=bot_goals)
+                dipl_eff_score = (1.0 - self.config.hybrid_ratio) * best_dipl[0] + self.config.hybrid_ratio * root_pos
+            else:
+                dipl_eff_score = best_dipl[0]
 
-    def _compute_random(self, grid, gci, nation_list, turn, suspected_ri):
+            if dipl_eff_score > military[0]:
+                return (*best_dipl, 'intent')
+            return (*military, 'intent')
+        if military is not None:
+            return (*military, 'intent')
+        return None
+
+    def _compute_random(self, grid, gci, nation_list, turn, suspected_ri, bot_goals=None):
         """Purely random legal action."""
         eligible = _eligible_nations(self.player, gci, nation_list)
         if not eligible:
             return None
 
-        allied_name_set = {n.color_name for n in nation_list
-                           if not self.player.secret_nation.is_enemy(n)}
         bot_ri = self.player.secret_nation.color_name
+        if bot_goals is not None:
+            allied_name_set = set(bot_goals.prevail_goals) | {bot_ri}
+        else:
+            allied_name_set = {n.color_name for n in self.player.secret_nation.allies} | {bot_ri}
 
         pool = []
         for nation in eligible:
@@ -560,7 +639,7 @@ class EvolvableBot:
         # Apply adaptive adjustments even to random pool
         pool = _adaptive_sovereign_adjustments(
             grid, pool, bot_ri, suspected_ri, turn,
-            nation_list=nation_list)
+            nation_list=nation_list, bot_goals=bot_goals)
         valid = [a for a in pool if a[0] > -1000]
         if valid:
             pool = valid
@@ -568,7 +647,7 @@ class EvolvableBot:
         chosen = random.choice(pool)
         return (*chosen, 'random')
 
-    def _compute_deceptive(self, grid, gci, nation_list, turn, suspected_ri):
+    def _compute_deceptive(self, grid, gci, nation_list, turn, suspected_ri, bot_goals=None):
         """Deceptive move: temporarily pretend to have a different secret nation.
 
         Uses intent scoring but with a fake secret nation, so the move
@@ -582,7 +661,8 @@ class EvolvableBot:
                       and not n.is_ghost]
         if not candidates:
             # Fall back to intent if no valid fake nation
-            return self._compute_intent(grid, gci, nation_list, turn, suspected_ri)
+            return self._compute_intent(grid, gci, nation_list, turn, suspected_ri,
+                                        bot_goals=bot_goals)
 
         fake_nation = random.choice(candidates)
 
@@ -593,7 +673,8 @@ class EvolvableBot:
         actions = _gather_actions(grid, self.player, gci, nation_list,
                                   suspected_human_ri=suspected_ri,
                                   turn_number=turn,
-                                  weights=fake_weights)
+                                  weights=fake_weights,
+                                  bot_goals=bot_goals)
 
         # Restore real nation
         self.player.secret_nation = real_nation
@@ -651,6 +732,15 @@ class HeadlessGame:
         self.bot1_goals = BotGoals.random_for(n1, self.nations)
         self.bot2_goals = BotGoals.random_for(n2, self.nations)
 
+        # Wire goals into player prediction slots so compute_score() works.
+        # BotGoals stores color_name strings; player picks need Nation objects.
+        _by_name = {n.color_name: n for n in self.nations}
+        self.bot1.player.prevail_picks = [_by_name[c] for c in self.bot1_goals.prevail_goals]
+        self.bot1.player.defeat_picks  = [_by_name[c] for c in self.bot1_goals.defeat_goals]
+        self.bot2.player.prevail_picks = [_by_name[c] for c in self.bot2_goals.prevail_goals]
+        self.bot2.player.defeat_picks  = [_by_name[c] for c in self.bot2_goals.defeat_goals]
+
+
         self.grid = MapGrid()
         self.grid.generate_map()
 
@@ -690,7 +780,7 @@ class HeadlessGame:
                 continue
 
             # Execute the action
-            moved_nation, action_type, desc = _execute(self.grid, action)
+            moved_nation, action_type, desc = _execute(self.grid, action, dipl_state=self.dipl_state)
 
             if moved_nation is None:
                 # Execution failed — skip turn
@@ -738,22 +828,17 @@ class HeadlessGame:
                 self.turn_number, moved_nation, unit_type_str,
                 from_hex, to_hex, action_type or atype)
 
-            # Check end conditions
+            # Check end condition: game ends when 3+ sovereigns are destroyed
             self.grid.check_ghost_nations(self.nations)
-            b1_wins = self.grid.check_win_condition(self.bot1.player, self.nations)
-            b2_wins = self.grid.check_win_condition(self.bot2.player, self.nations)
-            b1_loses = self.grid.check_loss_condition(self.bot1.player)
-            b2_loses = self.grid.check_loss_condition(self.bot2.player)
-
-            if (b1_wins and b2_wins) or (b1_loses and b2_loses):
+            if self.grid.count_ghost_nations(self.nations) >= 3:
+                s1 = self.bot1.player.compute_score()
+                s2 = self.bot2.player.compute_score()
                 self._record_guess_accuracy()
+                if s1 > s2:
+                    return RESULT_BOT1_WIN
+                if s2 > s1:
+                    return RESULT_BOT2_WIN
                 return RESULT_TIE
-            if b1_wins or b2_loses:
-                self._record_guess_accuracy()
-                return RESULT_BOT1_WIN
-            if b2_wins or b1_loses:
-                self._record_guess_accuracy()
-                return RESULT_BOT2_WIN
 
             # Advance turn
             current = 1 - current
@@ -799,6 +884,8 @@ class Tournament:
 
         self.guess_correct = 0
         self.guess_total   = 0
+        self.draws         = 0
+        self.total_games   = 0
 
         total_matches = n * (n - 1) // 2 * self.games_per_pair
         played = 0
@@ -815,6 +902,9 @@ class Tournament:
                     # Accumulate guess stats
                     self.guess_correct += game.guess_correct
                     self.guess_total   += game.guess_total
+                    self.total_games   += 1
+                    if result == RESULT_DRAW:
+                        self.draws += 1
 
                     if result == RESULT_BOT1_WIN:
                         self.configs[i].fitness += 3
@@ -823,7 +913,17 @@ class Tournament:
                     elif result == RESULT_TIE:
                         self.configs[i].fitness += 1
                         self.configs[j].fitness += 1
-                    # DRAW: both get 0
+                    elif result == RESULT_DRAW:
+                        # Game hit turn limit — score based on partial goal completion
+                        s1 = game.bot1.player.compute_score()
+                        s2 = game.bot2.player.compute_score()
+                        if s1 > s2:
+                            self.configs[i].fitness += 3
+                        elif s2 > s1:
+                            self.configs[j].fitness += 3
+                        else:
+                            self.configs[i].fitness += 1
+                            self.configs[j].fitness += 1
 
                     played += 1
 
@@ -835,6 +935,13 @@ class Tournament:
         if self.guess_total == 0:
             return None
         return self.guess_correct / self.guess_total
+
+    @property
+    def decisive_rate(self):
+        """Fraction of games that ended decisively (before the turn limit)."""
+        if self.total_games == 0:
+            return None
+        return 1.0 - (self.draws / self.total_games)
 
 
 # ---------------------------------------------------------------------------
@@ -856,11 +963,14 @@ _GENE_RANGES = {
     'random_early_turns':   (0, 30),
     'deceptive_early_turns': (0, 25),
     'adaptive_turn':         (10, 40),
-    # Diplomacy genes
-    'w_diplomacy_ally':     (0.0, 5.0),
-    'w_diplomacy_war':      (0.0, 5.0),
-    'w_diplomacy_peace':    (0.0, 3.0),
-    'top3_spread':          (0.0, 1.0),
+    # Diplomacy genes (fine-grained targeted diplomacy)
+    'w_dipl_defeat_vs_defeat':  (0.0, 5.0),
+    'w_dipl_prevail_alliance':  (0.0, 5.0),
+    'w_dipl_prevail_vs_defeat': (0.0, 5.0),
+    'w_dipl_opp_prevail_war':   (0.0, 5.0),
+    'w_dipl_opp_defeat_ally':   (0.0, 5.0),
+    'w_dipl_peace':             (0.0, 3.0),
+    'top3_spread':              (0.0, 1.0),
      # Architectural genes (evolvable depth, beam, and hybrid evaluation)
     'lookahead_depth':      (1, 4),
     'lookahead_beam':       (1, 4),
@@ -990,7 +1100,8 @@ class GeneticAlgorithm:
             if progress_callback:
                 top4 = self.population[:4]
                 progress_callback(gen, best_fit, avg_fit, self.population[0],
-                                  guess_accuracy=guess_acc, top4=top4)
+                                  guess_accuracy=guess_acc, top4=top4,
+                                  decisive_rate=tournament.decisive_rate)
 
             # Build next generation
             next_gen = []
@@ -1145,6 +1256,19 @@ def load_top_configs(filepath=DEFAULT_CONFIG_PATH) -> list:
     configs = []
     for d in data.get('configs', []):
         c = BotConfig()
+        # Backward-compatibility for older bot_configs.json files
+        if 'w_diplomacy_war' in d:
+            old_war = float(d['w_diplomacy_war'])
+            c.w_dipl_defeat_vs_defeat  = old_war
+            c.w_dipl_prevail_vs_defeat = old_war
+            c.w_dipl_opp_prevail_war   = old_war
+        if 'w_diplomacy_ally' in d:
+            old_ally = float(d['w_diplomacy_ally'])
+            c.w_dipl_prevail_alliance = old_ally
+            c.w_dipl_opp_defeat_ally  = old_ally
+        if 'w_diplomacy_peace' in d:
+            c.w_dipl_peace = float(d['w_diplomacy_peace'])
+
         for gene in _GENE_NAMES:
             if gene in d:
                 val = d[gene]
@@ -1160,11 +1284,14 @@ def load_top_configs(filepath=DEFAULT_CONFIG_PATH) -> list:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def _progress(gen, best_fit, avg_fit, best_config, guess_accuracy=None, top4=None):
+def _progress(gen, best_fit, avg_fit, best_config, guess_accuracy=None, top4=None,
+              decisive_rate=None):
     """Print progress and rich human-readable personality explainer for each generation."""
-    guess_str = f"{guess_accuracy*100:.0f}%" if guess_accuracy is not None else "n/a"
+    guess_str    = f"{guess_accuracy*100:.0f}%"  if guess_accuracy  is not None else "n/a"
+    decisive_str = f"{decisive_rate*100:.0f}%"   if decisive_rate   is not None else "n/a"
     print(f"\n{'='*66}")
-    print(f"  GENERATION {gen:3d} COMPLETE | Best: {best_fit:6.1f} | Avg: {avg_fit:5.1f} | Deduction: {guess_str}")
+    print(f"  GENERATION {gen:3d} COMPLETE | Best: {best_fit:6.1f} | Avg: {avg_fit:5.1f}"
+          f" | Deduction: {guess_str} | Decisive: {decisive_str}")
 
     # Leaderboard summary line
     if top4:

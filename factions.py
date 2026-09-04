@@ -46,9 +46,13 @@ class Nation:
         """True when *other* is on this nation's enemy list."""
         return self.get_stance(other) == 'enemy'
 
-    def enemy_nations(self, all_nations: "list[Nation]") -> "list[Nation]":
+    def enemy_nations(self, all_nations: "list[Nation]" = None) -> "list[Nation]":
         """Return the current list of enemy nations."""
         return list(self.enemies)
+
+    def ally_nations(self, all_nations: "list[Nation]" = None) -> "list[Nation]":
+        """Return the current list of ally nations."""
+        return list(self.allies)
 
     # -------------------------------------------------------------------
     # Stance setters (symmetric -- always mirrors on the other nation)

@@ -81,7 +81,7 @@ def _derive_ghost_set(grid):
 
 
 def evaluate_position(grid, secret_nation, nation_list, weights=None,
-                      ghost_name_set=None):
+                      ghost_name_set=None, bot_goals=None):
     """Score the board position from the perspective of secret_nation.
 
     Parameters:
@@ -94,6 +94,8 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
                  (sovereign already dead). When provided, overrides n.is_ghost
                  on the Nation singletons. Use this in lookahead snapshots where
                  Nation.is_ghost hasn't been updated.
+        bot_goals: optional BotGoals instance. When provided, prevail_goals
+                 are treated as allies and defeat_goals as enemies.
 
     Returns:
         float score — higher is better for the secret_nation player.
@@ -105,8 +107,14 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
 
     score = 0.0
 
-    enemy_nations = secret_nation.enemy_nations(nation_list)
-    allied_nations = [n for n in nation_list if not secret_nation.is_enemy(n)]
+    if bot_goals is not None:
+        prevail_set = set(bot_goals.prevail_goals) | {secret_nation.color_name}
+        defeat_set  = set(bot_goals.defeat_goals) | {n.color_name for n in secret_nation.enemy_nations(nation_list)}
+        allied_nations = [n for n in nation_list if n.color_name in prevail_set]
+        enemy_nations  = [n for n in nation_list if n.color_name in defeat_set]
+    else:
+        enemy_nations = secret_nation.enemy_nations(nation_list)
+        allied_nations = [n for n in nation_list if not secret_nation.is_enemy(n)]
 
     enemy_name_set = {n.color_name for n in enemy_nations}
     allied_name_set = {n.color_name for n in allied_nations}
