@@ -16,8 +16,9 @@ import splash as splash_mod
 import moves as moves_mod
 from bot import BotMemory
 from map import MapGrid
-from factions import NATIONS
+from factions import NATIONS, NATIONS_BY_NAME
 from player import Player
+from diplomacy_panel import DiplomacyPanel, DiplomacyAction
 
 # Evolution module — optional, only needed for "Play vs Evolved Bot"
 try:
@@ -126,28 +127,17 @@ UNIT_SPACING = 47
 # Asset loading
 # ---------------------------------------------------------------------------
 
-def load_diplo_ring(size: int) -> pygame.Surface:
-    img = util.load_image("DiplomacyRing.jpg", size=(size, size))
-    if img is not None:
-        return img
-    surf = pygame.Surface((size, size))
-    surf.fill((25, 30, 45))
-    font = util.get_font(13, bold=True)
-    lbl  = font.render("DIPLOMACY RING", True, (100, 110, 140))
-    surf.blit(lbl, lbl.get_rect(center=(size // 2, size // 2)))
-    return surf
-
 
 # ---------------------------------------------------------------------------
 # Game state helpers
 # ---------------------------------------------------------------------------
 
-def get_eligible_nations(player, global_cooldown_idx, all_nations):
+def get_eligible_nations(player, global_cooldown_name, all_nations):
     """Nations the current player is allowed to move this turn."""
     return [
         n for n in all_nations
         if not player.nation_on_cooldown(n)
-        and (global_cooldown_idx is None or n.ring_index != global_cooldown_idx)
+        and (global_cooldown_name is None or n.color_name != global_cooldown_name)
         and not n.is_ghost
     ]
 
@@ -230,10 +220,10 @@ def draw_top_bar(screen, font_large, font_small, active_player,
         centre_col  = settings.COLOR_TEXT_MUTED
     elif game_state == STATE_BOT_THINKING:
         centre_text = f"TURN {turn_number}  —  BOT IS THINKING…"
-        centre_col  = settings.NATION_COLORS[1]
+        centre_col  = settings.NATION_COLORS['Galland']
     elif game_state == STATE_WAITING_OPPONENT:
         centre_text = f"TURN {turn_number}  —  WAITING FOR OPPONENT…"
-        centre_col  = settings.NATION_COLORS[2]
+        centre_col  = settings.NATION_COLORS['Beldrin']
     else:
         if game_mode == 'vs_human':
             whose = current_player.player_id.upper() + "'S TURN"
@@ -247,19 +237,6 @@ def draw_top_bar(screen, font_large, font_small, active_player,
     centre_surf = font_large.render(centre_text, True, centre_col)
     screen.blit(centre_surf, centre_surf.get_rect(
         center=(settings.SCREEN_WIDTH // 2, settings.TOP_BAR_HEIGHT // 2)))
-
-
-def draw_diplo_panel(screen, diplo_img, font_small):
-    size   = settings.DIPLO_RING_SIZE
-    margin = 10
-    x = settings.SCREEN_WIDTH - size - margin
-    y = margin
-    panel = pygame.Rect(x - 6, y - 6, size + 12, size + 12)
-    pygame.draw.rect(screen, settings.COLOR_PANEL, panel, border_radius=6)
-    pygame.draw.rect(screen, settings.COLOR_PANEL_BORDER, panel, 1, border_radius=6)
-    screen.blit(diplo_img, (x, y))
-    lbl = font_small.render("Diplomatic Ring", True, settings.COLOR_TEXT_MUTED)
-    screen.blit(lbl, lbl.get_rect(midtop=(x + size // 2, y + size + 8)))
 
 
 def draw_predictions_panel(screen, font_small, player):
@@ -349,7 +326,7 @@ def draw_predictions_panel(screen, font_small, player):
     _draw_section("DEFEAT",  (220, 65, 55),  player.defeat_picks)
 
 
-def draw_cooldown_panel(screen, font_small, players, global_cooldown_idx):
+def draw_cooldown_panel(screen, font_small, players, global_cooldown_name):
     """Show each player's cooldown nations; global cooldown highlighted."""
     margin = 10
     x = margin
@@ -367,20 +344,19 @@ def draw_cooldown_panel(screen, font_small, players, global_cooldown_idx):
     def _draw_row(label_text, player, row_y):
         lbl = font_small.render(label_text, True, settings.COLOR_TEXT_MUTED)
         screen.blit(lbl, (x + 12, row_y))
-        for i, ri in enumerate(player.cooldown):
-            col = settings.NATION_COLORS[ri]
+        for i, name in enumerate(player.cooldown):
+            col = settings.NATION_COLORS[name]
             bx  = x + 55 + i * 36
             pygame.draw.rect(screen, col, (bx, row_y - 2, 28, 20), border_radius=3)
-            if ri == global_cooldown_idx:
+            if name == global_cooldown_name:
                 pygame.draw.rect(screen, (255, 255, 255),
                                  (bx, row_y - 2, 28, 20), 2, border_radius=3)
 
     _draw_row("You:", players[0], y + 34)
     _draw_row("Bot:", players[1], y + 64)
 
-    if global_cooldown_idx is not None:
-        gname = settings.NATION_NAMES[global_cooldown_idx]
-        glbl  = font_small.render(f"Global block: {gname}", True, (90, 105, 140))
+    if global_cooldown_name is not None:
+        glbl  = font_small.render(f"Global block: {global_cooldown_name}", True, (90, 105, 140))
         screen.blit(glbl, (x + 12, y + 94))
 
     leg = font_small.render("(white border = global block)", True, (70, 80, 110))
@@ -511,14 +487,14 @@ def draw_score_screen(screen, player1, player2, nation_list):
 # ---------------------------------------------------------------------------
 
 # Direction (dq, dr) pointing outward from map center for each nation's corner
-_CORNER_OUTWARD = [
-    ( 0, -1),   # 0 Yellow
-    ( 1, -1),   # 1 Green
-    ( 1,  0),   # 2 Sky Blue
-    ( 0,  1),   # 3 Cobalt
-    (-1,  1),   # 4 Magenta
-    (-1,  0),   # 5 Crimson
-]
+_CORNER_OUTWARD = {
+    'Yilerond':  ( 0, -1),
+    'Galland':   ( 1, -1),
+    'Beldrin':   ( 1,  0),
+    'Crestmoor': ( 0,  1),
+    'Malkor':    (-1,  1),
+    'Ravengard': (-1,  0),
+}
 
 def compute_sidebar_buttons(grid, eligible_nations):
     """
@@ -533,7 +509,7 @@ def compute_sidebar_buttons(grid, eligible_nations):
     MARGIN    = ICON_SIZE  # minimum distance from screen edges
 
     for nation in eligible_nations:
-        ri = nation.ring_index
+        ri = nation.color_name
         cq, cr = grid.NATION_CORNERS[ri]
         dq, dr = _CORNER_OUTWARD[ri]
         # Phantom hex one step outward
@@ -584,7 +560,7 @@ def draw_sidebar_buttons(screen, grid, buttons, action_pending, pending_nation, 
 
         active = (action_pending == btype
                   and pending_nation is not None
-                  and pending_nation.ring_index == nation.ring_index)
+                  and pending_nation.color_name == nation.color_name)
 
         # Coloured circular background
         bg_col  = tuple(min(255, int(v * 0.7 + 30)) for v in c)
@@ -652,6 +628,37 @@ def check_trigger_game_end(grid, nation_list) -> bool:
     return grid.count_ghost_nations(nation_list) >= 3
 
 
+def _apply_diplomacy_move(grid, panel, action: DiplomacyAction, all_nations):
+    """
+    Apply a diplomacy move between two nations:
+    - Renew: re-lock only, stance unchanged.
+    - Declare war: set_enemy, lock pair (cooldown), and reconcile.
+    - Declare ally: set_ally, lock pair (cooldown), and reconcile.
+    - End war/ally: set_neutral, unlock pair (NO cooldown), and reconcile.
+    """
+    box, flag = action.box_nation, action.flag_nation
+    if action.from_zone == action.to_zone:       # renew: same zone, re-lock only
+        panel.lock_pair(flag, box)
+        return
+    elif action.to_zone == 'war':
+        flag.set_enemy(box)
+        panel.lock_pair(flag, box)
+        new_stance = 'enemy'
+    elif action.to_zone == 'ally':
+        flag.set_ally(box)
+        panel.lock_pair(flag, box)
+        new_stance = 'ally'
+    else:                                        # to_zone resolved to own box -> neutral
+        flag.set_neutral(box)
+        panel.unlock_pair(flag, box)             # No cooldown when returning home to neutral!
+        new_stance = 'neutral'
+    try:
+        from map import reconcile_stance_change
+        reconcile_stance_change(grid, flag, box, new_stance, all_nations)
+    except (ImportError, AttributeError):
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -673,6 +680,7 @@ async def main():
 
     # --- Game state ----------------------------------------------------------
     nation_list  = list(NATIONS)
+    dipl_panel   = DiplomacyPanel(nation_list)
 
     # Player objects — created after splash screen selects game_mode.
     # Initialise with vs_bot defaults so the splash can show the secret nation.
@@ -684,7 +692,7 @@ async def main():
     players = [player1, player2]
 
     current_player_idx  = 0
-    global_cooldown_idx = None
+    global_cooldown_name = None
     turn_number         = 1
     game_state          = STATE_SPLASH
     game_mode           = 'vs_bot'       # set by splash button click
@@ -725,7 +733,7 @@ async def main():
     splash_evolved_rect = None
     splash_prevail_rect = None
     splash_defeat_rect  = None
-    splash_tile_rects   = {}    # ring_index -> Rect
+    splash_tile_rects   = {}    # color_name -> Rect
 
     # Action-pending state (recruit / promote)
     action_pending   = None   # None | 'recruit' | 'promote'
@@ -763,9 +771,6 @@ async def main():
     inst_scroll  = 0
     inst_max_scroll = 0
     splash_mx, splash_my = 0, 0
-
-    diplo_img   = load_diplo_ring(settings.DIPLO_RING_SIZE)
-    diplo_splash = pygame.transform.smoothscale(diplo_img, (140, 140)) if diplo_img else None
 
     print("=== Six Nations ===")
     print(f"Player1: {p1_nation.color_name}  |  Player2: {p2_nation.color_name}")
@@ -807,7 +812,7 @@ async def main():
                     player2 = Player(secret_nation=p2_nation, is_bot=True,  player_id='player2')
                     players = [player1, player2]
                     current_player_idx  = 0
-                    global_cooldown_idx = None
+                    global_cooldown_name = None
                     turn_number         = 1
                     game_result         = GAME_RESULT_NONE
                     game_state          = STATE_SPLASH
@@ -838,6 +843,7 @@ async def main():
                     evolved_bot_weights = None
                     bot_memory          = BotMemory(debug=(settings.DEPLOYMENT == 'DEBUG'))
                     grid.generate_map()
+                    dipl_panel.reset()
 
             # ---- Splash: left-click (buttons + drag start) -----------------
             elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
@@ -903,10 +909,10 @@ async def main():
 
                 # Drag start: check palette tiles
                 if drag_splash_nation is None and splash_tile_rects:
-                    placed = {n.ring_index for n in prevail_picks + defeat_picks}
+                    placed = {n.color_name for n in prevail_picks + defeat_picks}
                     for ri, trect in splash_tile_rects.items():
                         if trect.collidepoint(mx, my) and ri not in placed:
-                            drag_splash_nation = NATIONS[ri]
+                            drag_splash_nation = NATIONS_BY_NAME[ri]
                             drag_splash_src    = 'palette'
                             drag_splash_pos    = (mx, my)
                             break
@@ -968,16 +974,23 @@ async def main():
             elif (event.type == pygame.MOUSEBUTTONDOWN and event.button == 1
                   and game_state == STATE_HUMAN_TURN):
                 mx, my = event.pos
+
+                # Check if diplomacy panel consumed the click
+                if dipl_panel.on_mousedown(event.pos):
+                    action_pending = pending_nation = None
+                    highlight_muster = highlight_promo = set()
+                    continue
+
                 active_player = players[current_player_idx]
                 eligible = get_eligible_nations(
-                    active_player, global_cooldown_idx, nation_list)
+                    active_player, global_cooldown_name, nation_list)
 
                 # --- Sidebar button click? ---
                 btn = get_sidebar_button_at(sidebar_buttons, mx, my)
                 if btn:
                     if (action_pending == btn['type']
                             and pending_nation is not None
-                            and pending_nation.ring_index == btn['nation'].ring_index):
+                            and pending_nation.color_name == btn['nation'].color_name):
                         # Click same button again → cancel
                         action_pending = pending_nation = None
                         highlight_muster = highlight_promo = set()
@@ -1000,7 +1013,7 @@ async def main():
                         grid.recruit_army(pending_nation, tq, tr)
                         moved_nation     = pending_nation
                         _move_data = moves_mod.serialize_move(
-                            'recruit', pending_nation.ring_index,
+                            'recruit', pending_nation.color_name,
                             to_hex=(tq, tr))
                         on_local_move_made(_move_data)
                         if game_mode == 'vs_bot':
@@ -1009,12 +1022,13 @@ async def main():
                         if settings.DEPLOYMENT == 'DEBUG':
                             print(f"[{active_player.player_id} recruit] T{turn_number} {pending_nation.color_name} at {(tq,tr)}  {_move_data}")
                         if game_mode == 'vs_bot':
-                            bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
+                            bot_memory.add_score(pending_nation.color_name, 2, settings.NATION_NAMES)
                         action_pending   = pending_nation = None
                         highlight_muster = highlight_promo = set()
 
                         active_player.add_to_cooldown(moved_nation)
-                        global_cooldown_idx = moved_nation.ring_index
+                        global_cooldown_name = moved_nation.color_name
+                        dipl_panel.tick_cooldowns()
                         if check_trigger_game_end(grid, nation_list):
                             game_state  = STATE_GAME_OVER
                             game_result = True
@@ -1038,12 +1052,12 @@ async def main():
                     tq, tr = grid.screen_to_axial(mx, my)
                     if (tq, tr) in highlight_promo:
                         armies_here = [a for a in grid.armies.get((tq, tr), [])
-                                       if a.nation.ring_index == pending_nation.ring_index]
+                                       if a.nation.color_name == pending_nation.color_name]
                         if armies_here:
                             grid.promote_to_champion(armies_here[0])
                             moved_nation     = pending_nation
                             _move_data = moves_mod.serialize_move(
-                                'promote', pending_nation.ring_index,
+                                'promote', pending_nation.color_name,
                                 to_hex=(tq, tr))
                             on_local_move_made(_move_data)
                             if game_mode == 'vs_bot':
@@ -1052,12 +1066,13 @@ async def main():
                             if settings.DEPLOYMENT == 'DEBUG':
                                 print(f"[{active_player.player_id} promote] T{turn_number} {pending_nation.color_name} at {(tq,tr)}  {_move_data}")
                             if game_mode == 'vs_bot':
-                                bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
+                                bot_memory.add_score(pending_nation.color_name, 2, settings.NATION_NAMES)
                             action_pending   = pending_nation = None
                             highlight_muster = highlight_promo = set()
 
                             active_player.add_to_cooldown(moved_nation)
-                            global_cooldown_idx = moved_nation.ring_index
+                            global_cooldown_name = moved_nation.color_name
+                            dipl_panel.tick_cooldowns()
                             if check_trigger_game_end(grid, nation_list):
                                 game_state  = STATE_GAME_OVER
                                 game_result = True
@@ -1080,12 +1095,12 @@ async def main():
                     tq, tr = grid.screen_to_axial(mx, my)
                     if (tq, tr) in highlight_promo:
                         armies_here = [a for a in grid.armies.get((tq, tr), [])
-                                       if a.nation.ring_index == pending_nation.ring_index]
+                                       if a.nation.color_name == pending_nation.color_name]
                         if armies_here:
                             grid.promote_to_knight(armies_here[0])
                             moved_nation     = pending_nation
                             _move_data = moves_mod.serialize_move(
-                                'promote_knight', pending_nation.ring_index,
+                                'promote_knight', pending_nation.color_name,
                                 to_hex=(tq, tr))
                             on_local_move_made(_move_data)
                             if game_mode == 'vs_bot':
@@ -1094,12 +1109,13 @@ async def main():
                             if settings.DEPLOYMENT == 'DEBUG':
                                 print(f"[{active_player.player_id} promote knight] T{turn_number} {pending_nation.color_name} at {(tq,tr)}  {_move_data}")
                             if game_mode == 'vs_bot':
-                                bot_memory.add_score(pending_nation.ring_index, 2, settings.NATION_NAMES)
+                                bot_memory.add_score(pending_nation.color_name, 2, settings.NATION_NAMES)
                             action_pending   = pending_nation = None
                             highlight_muster = highlight_promo = set()
 
                             active_player.add_to_cooldown(moved_nation)
-                            global_cooldown_idx = moved_nation.ring_index
+                            global_cooldown_name = moved_nation.color_name
+                            dipl_panel.tick_cooldowns()
                             if check_trigger_game_end(grid, nation_list):
                                 game_state  = STATE_GAME_OVER
                                 game_result = True
@@ -1124,7 +1140,7 @@ async def main():
                         if unit.nation in eligible:
                             drag_unit        = unit
                             drag_unit_type   = utype
-                            highlight_move   = set(grid.get_valid_moves(unit, mover_secret_nation=active_player.secret_nation))
+                            highlight_move   = set(grid.get_valid_moves(unit))
                             highlight_attack  = set(grid.get_valid_attacks(unit))
                             drag_mouse_pos   = (mx, my)
                         else:
@@ -1138,19 +1154,19 @@ async def main():
                   and drag_splash_nation is not None):
                 mx, my = event.pos
                 dropped = False
-                placed_ri = {n.ring_index for n in prevail_picks + defeat_picks}
+                placed_ri = {n.color_name for n in prevail_picks + defeat_picks}
 
                 if (splash_prevail_rect is not None
                         and splash_prevail_rect.collidepoint(mx, my)):
                     if (len(prevail_picks) < 3
-                            and drag_splash_nation.ring_index not in placed_ri):
+                            and drag_splash_nation.color_name not in placed_ri):
                         prevail_picks.append(drag_splash_nation)
                         dropped = True
 
                 elif (splash_defeat_rect is not None
                       and splash_defeat_rect.collidepoint(mx, my)):
                     if (len(defeat_picks) < 3
-                            and drag_splash_nation.ring_index not in placed_ri):
+                            and drag_splash_nation.color_name not in placed_ri):
                         defeat_picks.append(drag_splash_nation)
                         dropped = True
 
@@ -1166,8 +1182,33 @@ async def main():
                 drag_splash_src    = None
 
             # ---- Drag motion -----------------------------------------------
-            elif event.type == pygame.MOUSEMOTION and drag_unit:
-                drag_mouse_pos = event.pos
+            elif event.type == pygame.MOUSEMOTION:
+                if game_state == STATE_HUMAN_TURN:
+                    dipl_panel.on_mousemotion(event.pos)
+                if drag_unit:
+                    drag_mouse_pos = event.pos
+
+            # ---- Human diplomacy drop --------------------------------------
+            elif (event.type == pygame.MOUSEBUTTONUP and event.button == 1
+                  and game_state == STATE_HUMAN_TURN and dipl_panel.drag):
+                action = dipl_panel.on_mouseup(event.pos)
+                if action:
+                    _apply_diplomacy_move(grid, dipl_panel, action, nation_list)
+                    dipl_panel.tick_cooldowns()
+
+                    if check_trigger_game_end(grid, nation_list):
+                        game_state  = STATE_GAME_OVER
+                        game_result = True
+                    elif game_mode == 'vs_bot':
+                        game_state      = STATE_BOT_THINKING
+                        bot_think_timer = BOT_THINK_MS
+                        current_player_idx = 1
+                    elif game_mode == 'network':
+                        game_state = STATE_WAITING_OPPONENT
+                        turn_number += 1
+                    else:
+                        current_player_idx = 1 - current_player_idx
+                        turn_number += 1
 
             # ---- Human drag drop -------------------------------------------
             elif (event.type == pygame.MOUSEBUTTONUP and event.button == 1
@@ -1181,11 +1222,11 @@ async def main():
                     from_hex = (drag_unit.q, drag_unit.r)
                     _unit_type_snap = drag_unit_type  # capture before drag clears
                     _unit_snap      = drag_unit        # capture before apply_move moves it
-                    success, msg = grid.apply_move(drag_unit, tq, tr, mover_secret_nation=active_player.secret_nation)
+                    success, msg = grid.apply_move(drag_unit, tq, tr)
                     if success:
                         moved_nation = drag_unit.nation
                         _move_data = moves_mod.serialize_move(
-                            'move', drag_unit.nation.ring_index,
+                            'move', drag_unit.nation.color_name,
                             unit_type=_unit_type_snap,
                             from_hex=from_hex, to_hex=(tq, tr))
                         on_local_move_made(_move_data)
@@ -1193,7 +1234,7 @@ async def main():
                             bot_memory.record(turn_number, drag_unit.nation,
                                               drag_unit_type, from_hex, (tq, tr), 'move')
                         # Scoring (bot mode only)
-                        ri = drag_unit.nation.ring_index
+                        ri = drag_unit.nation.color_name
                         _nnames = settings.NATION_NAMES
                         if settings.DEPLOYMENT == 'DEBUG':
                             print(f"[{active_player.player_id} move] T{turn_number} {drag_unit.nation.color_name} {_unit_type_snap} {from_hex}->{(tq,tr)}  {_move_data}")
@@ -1220,21 +1261,21 @@ async def main():
                     _target_ris = set()
                     for _u in grid.sovereigns.get((tq, tr), []):
                         if drag_unit.nation.is_enemy(_u.nation):
-                            _target_ris.add(_u.nation.ring_index)
+                            _target_ris.add(_u.nation.color_name)
                     for _u in grid.champions.get((tq, tr), []):
                         if drag_unit.nation.is_enemy(_u.nation):
-                            _target_ris.add(_u.nation.ring_index)
+                            _target_ris.add(_u.nation.color_name)
                     for _u in grid.knights.get((tq, tr), []):
                         if drag_unit.nation.is_enemy(_u.nation):
-                            _target_ris.add(_u.nation.ring_index)
+                            _target_ris.add(_u.nation.color_name)
                     for _u in grid.armies.get((tq, tr), []):
                         if drag_unit.nation.is_enemy(_u.nation):
-                            _target_ris.add(_u.nation.ring_index)
+                            _target_ris.add(_u.nation.color_name)
                     success, msg, _ = grid.resolve_attack(drag_unit, tq, tr)
                     if success:
                         moved_nation = drag_unit.nation
                         _move_data = moves_mod.serialize_move(
-                            'attack', drag_unit.nation.ring_index,
+                            'attack', drag_unit.nation.color_name,
                             unit_type=drag_unit_type,
                             from_hex=from_hex, to_hex=(tq, tr))
                         on_local_move_made(_move_data)
@@ -1242,7 +1283,7 @@ async def main():
                             bot_memory.record(turn_number, drag_unit.nation,
                                               drag_unit_type, from_hex, (tq, tr), 'attack')
                             _nnames = settings.NATION_NAMES
-                            bot_memory.add_score(drag_unit.nation.ring_index, 2, _nnames)
+                            bot_memory.add_score(drag_unit.nation.color_name, 2, _nnames)
                             for _ri in _target_ris:
                                 bot_memory.add_score(_ri, -4, _nnames)
                         if settings.DEPLOYMENT == 'DEBUG':
@@ -1264,7 +1305,8 @@ async def main():
                 if moved_nation:
                     active_player = players[current_player_idx]
                     active_player.add_to_cooldown(moved_nation)
-                    global_cooldown_idx = moved_nation.ring_index
+                    global_cooldown_name = moved_nation.color_name
+                    dipl_panel.tick_cooldowns()
                     if check_trigger_game_end(grid, nation_list):
                         game_state  = STATE_GAME_OVER
                         game_result = True
@@ -1288,7 +1330,8 @@ async def main():
                 if success and moved_nation:
                     # Opponent is always player2 in our local model
                     player2.add_to_cooldown(moved_nation)
-                    global_cooldown_idx = moved_nation.ring_index
+                    global_cooldown_name = moved_nation.color_name
+                    dipl_panel.tick_cooldowns()
                     if settings.DEPLOYMENT == 'DEBUG':
                         print(f"[Network] Received move: {incoming}")
                     if check_trigger_game_end(grid, nation_list):
@@ -1306,11 +1349,11 @@ async def main():
                 # Compute the action (don't execute yet — animate first)
                 _suspected = bot_memory.guess_faction(
                     nation_list,
-                    exclude_ring_indices=(p2_nation.ring_index,))
-                _suspected_ri = _suspected.ring_index if _suspected else None
+                    exclude_names=(p2_nation.color_name,))
+                _suspected_name = _suspected.color_name if _suspected else None
                 bot_pending_action = bot_ai.compute_bot_action(
-                    grid, player2, global_cooldown_idx, nation_list,
-                    turn_number, suspected_human_ri=_suspected_ri,
+                    grid, player2, global_cooldown_name, nation_list,
+                    turn_number, suspected_human_ri=_suspected_name,
                     weights=evolved_bot_weights,
                     evolved_config=evolved_bot_config,
                     lookahead_depth=evolved_bot_config.lookahead_depth if evolved_bot_config else None,
@@ -1322,6 +1365,7 @@ async def main():
                     game_state         = STATE_HUMAN_TURN
                     current_player_idx = 0
                     turn_number       += 1
+                    dipl_panel.tick_cooldowns()
                 else:
                     _, atype, *payload = bot_pending_action
                     actor, coord = payload[0], payload[1]
@@ -1329,7 +1373,7 @@ async def main():
                         bot_flash_hex = (actor.q, actor.r)
                         bot_flash_button_key = None
                     else:   # recruit / promote
-                        ri = actor.ring_index
+                        ri = actor.color_name
                         bot_flash_hex = None
                         bot_flash_button_key = (atype if atype == 'recruit' else 'promote', ri)
                     bot_flash_timer = BOT_FLASH_MS
@@ -1347,7 +1391,7 @@ async def main():
 
                 if moved_nation:
                     player2.add_to_cooldown(moved_nation)
-                    global_cooldown_idx = moved_nation.ring_index
+                    global_cooldown_name = moved_nation.color_name
 
                 # Determine post-flash hex (destination)
                 _, atype, *payload = bot_pending_action
@@ -1373,6 +1417,7 @@ async def main():
                     game_state         = STATE_HUMAN_TURN
                     current_player_idx = 0
                     turn_number       += 1
+                    dipl_panel.tick_cooldowns()
 
         # ── Error fade ────────────────────────────────────────────────────────
         if error_alpha > 0:
@@ -1387,7 +1432,7 @@ async def main():
             _buttons_en = (len(prevail_picks) == 3 and len(defeat_picks) == 3)
             _splash_result = splash_mod.draw_splash(
                 screen, splash_fonts, p1_nation,
-                splash_mx, splash_my, diplo_splash,
+                splash_mx, splash_my,
                 evolved_available=has_evolved_configs,
                 prevail_nations=prevail_picks,
                 defeat_nations=defeat_picks,
@@ -1407,11 +1452,11 @@ async def main():
 
             # Nations the active player cannot move right now → rendered as frozen
             active_player = players[current_player_idx]
-            eligible_now      = get_eligible_nations(active_player, global_cooldown_idx, nation_list)
-            eligible_ring_idx = {n.ring_index for n in eligible_now}
-            frozen_ring_idx   = {n.ring_index for n in nation_list
-                                 if n.ring_index not in eligible_ring_idx}
-            ghost_ring_idx    = {n.ring_index for n in nation_list if n.is_ghost}
+            eligible_now      = get_eligible_nations(active_player, global_cooldown_name, nation_list)
+            eligible_ring_idx = {n.color_name for n in eligible_now}
+            frozen_ring_idx   = {n.color_name for n in nation_list
+                                 if n.color_name not in eligible_ring_idx}
+            ghost_ring_idx    = {n.color_name for n in nation_list if n.is_ghost}
 
             grid.draw(screen,
                       highlight_move=highlight_move,
@@ -1435,22 +1480,24 @@ async def main():
             draw_sidebar_buttons(screen, grid, sidebar_buttons,
                                  action_pending, pending_nation, font_tiny)
 
+            # Draw Diplomacy Panel on right sidebar
+            dipl_panel.draw(screen, splash_fonts)
+
             current_player = players[current_player_idx]
             # In vs_bot, always show the human's secret nation (player1)
             display_player = player1 if game_mode == 'vs_bot' else active_player
             draw_top_bar(screen, font_large, font_small,
                          display_player, current_player, turn_number,
                          game_state, game_mode)
-            draw_diplo_panel(screen, diplo_img, font_small)
             draw_predictions_panel(screen, font_small, player1)
-            draw_cooldown_panel(screen, font_small, players, global_cooldown_idx)
+            draw_cooldown_panel(screen, font_small, players, global_cooldown_name)
             draw_error(screen, font_small, error_message, error_alpha)
 
             # Debug: bot faction guess (top-left, below top bar) — DEBUG mode only
             if settings.DEPLOYMENT == 'DEBUG' and game_mode == 'vs_bot':
                 _guess = bot_memory.guess_faction(
                     nation_list,
-                    exclude_ring_indices=(p2_nation.ring_index,))
+                    exclude_names=(p2_nation.color_name,))
                 if _guess:
                     _gt = f"Bot guess for player: {_guess.color_name}"
                     _gs = font_small.render(_gt, True, _guess.color_rgb)

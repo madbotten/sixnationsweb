@@ -22,35 +22,41 @@ MAP_CENTER_Y = 715
 
 # -- UI regions ---------------------------------------------------------------
 TOP_BAR_HEIGHT  = 60   # Top status bar height
-DIPLO_RING_SIZE = 300  # Square side for DiplomacyRing.jpg panel (top-right)
 COOLDOWN_PANEL_W = 300
 COOLDOWN_PANEL_H = 150
 
-# -- Nation colours (ring order 0-5) ------------------------------------------
-# Yellow, Green, Sky Blue, Cobalt, Magenta, Crimson
-NATION_COLORS = [
-    (230, 200,  50),   # 0  Yellow
-    ( 55, 190,  80),   # 1  Green
-    ( 70, 185, 230),   # 2  Sky Blue
-    ( 55,  85, 200),   # 3  Cobalt
-    (210,  55, 170),   # 4  Magenta
-    (210,  45,  65),   # 5  Crimson
-]
+# -- Diplomacy panel ----------------------------------------------------------
+DIPL_PANEL_X        = 1640
+DIPL_PANEL_Y        = 70
+DIPL_PANEL_W        = 340
+DIPL_BOX_H          = 200
+DIPL_BOX_GAP        = 20
+DIPL_FLAG_W         = 40
+DIPL_FLAG_H         = 34
+DIPL_FLAG_GAP       = 12
+DIPL_COOLDOWN_MIN   = 10    # random cooldown range (counts ALL turns: human + bot)
+DIPL_COOLDOWN_MAX   = 12    # actual value chosen secretly; red border visible, count hidden
 
-NATION_NAMES = [
-    "Yilerond",  # Yellow
-    "Galland",   # Green
-    "Beldrin",   # Blue
-    "Crestmoor", # Cobalt
-    "Malkor",    # Magenta
-    "Ravengard"  # Red
-]
+
+# -- Nation colours (by name) -------------------------------------------------
+# Insertion order is canonical nation order throughout the game.
+NATION_COLORS = {
+    'Yilerond':  (230, 200,  50),   # Yellow
+    'Galland':   ( 55, 190,  80),   # Green
+    'Beldrin':   ( 70, 185, 230),   # Sky Blue
+    'Crestmoor': ( 55,  85, 200),   # Cobalt
+    'Malkor':    (210,  55, 170),   # Magenta
+    'Ravengard': (210,  45,  65),   # Crimson
+}
+
+# Canonical name list, preserving insertion order (Python 3.7+).
+NATION_NAMES = list(NATION_COLORS.keys())
 
 # Dark tinted fills for starting hex interiors (18% blend over dark bg).
-NATION_HEX_FILLS = [
-    tuple(int(18 + c * 0.20) for c in col)
-    for col in NATION_COLORS
-]
+NATION_HEX_FILLS = {
+    name: tuple(int(18 + c * 0.20) for c in col)
+    for name, col in NATION_COLORS.items()
+}
 
 # -- Background and UI colours ------------------------------------------------
 COLOR_BACKGROUND   = (11, 14, 22)

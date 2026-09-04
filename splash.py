@@ -8,7 +8,7 @@ import pygame
 
 import settings
 import util
-from factions import NATIONS
+from factions import NATIONS, NATIONS_BY_NAME
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +281,7 @@ def build_rules_surfaces(raw_text, font_h, font_b, max_width):
 # Public drawing functions
 # ---------------------------------------------------------------------------
 
-def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None,
+def draw_splash(screen, fonts, human_nation, mx, my,
                 evolved_available=False,
                 prevail_nations=None, defeat_nations=None,
                 drag_nation=None, drag_pos=None,
@@ -297,7 +297,7 @@ def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None,
     -------
     (bot_rect, human_rect, inst_rect, evolved_rect,
      prevail_rect, defeat_rect, tile_rects)
-    where tile_rects is dict {ring_index: pygame.Rect}.
+    where tile_rects is dict {color_name: pygame.Rect}.
     """
     prevail_nations = prevail_nations or []
     defeat_nations  = defeat_nations  or []
@@ -344,11 +344,13 @@ def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None,
     pygame.draw.line(screen, settings.COLOR_HEX_BORDER,
                      (LEFT_W, CONTENT_Y + 20), (LEFT_W, H - BTN_STRIP - 20), 1)
 
-    # Left column: prediction boxes — centred horizontally in the left column
-    BOX_W = 860
-    BOX_X = (LEFT_W - BOX_W) // 2
-    BOX_Y_PREVAIL = CONTENT_Y + 28
-    BOX_Y_DEFEAT  = BOX_Y_PREVAIL + _BOX_H + 34
+    # Left column: prediction boxes — centred horizontally AND vertically
+    BOX_W          = 860
+    BOX_X          = (LEFT_W - BOX_W) // 2
+    BOX_GAP        = 34
+    BOX_TOTAL_H    = 2 * _BOX_H + BOX_GAP
+    BOX_Y_PREVAIL  = CONTENT_Y + (CONTENT_H - BOX_TOTAL_H) // 2
+    BOX_Y_DEFEAT   = BOX_Y_PREVAIL + _BOX_H + BOX_GAP
 
     prevail_rect = pygame.Rect(BOX_X, BOX_Y_PREVAIL, BOX_W, _BOX_H)
     defeat_rect  = pygame.Rect(BOX_X, BOX_Y_DEFEAT,  BOX_W, _BOX_H)
@@ -359,9 +361,9 @@ def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None,
                          (220, 65, 55), defeat_nations)
 
     # Right column: nation palette
-    placed_set = {n.ring_index for n in prevail_nations + defeat_nations}
+    placed_set = {n.color_name for n in prevail_nations + defeat_nations}
     if drag_nation is not None:
-        placed_set.discard(drag_nation.ring_index)
+        placed_set.discard(drag_nation.color_name)
 
     TILE_W   = W - RIGHT_X - 44
     TILE_GAP = 18
@@ -372,12 +374,12 @@ def draw_splash(screen, fonts, human_nation, mx, my, diplo_img=None,
     screen.blit(col_hdr, col_hdr.get_rect(x=RIGHT_X, y=CONTENT_Y + 8))
 
     tile_rects = {}
-    for ri in range(6):
-        nation    = NATIONS[ri]
-        ty        = tile_start_y + ri * (TILE_H + TILE_GAP)
+    for idx, nation in enumerate(NATIONS):
+        name      = nation.color_name
+        ty        = tile_start_y + idx * (TILE_H + TILE_GAP)
         tile_rect = pygame.Rect(RIGHT_X, ty, TILE_W, TILE_H)
-        tile_rects[ri] = tile_rect
-        is_placed = ri in placed_set
+        tile_rects[name] = tile_rect
+        is_placed = name in placed_set
         hovered   = tile_rect.collidepoint(mx, my) and not is_placed
         _draw_nation_tile(screen, fonts, tile_rect, nation, is_placed, hovered)
 

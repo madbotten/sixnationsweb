@@ -17,45 +17,75 @@ from moves import serialize_move, apply_serialized_move
 class TestSixNations(unittest.TestCase):
 
     def setUp(self):
-        # Reset ghost flags on shared nation singletons before each test
+        # Reset ghost flags and diplomatic stances on shared singletons before each test
+        from factions import _init_diplomacy
         for nation in NATIONS:
             nation.is_ghost = False
+        _init_diplomacy(NATIONS)
         self.grid = MapGrid()
         self.grid.generate_map()
 
     # -----------------------------------------------------------------------
-    # 1. Diplomacy and Ring Geometry
+    # 1. Diplomacy -- Dynamic Stances
     # -----------------------------------------------------------------------
 
-    def test_01_diplomatic_ring_alliances(self):
-        """Adjacent nations on the 0-5 ring are allies; self is neither ally nor enemy."""
-        n0, n1, n2, n3, n4, n5 = NATIONS
-        self.assertTrue(n0.is_ally(n1))
-        self.assertTrue(n0.is_ally(n5))
-        self.assertFalse(n0.is_ally(n2))
-        self.assertFalse(n0.is_ally(n3))
-        self.assertFalse(n0.is_ally(n0))
-        self.assertTrue(n3.is_ally(n2))
-        self.assertTrue(n3.is_ally(n4))
+    def test_01_default_neutral(self):
+        """All nations start neutral to each other after _init_diplomacy."""
+        from factions import create_nations
+        nations = create_nations()
+        for i, n in enumerate(nations):
+            for j, other in enumerate(nations):
+                if i == j:
+                    self.assertEqual(n.get_stance(other), 'self')
+                else:
+                    self.assertEqual(n.get_stance(other), 'neutral',
+                                     f"{n} should be neutral to {other}")
 
-    def test_02_diplomatic_ring_enemies(self):
-        """Opposite 3 nations across the ring are enemies."""
-        n0, n1, n2, n3, n4, n5 = NATIONS
-        # For Yellow (0): Cobalt (3), Sky Blue (2), Magenta (4) are enemies
-        self.assertTrue(n0.is_enemy(n2))
-        self.assertTrue(n0.is_enemy(n3))
-        self.assertTrue(n0.is_enemy(n4))
-        self.assertFalse(n0.is_enemy(n1))
-        self.assertFalse(n0.is_enemy(n5))
-        self.assertFalse(n0.is_enemy(n0))
+    def test_02_set_ally_mirrored(self):
+        """set_ally is symmetric: A.set_ally(B) → B.is_ally(A)."""
+        from factions import create_nations
+        nations = create_nations()
+        a, b = nations[0], nations[2]
+        a.set_ally(b)
+        self.assertTrue(a.is_ally(b))
+        self.assertTrue(b.is_ally(a))
+        self.assertFalse(a.is_enemy(b))
 
-    def test_03_enemy_nations_count(self):
-        """Every nation has exactly 2 allies and 3 enemies."""
-        for n in NATIONS:
-            enemies = n.enemy_nations(NATIONS)
-            allies = [other for other in NATIONS if n.is_ally(other)]
-            self.assertEqual(len(enemies), 3)
-            self.assertEqual(len(allies), 2)
+    def test_03_set_enemy_mirrored(self):
+        """set_enemy is symmetric: A.set_enemy(B) → B.is_enemy(A)."""
+        from factions import create_nations
+        nations = create_nations()
+        a, b = nations[1], nations[4]
+        a.set_enemy(b)
+        self.assertTrue(a.is_enemy(b))
+        self.assertTrue(b.is_enemy(a))
+        self.assertFalse(a.is_ally(b))
+
+    def test_03b_set_neutral_clears_previous(self):
+        """set_neutral after set_enemy returns both to neutral."""
+        from factions import create_nations
+        nations = create_nations()
+        a, b = nations[0], nations[3]
+        a.set_enemy(b)
+        a.set_neutral(b)
+        self.assertEqual(a.get_stance(b), 'neutral')
+        self.assertEqual(b.get_stance(a), 'neutral')
+
+    def test_03c_each_nation_in_exactly_one_list(self):
+        """Each other nation appears in exactly one of allies/neutrals/enemies."""
+        from factions import create_nations
+        nations = create_nations()
+        nations[0].set_ally(nations[1])
+        nations[0].set_enemy(nations[3])
+        for n in nations:
+            for other in nations:
+                if other is n:
+                    continue
+                count = (int(other in n.allies)
+                         + int(other in n.neutrals)
+                         + int(other in n.enemies))
+                self.assertEqual(count, 1,
+                                 f"{other} appears {count} times in {n}'s lists")
 
     # -----------------------------------------------------------------------
     # 2. Board Generation & Starting Setup
@@ -77,13 +107,13 @@ class TestSixNations(unittest.TestCase):
 
     def test_06_sovereign_champion_co_location(self):
         """Each sovereign and champion start co-located at their nation's corner hex."""
-        for nation_idx, corner in enumerate(MapGrid.NATION_CORNERS):
+        for nation_name, corner in MapGrid.NATION_CORNERS.items():
             sovs = self.grid.sovereigns.get(corner, [])
             champs = self.grid.champions.get(corner, [])
             self.assertEqual(len(sovs), 1)
             self.assertEqual(len(champs), 1)
-            self.assertEqual(sovs[0].nation.ring_index, nation_idx)
-            self.assertEqual(champs[0].nation.ring_index, nation_idx)
+            self.assertEqual(sovs[0].nation.color_name, nation_name)
+            self.assertEqual(champs[0].nation.color_name, nation_name)
 
     # -----------------------------------------------------------------------
     # 3. Player Cooldown Mechanics
@@ -365,7 +395,7 @@ class TestSixNations(unittest.TestCase):
 
         target_hex = recruit_hexes[0]
         new_army = grid.recruit_army(NATIONS[0], *target_hex)
-        self.assertEqual(new_army.nation.ring_index, 0)
+        self.assertEqual(new_army.nation.color_name, 'Yilerond')
         self.assertEqual(new_army.hex_location, target_hex)
         # Now back at 3 armies, recruit_hexes should be empty
         self.assertEqual(grid.get_recruit_hexes(NATIONS[0]), [])
@@ -385,7 +415,7 @@ class TestSixNations(unittest.TestCase):
         army_to_promote = grid.armies[promo_hex][0]
         new_champ = grid.promote_to_champion(army_to_promote)
 
-        self.assertEqual(new_champ.nation.ring_index, 0)
+        self.assertEqual(new_champ.nation.color_name, 'Yilerond')
         self.assertEqual(new_champ.hex_location, promo_hex)
         self.assertEqual(grid.get_promote_hexes(NATIONS[0]), [])
 
@@ -427,17 +457,18 @@ class TestSixNations(unittest.TestCase):
     # -----------------------------------------------------------------------
 
     def test_24_bot_memory_scoring_and_guessing(self):
-        """BotMemory adds points, propagates half to allies, and guesses the correct faction excluding bot's color."""
+        """BotMemory adds points by color_name and guesses the correct faction."""
         mem = BotMemory(debug=False)
-        # Adding 4 points to Yellow (0) gives +4 to Yellow and +2 to allies Green (1) and Crimson (5)
-        mem.add_score(0, 4)
-        self.assertEqual(mem.nation_scores[0], 4)
-        self.assertEqual(mem.nation_scores[1], 2)
-        self.assertEqual(mem.nation_scores[5], 2)
+        # Add points for Yilerond
+        mem.add_score('Yilerond', 4)
+        self.assertEqual(mem.nation_scores.get('Yilerond', 0), 4)
+        # No ally propagation any more
+        self.assertNotIn('Galland', mem.nation_scores)
+        self.assertNotIn('Ravengard', mem.nation_scores)
 
-        # Bot is Green (1) -> guess should exclude 1 and pick Yellow (0)
-        guess = mem.guess_faction(NATIONS, exclude_ring_indices=(1,))
-        self.assertEqual(guess.ring_index, 0)
+        # Bot is Galland -> guess should exclude 'Galland' and pick 'Yilerond'
+        guess = mem.guess_faction(NATIONS, exclude_names=('Galland',))
+        self.assertEqual(guess.color_name, 'Yilerond')
 
     def test_25_bot_does_not_hand_human_victory(self):
         """When human is 1 kill away from winning, bot completely suppresses attacks on remaining human targets."""
@@ -445,22 +476,34 @@ class TestSixNations(unittest.TestCase):
         grid = MapGrid()
         grid.generate_map()
 
-        # Human suspected = Cobalt (3), enemies = Yellow(0), Green(1), Crimson(5)
-        # Bot = Sky Blue (2), enemies = Cobalt(3), Magenta(4), Crimson(5)
-        # Green (1) is already a ghost -> human has 1 kill (1 away from winning)
+        # Human suspected = Crestmoor, enemies = Yilerond + Galland (set up stances)
+        # Bot = Beldrin, enemies = Malkor + Ravengard
+        yilerond, galland, beldrin, crestmoor, malkor, ravengard = NATIONS[:6]
         NATIONS[1].is_ghost = True
-
-        # Candidate action: attack Yellow (0) sovereign with Sky Blue (2) army (enemy of Yellow)
-        yellow_sov = [s for sl in grid.sovereigns.values() for s in sl if s.nation.ring_index == 0][0]
-        attacker = Army(NATIONS[2], 0, -2) # Sky Blue army
-        actions = [(1020.0, 'attack', attacker, yellow_sov.hex_location)]
-
-        # Adjust actions with suspected human = 3
-        adjusted = _adaptive_sovereign_adjustments(grid, actions, bot_ri=2, suspected_human_ri=3,
-                                                   turn_number=30, nation_list=NATIONS)
-        self.assertEqual(len(adjusted), 1)
-        # Score must be <= -1000 (disqualified) so bot never executes it
-        self.assertTrue(adjusted[0][0] < -1000)
+        crestmoor.set_enemy(yilerond)
+        crestmoor.set_enemy(galland)
+        beldrin.set_enemy(malkor)
+        beldrin.set_enemy(ravengard)
+        try:
+            # Candidate action: Beldrin army attacks Yilerond sovereign
+            # Yilerond is in Crestmoor's enemy list, Galland is ghost (1 kill)
+            # Bot is not 1 away -> should suppress
+            yellow_sov = [s for sl in grid.sovereigns.values() for s in sl
+                          if s.nation.color_name == 'Yilerond'][0]
+            attacker = Army(beldrin, 0, -2)
+            actions = [(1020.0, 'attack', attacker, yellow_sov.hex_location)]
+            adjusted = _adaptive_sovereign_adjustments(
+                grid, actions, bot_name='Beldrin', suspected_human_name='Crestmoor',
+                turn_number=30, nation_list=NATIONS)
+            self.assertEqual(len(adjusted), 1)
+            self.assertTrue(adjusted[0][0] < -1000)
+        finally:
+            # Restore neutral stance on singletons
+            crestmoor.set_neutral(yilerond)
+            crestmoor.set_neutral(galland)
+            beldrin.set_neutral(malkor)
+            beldrin.set_neutral(ravengard)
+            NATIONS[1].is_ghost = False
 
     # -----------------------------------------------------------------------
     # 12. Advance after combat
@@ -600,7 +643,7 @@ class TestSixNations(unittest.TestCase):
         success, msg, moved_nation, destroyed = apply_serialized_move(
             grid, move_data, NATIONS)
         self.assertTrue(success)
-        self.assertEqual(moved_nation.ring_index, 0)
+        self.assertEqual(moved_nation.color_name, 'Yilerond')
         self.assertEqual(army.hex_location, (1, 0))
 
     def test_33_serialize_apply_attack(self):
@@ -635,10 +678,10 @@ class TestSixNations(unittest.TestCase):
         success, msg, moved_nation, destroyed = apply_serialized_move(
             grid, move_data, NATIONS)
         self.assertTrue(success)
-        self.assertEqual(moved_nation.ring_index, 0)
+        self.assertEqual(moved_nation.color_name, 'Yilerond')
         armies_at = grid.armies.get((1, 0), [])
         self.assertEqual(len(armies_at), 1)
-        self.assertEqual(armies_at[0].nation.ring_index, 0)
+        self.assertEqual(armies_at[0].nation.color_name, 'Yilerond')
 
     # -----------------------------------------------------------------------
     # 14. Bot sovereign protection — never kill own secret nation's sovereign
@@ -651,24 +694,28 @@ class TestSixNations(unittest.TestCase):
         grid.generate_map()
         grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
 
-        # Bot's secret nation is NATIONS[0] (Yellow).
-        # Allied nations: 0 (Yellow), 1 (Green), 5 (Crimson).
-        # Enemy nations:  2 (Sky Blue), 3 (Cobalt), 4 (Magenta).
-        bot_secret = NATIONS[0]
-        allied_ring_set = {n.ring_index for n in NATIONS if not bot_secret.is_enemy(n)}
-        enemy_ring_set  = {n.ring_index for n in bot_secret.enemy_nations(NATIONS)}
+        # Set up ring-topology enemies: NATIONS[0] (Yilerond) enemies are [2,3,4]
+        # NATIONS[3] (Crestmoor) enemy of NATIONS[1] (Galland) follows from ring
+        NATIONS[0].set_enemy(NATIONS[2])
+        NATIONS[0].set_enemy(NATIONS[3])
+        NATIONS[0].set_enemy(NATIONS[4])
+        NATIONS[3].set_enemy(NATIONS[1])   # needed for attacker vs allied_sov
 
-        # Place an enemy champion (Nation 3, Cobalt) adjacent to allied sovereign (Nation 1, Green)
+        bot_secret = NATIONS[0]  # Yilerond
+        allied_name_set = {n.color_name for n in NATIONS if not bot_secret.is_enemy(n)}
+        enemy_name_set  = {n.color_name for n in bot_secret.enemy_nations(NATIONS)}
+
+        # Attacker = Crestmoor champion; allied_sov = Galland sovereign
         attacker = Champion(NATIONS[3], 0, 0)
         allied_sov = Sovereign(NATIONS[1], 1, 0)
         grid.add_champion(attacker)
         grid.add_sovereign(allied_sov)
 
-        # Nation 3 IS enemy of Nation 1 per diplomacy, so the attack is "legal"
+        # Crestmoor IS enemy of Galland per setup above
         self.assertTrue(NATIONS[3].is_enemy(NATIONS[1]))
 
-        score = _score_attack(grid, attacker, 1, 0, enemy_ring_set,
-                              allied_ring_set=allied_ring_set)
+        score = _score_attack(grid, attacker, 1, 0, enemy_name_set,
+                              allied_name_set=allied_name_set)
         self.assertEqual(score, -9999.0,
             "Attack on allied sovereign must be scored -9999")
 
@@ -679,11 +726,18 @@ class TestSixNations(unittest.TestCase):
         grid.generate_map()
         grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
 
-        bot_secret = NATIONS[0]
-        allied_ring_set = {n.ring_index for n in NATIONS if not bot_secret.is_enemy(n)}
-        enemy_ring_set  = {n.ring_index for n in bot_secret.enemy_nations(NATIONS)}
+        # Set up: Yilerond enemies = [Beldrin, Crestmoor, Malkor]
+        # Galland enemies = [Crestmoor, Malkor, Ravengard] (so Galland attacks Crestmoor = enemy)
+        NATIONS[0].set_enemy(NATIONS[2])
+        NATIONS[0].set_enemy(NATIONS[3])
+        NATIONS[0].set_enemy(NATIONS[4])
+        NATIONS[1].set_enemy(NATIONS[3])
 
-        # Place an allied champion (Nation 1, Green) adjacent to enemy sovereign (Nation 3, Cobalt)
+        bot_secret = NATIONS[0]  # Yilerond
+        allied_name_set = {n.color_name for n in NATIONS if not bot_secret.is_enemy(n)}
+        enemy_name_set  = {n.color_name for n in bot_secret.enemy_nations(NATIONS)}
+
+        # Galland champion attacks Crestmoor sovereign
         attacker = Champion(NATIONS[1], 0, 0)
         enemy_sov = Sovereign(NATIONS[3], 1, 0)
         grid.add_champion(attacker)
@@ -691,8 +745,8 @@ class TestSixNations(unittest.TestCase):
 
         self.assertTrue(NATIONS[1].is_enemy(NATIONS[3]))
 
-        score = _score_attack(grid, attacker, 1, 0, enemy_ring_set,
-                              allied_ring_set=allied_ring_set)
+        score = _score_attack(grid, attacker, 1, 0, enemy_name_set,
+                              allied_name_set=allied_name_set)
         self.assertGreater(score, 0,
             "Attack on enemy sovereign must score positively")
 
@@ -703,37 +757,40 @@ class TestSixNations(unittest.TestCase):
         grid.generate_map()
         grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
 
-        # Bot is Nation 0 (Yellow). Allies: 0, 1, 5.
+        # Set up: Yilerond enemies = [Beldrin, Crestmoor, Malkor]; allies = [Galland, Ravengard]
+        NATIONS[0].set_enemy(NATIONS[2])
+        NATIONS[0].set_enemy(NATIONS[3])
+        NATIONS[0].set_enemy(NATIONS[4])
+        # Crestmoor enemy of Galland (so a legal attack scenario exists)
+        NATIONS[3].set_enemy(NATIONS[1])
+
         bot_player = Player(secret_nation=NATIONS[0], is_bot=True)
-        allied_ring_set = {n.ring_index for n in NATIONS if not NATIONS[0].is_enemy(n)}
+        allied_name_set = {n.color_name for n in NATIONS if not NATIONS[0].is_enemy(n)}
 
         # Place all 6 sovereigns in their home hexes
         for nation in NATIONS:
-            home = grid.NATION_HEXES[nation.ring_index][0]
+            home = grid.NATION_HEXES[nation.color_name][0]
             grid.add_sovereign(Sovereign(nation, *home))
 
-        # Place a champion from Nation 3 (enemy of Nation 1) next to Nation 1's sovereign
-        # so there's a "legal" attack available
-        n1_home = grid.NATION_HEXES[1][0]
+        # Place a Crestmoor champion next to Galland's sovereign so a legal attack exists
+        n1_home = grid.NATION_HEXES['Galland'][0]
         neighbors = grid.get_neighbors(*n1_home)
         if neighbors:
             adj = neighbors[0]
             grid.add_champion(Champion(NATIONS[3], *adj))
 
-        # Run compute_bot_action many times to check random path too
+        # Run compute_bot_action many times; verify no allied sovereign is ever attacked
         for i in range(50):
             action = compute_bot_action(
                 grid, bot_player, None, NATIONS, turn_number=1)
             if action is None:
                 continue
-            # action format: (score, atype, *payload, path_label)
             score, atype = action[0], action[1]
             if atype == 'attack':
                 unit, coord = action[2], action[3]
                 tq, tr = coord
-                # Check no allied sovereign is at the target hex
                 for sov in grid.sovereigns.get((tq, tr), []):
-                    if sov.nation.ring_index in allied_ring_set:
+                    if sov.nation.color_name in allied_name_set:
                         self.fail(
                             f"Iteration {i}: Bot chose to attack allied sovereign "
                             f"{sov.nation.color_name} at {coord}")
@@ -745,23 +802,26 @@ class TestSixNations(unittest.TestCase):
         grid.generate_map()
         grid.armies.clear(); grid.champions.clear(); grid.sovereigns.clear()
 
-        # Bot's secret nation is NATIONS[2] (Sky Blue).
-        # Enemies of Sky Blue: 5 (Crimson), 0 (Yellow), 1 (Green)
-        bot_secret = NATIONS[2]
-        allied_ring_set = {n.ring_index for n in NATIONS if not bot_secret.is_enemy(n)}
-        enemy_ring_set  = {n.ring_index for n in bot_secret.enemy_nations(NATIONS)}
+        # Set up: Beldrin (idx 2) enemies = [Malkor(4), Ravengard(5), Yilerond(0)]
+        NATIONS[2].set_enemy(NATIONS[4])
+        NATIONS[2].set_enemy(NATIONS[5])
+        NATIONS[2].set_enemy(NATIONS[0])
 
-        # Nation 5 (Crimson) IS enemy of Nation 2 (Sky Blue) per the ring
+        bot_secret = NATIONS[2]  # Beldrin
+        allied_name_set = {n.color_name for n in NATIONS if not bot_secret.is_enemy(n)}
+        enemy_name_set  = {n.color_name for n in bot_secret.enemy_nations(NATIONS)}
+
+        # Ravengard IS enemy of Beldrin per setup
         self.assertTrue(NATIONS[5].is_enemy(NATIONS[2]))
 
-        # Place Nation 5's champion attacking Nation 2's (bot's OWN) sovereign
+        # Ravengard champion attacks Beldrin's OWN sovereign
         attacker = Champion(NATIONS[5], 0, 0)
         own_sov  = Sovereign(NATIONS[2], 1, 0)
         grid.add_champion(attacker)
         grid.add_sovereign(own_sov)
 
-        score = _score_attack(grid, attacker, 1, 0, enemy_ring_set,
-                              allied_ring_set=allied_ring_set)
+        score = _score_attack(grid, attacker, 1, 0, enemy_name_set,
+                              allied_name_set=allied_name_set)
         self.assertEqual(score, -9999.0,
             "Attack on bot's OWN secret sovereign must be -9999")
 
@@ -770,62 +830,80 @@ class TestSovereignEnemyMoveRestriction(unittest.TestCase):
     """Tests for the rule: enemy players can only move a sovereign to a hex where it would be supported."""
 
     def setUp(self):
+        from factions import _init_diplomacy
         for nation in NATIONS:
             nation.is_ghost = False
+        _init_diplomacy(NATIONS)
         self.grid = MapGrid()
         self.grid.generate_map()
         self.grid.armies.clear()
         self.grid.champions.clear()
         self.grid.sovereigns.clear()
 
-    def test_enemy_cannot_move_sovereign_to_unsupported_hex(self):
-        """An enemy player cannot move a sovereign to an empty/unsupported hex."""
+    def test_sovereign_blocked_from_unsupported_hex(self):
+        """No player can move a sovereign to a hex without a friendly unit."""
+        from champions import Sovereign
         sov = Sovereign(NATIONS[0], 0, -2)
         self.grid.add_sovereign(sov)
+        # Mark neighbors as own territory so terrain gate passes
+        for nq, nr in self.grid.get_neighbors(0, -2):
+            if self.grid.get_tile(nq, nr):
+                self.grid.tile_control[(nq, nr)] = 'Yilerond'  # own (Yellow)
 
-        # Cobalt (3) is enemy of Yellow (0)
-        mover_secret = NATIONS[3]
-        self.assertTrue(mover_secret.is_enemy(NATIONS[0]))
-
-        # With no friendly/allied pieces around, enemy cannot move the sovereign anywhere
-        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
+        valid = self.grid.get_valid_moves(sov)
         self.assertEqual(len(valid), 0,
-            "Enemy should not be able to move a sovereign to any hex where it would be unsupported")
+            "Sovereign should have no valid moves when no friendly unit is at any neighbour")
 
-    def test_enemy_can_move_sovereign_to_supported_hex(self):
-        """An enemy player CAN move a sovereign to a hex where an allied/friendly piece is present."""
+    def test_sovereign_can_move_to_supported_hex(self):
+        """A sovereign can move to a hex where a friendly unit is already present."""
+        from champions import Sovereign
+        from armies import Army
         sov = Sovereign(NATIONS[0], 0, -2)
         self.grid.add_sovereign(sov)
-
-        # Place a Yellow army at neighbor (0, -1) and a Green (ally of Yellow) champion at (1, -2)
         army = Army(NATIONS[0], 0, -1)
-        champ = Champion(NATIONS[1], 1, -2)
         self.grid.add_army(army)
-        self.grid.add_champion(champ)
+        # Mark as own territory
+        self.grid.tile_control[(0, -1)] = 'Yilerond'
+        self.grid.tile_control[(0, -2)] = 'Yilerond'
 
-        mover_secret = NATIONS[3]  # Enemy
-        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
+        valid = self.grid.get_valid_moves(sov)
+        self.assertIn((0, -1), valid,
+            "Sovereign should be able to move to hex occupied by friendly army")
 
-        self.assertIn((0, -1), valid, "Enemy should be able to move sovereign to hex with same-color army")
-        self.assertIn((1, -2), valid, "Enemy should be able to move sovereign to hex with allied champion")
-
-    def test_ally_can_move_sovereign_to_unsupported_hex(self):
-        """The sovereign's owner or ally CAN move the sovereign to an unsupported hex."""
+    def test_sovereign_confined_to_own_territory(self):
+        """Sovereign cannot enter ally, neutral, enemy, or unclaimed hexes."""
+        from champions import Sovereign
+        from armies import Army
         sov = Sovereign(NATIONS[0], 0, -2)
         self.grid.add_sovereign(sov)
+        # Place friendly unit at one neighbour, mark it as own territory
+        army = Army(NATIONS[0], 0, -1)
+        self.grid.add_army(army)
+        self.grid.tile_control[(0, -1)] = 'Yilerond'   # own
+        self.grid.tile_control[(0, -2)] = 'Yilerond'   # own (current)
+        # Mark another neighbour as a neutral nation's territory
+        if self.grid.get_tile(1, -2):
+            self.grid.tile_control[(1, -2)] = 'Galland'  # Nation 1 (neutral to Nation 0)
 
-        mover_secret = NATIONS[0]  # Owner (Yellow)
-        valid = self.grid.get_valid_moves(sov, mover_secret_nation=mover_secret)
-        self.assertTrue(len(valid) > 0,
-            "Owner should be able to move sovereign freely to empty neighboring hexes")
+        valid = self.grid.get_valid_moves(sov)
+        self.assertIn((0, -1), valid, "Sovereign should reach supported own-territory hex")
+        self.assertNotIn((1, -2), valid, "Sovereign must NOT enter neutral-nation territory")
 
 
 class TestHexControlAndMuster(unittest.TestCase):
     """Tests for the Hex Control territory system, dynamic army caps, and updated muster rules."""
 
     def setUp(self):
+        from factions import _init_diplomacy
         for nation in NATIONS:
             nation.is_ghost = False
+        _init_diplomacy(NATIONS)
+        # Set ring-topology stances so allied/enemy tests work
+        NATIONS[0].set_enemy(NATIONS[2])
+        NATIONS[0].set_enemy(NATIONS[3])
+        NATIONS[0].set_enemy(NATIONS[4])
+        NATIONS[0].set_ally(NATIONS[1])
+        NATIONS[0].set_ally(NATIONS[5])
         self.grid = MapGrid()
         self.grid.generate_map()
 
@@ -838,7 +916,7 @@ class TestHexControlAndMuster(unittest.TestCase):
                 neutral_count += 1
             else:
                 owned_count += 1
-                self.assertIn(owner_ri, range(6))
+                self.assertIsInstance(owner_ri, str)
 
         self.assertEqual(owned_count, 24, "24 homeland hexes must start owned")
         self.assertEqual(neutral_count, 13, "13 center hexes must start neutral (None)")
@@ -852,13 +930,13 @@ class TestHexControlAndMuster(unittest.TestCase):
         army = Army(NATIONS[0], 0, -1)
         self.grid.add_army(army)
         self.grid.apply_move(army, 0, 0)
-        self.assertEqual(self.grid.tile_control.get((0, 0)), 0,
+        self.assertEqual(self.grid.tile_control.get((0, 0)), 'Yilerond',
             "Entering neutral hex should claim it for mover's nation")
 
     def test_allied_unit_does_not_steal_control(self):
         """An allied unit moving into your territory does NOT seize control (first come keeps it)."""
         # Yellow (0) owns (0, -2)
-        self.assertEqual(self.grid.tile_control.get((0, -2)), 0)
+        self.assertEqual(self.grid.tile_control.get((0, -2)), 'Yilerond')
         # Clear units from destination (0, -2) so it's a vacant move destination
         self.grid.armies.pop((0, -2), None)
 
@@ -868,13 +946,13 @@ class TestHexControlAndMuster(unittest.TestCase):
         # Move green army to (0, -2)
         success, msg = self.grid.apply_move(green_army, 0, -2)
         self.assertTrue(success, f"Move failed: {msg}")
-        self.assertEqual(self.grid.tile_control.get((0, -2)), 0,
+        self.assertEqual(self.grid.tile_control.get((0, -2)), 'Yilerond',
             "Allied unit should not seize territory from an ally")
 
     def test_enemy_unit_seizes_control(self):
         """An enemy Army or Champion moving into your territory SEIZES control."""
         # Yellow (0) owns (0, -2)
-        self.assertEqual(self.grid.tile_control.get((0, -2)), 0)
+        self.assertEqual(self.grid.tile_control.get((0, -2)), 'Yilerond')
         # Clear units from destination (0, -2) so it's a vacant move destination
         self.grid.armies.pop((0, -2), None)
 
@@ -883,7 +961,7 @@ class TestHexControlAndMuster(unittest.TestCase):
         self.grid.add_army(cobalt_army)
         success, msg = self.grid.apply_move(cobalt_army, 0, -2)
         self.assertTrue(success, f"Move failed: {msg}")
-        self.assertEqual(self.grid.tile_control.get((0, -2)), 3,
+        self.assertEqual(self.grid.tile_control.get((0, -2)), 'Crestmoor',
             "Enemy army must seize territory upon entering")
 
     def test_army_cap_progression(self):
@@ -892,20 +970,20 @@ class TestHexControlAndMuster(unittest.TestCase):
         self.assertEqual(self.grid.get_max_army_cap(n0), 3)
 
         # Give n0 2 extra hexes (total 6) -> cap still 3
-        self.grid.tile_control[(0, 0)] = 0
-        self.grid.tile_control[(0, 1)] = 0
+        self.grid.tile_control[(0, 0)] = 'Yilerond'
+        self.grid.tile_control[(0, 1)] = 'Yilerond'
         self.assertEqual(self.grid.get_controlled_hex_count(n0), 6)
         self.assertEqual(self.grid.get_max_army_cap(n0), 3)
 
         # Give 1 more hex (total 7, +3 over base) -> cap becomes 4
-        self.grid.tile_control[(1, 0)] = 0
+        self.grid.tile_control[(1, 0)] = 'Yilerond'
         self.assertEqual(self.grid.get_controlled_hex_count(n0), 7)
         self.assertEqual(self.grid.get_max_army_cap(n0), 4)
 
         # Total 10 hexes (+6 over base) -> cap becomes 5
-        self.grid.tile_control[(1, 1)] = 0
-        self.grid.tile_control[(-1, 0)] = 0
-        self.grid.tile_control[(-1, 1)] = 0
+        self.grid.tile_control[(1, 1)] = 'Yilerond'
+        self.grid.tile_control[(-1, 0)] = 'Yilerond'
+        self.grid.tile_control[(-1, 1)] = 'Yilerond'
         self.assertEqual(self.grid.get_controlled_hex_count(n0), 10)
         self.assertEqual(self.grid.get_max_army_cap(n0), 5)
 
@@ -936,28 +1014,36 @@ class TestHexControlAndMuster(unittest.TestCase):
         self.grid.add_sovereign(sov)
 
         # Set neighbor (0, -1) as owned by Cobalt (3, enemy of Yellow)
-        self.grid.tile_control[(0, -1)] = 3
+        self.grid.tile_control[(0, -1)] = 'Crestmoor'
         # Set neighbor (1, -2) as neutral (None)
         self.grid.tile_control[(1, -2)] = None
 
-        valid = self.grid.get_valid_moves(sov, mover_secret_nation=NATIONS[0])
-        self.assertNotIn((0, -1), valid, "Sovereign must NOT be allowed to enter enemy territory")
-        self.assertIn((1, -2), valid, "Sovereign should be allowed to enter neutral territory")
+        valid = self.grid.get_valid_moves(sov)
+        self.assertNotIn((0, -1), valid, "Sovereign must NOT enter enemy-nation territory")
+        self.assertNotIn((1, -2), valid, "Sovereign must NOT enter neutral territory (tile_control=None means unclaimed, still not own)")
 
 
 class TestPositionalEvaluator(unittest.TestCase):
     """Tests for the positional board evaluator."""
 
     def setUp(self):
+        from factions import _init_diplomacy
         for nation in NATIONS:
             nation.is_ghost = False
+        _init_diplomacy(NATIONS)
+        # Set ring-topology stances for evaluator tests
+        NATIONS[0].set_enemy(NATIONS[2])
+        NATIONS[0].set_enemy(NATIONS[3])
+        NATIONS[0].set_enemy(NATIONS[4])
         self.grid = MapGrid()
         self.grid.generate_map()
         self.nation_list = list(NATIONS)
 
     def tearDown(self):
+        from factions import _init_diplomacy
         for nation in NATIONS:
             nation.is_ghost = False
+        _init_diplomacy(NATIONS)
 
     def test_ghost_enemy_boosts_score(self):
         """Killing an enemy sovereign (ghost nation) should raise our score."""
@@ -1010,7 +1096,7 @@ class TestPositionalEvaluator(unittest.TestCase):
         for coord in list(grid.sovereigns.keys()):
             grid.sovereigns[coord] = [
                 s for s in grid.sovereigns[coord]
-                if s.nation.ring_index != target_enemy.ring_index
+                if s.nation.color_name != target_enemy.color_name
             ]
             if not grid.sovereigns[coord]:
                 del grid.sovereigns[coord]
@@ -1090,9 +1176,9 @@ class TestPositionalEvaluator(unittest.TestCase):
         score_base = evaluate_position(self.grid, secret, self.nation_list)
 
         # Flip 3 neutral hexes to Nation 0
-        self.grid.tile_control[(0, 0)] = 0
-        self.grid.tile_control[(0, 1)] = 0
-        self.grid.tile_control[(1, 0)] = 0
+        self.grid.tile_control[(0, 0)] = 'Yilerond'
+        self.grid.tile_control[(0, 1)] = 'Yilerond'
+        self.grid.tile_control[(1, 0)] = 'Yilerond'
 
         score_expanded = evaluate_position(self.grid, secret, self.nation_list)
         self.assertGreater(score_expanded, score_base,
@@ -1105,14 +1191,14 @@ class TestPositionalEvaluator(unittest.TestCase):
         army = Army(n0, 0, -1)
         self.grid.add_army(army)
 
-        allied_ris = {0, 1, 5}
-        enemy_ris = {2, 3, 4}
+        allied_names = {'Yilerond', 'Galland', 'Ravengard'}
+        enemy_names  = {'Beldrin', 'Crestmoor', 'Malkor'}
 
         # Move into neutral hex (0, 0)
         self.grid.tile_control[(0, 0)] = None
-        score_high_claim = _score_move(self.grid, army, 0, 0, enemy_ris, allied_ris,
+        score_high_claim = _score_move(self.grid, army, 0, 0, enemy_names, allied_names,
                                        weights={'claim_territory': 3.0})
-        score_low_claim = _score_move(self.grid, army, 0, 0, enemy_ris, allied_ris,
+        score_low_claim = _score_move(self.grid, army, 0, 0, enemy_names, allied_names,
                                       weights={'claim_territory': 0.0})
 
         self.assertGreater(score_high_claim, score_low_claim + 50.0,
@@ -1179,8 +1265,8 @@ class TestPositionalEvaluator(unittest.TestCase):
                            w_random=0.0, w_deceptive=0.0)
 
         action = bot.compute_bot_action(
-            self.grid, bot_player, global_cooldown_idx=None, nation_list=self.nation_list,
-            turn_number=5, suspected_human_ri=self.nation_list[3].ring_index,
+            self.grid, bot_player, global_cooldown_name=None, nation_list=self.nation_list,
+            turn_number=5, suspected_human_ri=self.nation_list[3].color_name,
             evolved_config=config)
 
         self.assertIsNotNone(action, "Bot should compute a valid action with hybrid scoring")
@@ -1197,8 +1283,8 @@ class TestPositionalEvaluator(unittest.TestCase):
                            w_random=0.0, w_deceptive=0.0)
 
         action = bot.compute_bot_action(
-            self.grid, bot_player, global_cooldown_idx=None, nation_list=self.nation_list,
-            turn_number=5, suspected_human_ri=self.nation_list[3].ring_index,
+            self.grid, bot_player, global_cooldown_name=None, nation_list=self.nation_list,
+            turn_number=5, suspected_human_ri=self.nation_list[3].color_name,
             evolved_config=config)
 
         self.assertIsNotNone(action, "4-ply bot should compute a valid action")
@@ -1208,6 +1294,14 @@ class TestKnightMechanics(unittest.TestCase):
     """Unit tests for Knight promotion, army capacity, movement, and combat."""
 
     def setUp(self):
+        from factions import _init_diplomacy
+        for nation in NATIONS:
+            nation.is_ghost = False
+        _init_diplomacy(NATIONS)
+        # Set ring-topology stances so knight seizing enemy territory works
+        NATIONS[0].set_enemy(NATIONS[2])
+        NATIONS[0].set_enemy(NATIONS[3])
+        NATIONS[0].set_enemy(NATIONS[4])
         self.grid = MapGrid()
         self.grid.generate_map()
         self.nation_list = list(NATIONS)
@@ -1243,8 +1337,8 @@ class TestKnightMechanics(unittest.TestCase):
 
         # Promote 1 army to knight -> 2 armies, 1 knight -> army_count is still 3
         army = list(self.grid.armies.values())[0][0]
-        if army.nation.ring_index != 0:
-            army = [a for alist in self.grid.armies.values() for a in alist if a.nation.ring_index == 0][0]
+        if army.nation.color_name != 'Yilerond':
+            army = [a for alist in self.grid.armies.values() for a in alist if a.nation.color_name == 'Yilerond'][0]
         self.grid.promote_to_knight(army)
 
         self.assertEqual(self.grid._army_count(n0), 3)
@@ -1451,12 +1545,12 @@ class TestKnightMechanics(unittest.TestCase):
         # Move to neutral hex (0, 1)
         self.grid.tile_control[(0, 1)] = None
         self.grid.apply_move(knight, 0, 1)
-        self.assertEqual(self.grid.tile_control.get((0, 1)), 0, "Knight claims neutral hex")
+        self.assertEqual(self.grid.tile_control.get((0, 1)), 'Yilerond', "Knight claims neutral hex")
 
         # Move to enemy hex (0, 2)
-        self.grid.tile_control[(0, 2)] = 3
+        self.grid.tile_control[(0, 2)] = 'Crestmoor'
         self.grid.apply_move(knight, 0, 2)
-        self.assertEqual(self.grid.tile_control.get((0, 2)), 0, "Knight seizes enemy hex")
+        self.assertEqual(self.grid.tile_control.get((0, 2)), 'Yilerond', "Knight seizes enemy hex")
 
         # Destination occupied by an army
         army = Army(n_yellow, 0, 1)
@@ -1469,28 +1563,30 @@ class TestGhostNationTerritory(unittest.TestCase):
     """Tests for territory release when a nation loses its sovereign."""
 
     def setUp(self):
+        from factions import _init_diplomacy
         for nation in NATIONS:
             nation.is_ghost = False
+        _init_diplomacy(NATIONS)
         self.grid = MapGrid()
         self.grid.generate_map()
 
     def test_ghost_nation_empty_tiles_become_neutral(self):
         """When a nation collapses, its empty tiles revert to neutral."""
         # Cobalt (3) owns its 4 home hexes at start; clear units so they're empty
-        cobalt_hexes = [coord for coord, ri in self.grid.tile_control.items() if ri == 3]
+        cobalt_hexes = [coord for coord, ri in self.grid.tile_control.items() if ri == 'Crestmoor']
         self.assertTrue(len(cobalt_hexes) > 0, "Cobalt should own tiles at start")
 
         # Remove Cobalt's sovereign to trigger collapse
         cobalt_sovs = [s for sl in self.grid.sovereigns.values() for s in sl
-                       if s.nation.ring_index == 3]
+                       if s.nation.color_name == 'Crestmoor']
         for s in cobalt_sovs:
             self.grid.remove_sovereign(s)
         # Also clear all Cobalt units from its hexes so they're empty
         for coord in cobalt_hexes:
             self.grid.armies[coord] = [a for a in self.grid.armies.get(coord, [])
-                                       if a.nation.ring_index != 3]
+                                       if a.nation.color_name != 'Crestmoor']
             self.grid.champions[coord] = [c for c in self.grid.champions.get(coord, [])
-                                          if c.nation.ring_index != 3]
+                                          if c.nation.color_name != 'Crestmoor']
 
         self.grid.check_ghost_nations(NATIONS)
         self.assertTrue(NATIONS[3].is_ghost)
@@ -1503,33 +1599,33 @@ class TestGhostNationTerritory(unittest.TestCase):
     def test_ghost_nation_occupied_tile_goes_to_single_occupier(self):
         """A collapsed nation's tile with one occupying unit goes to that unit's nation."""
         # Place a Yellow army on one of Cobalt's home hexes
-        cobalt_hex = [coord for coord, ri in self.grid.tile_control.items() if ri == 3][0]
+        cobalt_hex = [coord for coord, ri in self.grid.tile_control.items() if ri == 'Crestmoor'][0]
         yellow_army = Army(NATIONS[0], *cobalt_hex)
         self.grid.armies[cobalt_hex] = [yellow_army]
         self.grid.champions[cobalt_hex] = []
 
         # Collapse Cobalt
         cobalt_sovs = [s for sl in self.grid.sovereigns.values() for s in sl
-                       if s.nation.ring_index == 3]
+                       if s.nation.color_name == 'Crestmoor']
         for s in cobalt_sovs:
             self.grid.remove_sovereign(s)
 
         self.grid.check_ghost_nations(NATIONS)
         self.assertTrue(NATIONS[3].is_ghost)
         self.assertEqual(
-            self.grid.tile_control.get(cobalt_hex), 0,
+            self.grid.tile_control.get(cobalt_hex), 'Yilerond',
             "Tile with lone Yellow army should transfer to Yellow on Cobalt collapse")
 
     def test_ghost_nation_contested_tile_becomes_neutral(self):
         """A collapsed nation's tile with units from 2+ nations stays neutral."""
-        cobalt_hex = [coord for coord, ri in self.grid.tile_control.items() if ri == 3][0]
+        cobalt_hex = [coord for coord, ri in self.grid.tile_control.items() if ri == 'Crestmoor'][0]
         # Place Yellow army and Green champion on same hex
         self.grid.armies[cobalt_hex] = [Army(NATIONS[0], *cobalt_hex)]
         self.grid.champions[cobalt_hex] = [Champion(NATIONS[1], *cobalt_hex)]
 
         # Collapse Cobalt
         cobalt_sovs = [s for sl in self.grid.sovereigns.values() for s in sl
-                       if s.nation.ring_index == 3]
+                       if s.nation.color_name == 'Crestmoor']
         for s in cobalt_sovs:
             self.grid.remove_sovereign(s)
 
@@ -1559,7 +1655,7 @@ class TestGhostNationTerritory(unittest.TestCase):
 
         # Collapse Cobalt, leaving cobalt_hex empty → becomes neutral
         cobalt_sovs = [s for sl in self.grid.sovereigns.values() for s in sl
-                       if s.nation.ring_index == 3]
+                       if s.nation.color_name == 'Crestmoor']
         for s in cobalt_sovs:
             self.grid.remove_sovereign(s)
         self.grid.armies[cobalt_hex] = []

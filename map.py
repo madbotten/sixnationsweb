@@ -18,7 +18,7 @@ import os
 import pygame
 import settings
 import util
-from factions import NATIONS
+from factions import NATIONS, NATIONS_BY_NAME
 from armies import Army
 from champions import Champion, Sovereign
 from knights import Knight
@@ -43,28 +43,28 @@ class Tile:
 class MapGrid:
     """Full 37-hex board.  Statically centred; no scroll or zoom."""
 
-    NATION_CORNERS = [
-        ( 0, -3),   # 0 Yellow
-        ( 3, -3),   # 1 Green
-        ( 3,  0),   # 2 Sky Blue
-        ( 0,  3),   # 3 Cobalt
-        (-3,  3),   # 4 Magenta
-        (-3,  0),   # 5 Crimson
-    ]
+    NATION_CORNERS = {
+        'Yilerond':  ( 0, -3),
+        'Galland':   ( 3, -3),
+        'Beldrin':   ( 3,  0),
+        'Crestmoor': ( 0,  3),
+        'Malkor':    (-3,  3),
+        'Ravengard': (-3,  0),
+    }
 
-    # [corner, army1, army2, army3]
-    NATION_HEXES = [
-        [( 0, -3), ( 1, -3), (-1, -2), ( 0, -2)],   # 0 Yellow
-        [( 3, -3), ( 2, -3), ( 3, -2), ( 2, -2)],   # 1 Green
-        [( 3,  0), ( 3, -1), ( 2,  1), ( 2,  0)],   # 2 Sky Blue
-        [( 0,  3), (-1,  3), ( 1,  2), ( 0,  2)],   # 3 Cobalt
-        [(-3,  3), (-2,  3), (-3,  2), (-2,  2)],   # 4 Magenta
-        [(-3,  0), (-3,  1), (-2, -1), (-2,  0)],   # 5 Crimson
-    ]
+    # {name: [corner, army1, army2, army3]}
+    NATION_HEXES = {
+        'Yilerond':  [( 0, -3), ( 1, -3), (-1, -2), ( 0, -2)],
+        'Galland':   [( 3, -3), ( 2, -3), ( 3, -2), ( 2, -2)],
+        'Beldrin':   [( 3,  0), ( 3, -1), ( 2,  1), ( 2,  0)],
+        'Crestmoor': [( 0,  3), (-1,  3), ( 1,  2), ( 0,  2)],
+        'Malkor':    [(-3,  3), (-2,  3), (-3,  2), (-2,  2)],
+        'Ravengard': [(-3,  0), (-3,  1), (-2, -1), (-2,  0)],
+    }
 
     def __init__(self):
         self.tiles        = {}   # (q,r) -> Tile
-        self.tile_control = {}   # (q,r) -> Optional[int] (nation ring_index or None)
+        self.tile_control = {}   # (q,r) -> Optional[str] (nation color_name or None=UNCLAIMED)
         self.armies       = {}   # (q,r) -> [Army, ...]
         self.knights      = {}   # (q,r) -> [Knight, ...]
         self.champions    = {}   # (q,r) -> [Champion, ...]
@@ -98,16 +98,16 @@ class MapGrid:
                 self.tiles[coord] = Tile(coord[0], coord[1], owner=None)
                 self.tile_control[coord] = None
 
-        for nation_idx, hexes in enumerate(self.NATION_HEXES):
-            nation = NATIONS[nation_idx]
-            corner = self.NATION_CORNERS[nation_idx]
+        for nation_name, hexes in self.NATION_HEXES.items():
+            nation = NATIONS_BY_NAME[nation_name]
+            corner = self.NATION_CORNERS[nation_name]
             for i, coord in enumerate(hexes):
                 q, r = coord
                 t = Tile(q, r, owner=nation)
                 if coord == corner:
                     t.is_corner = True
                 self.tiles[coord] = t
-                self.tile_control[coord] = nation_idx
+                self.tile_control[coord] = nation_name
                 if i == 0:
                     self.add_sovereign(Sovereign(nation, q, r))
                     self.add_champion(Champion(nation, q, r))
@@ -229,33 +229,30 @@ class MapGrid:
         """Return all units (sovereigns, champions, knights, armies) belonging to nation."""
         units = []
         for slist in self.sovereigns.values():
-            units.extend(s for s in slist if s.nation.ring_index == nation.ring_index)
+            units.extend(s for s in slist if s.nation is nation)
         for clist in self.champions.values():
-            units.extend(c for c in clist if c.nation.ring_index == nation.ring_index)
+            units.extend(c for c in clist if c.nation is nation)
         for klist in self.knights.values():
-            units.extend(k for k in klist if k.nation.ring_index == nation.ring_index)
+            units.extend(k for k in klist if k.nation is nation)
         for alist in self.armies.values():
-            units.extend(a for a in alist if a.nation.ring_index == nation.ring_index)
+            units.extend(a for a in alist if a.nation is nation)
         return units
 
     def _army_count(self, nation) -> int:
         """Count active armies and knights for nation (knights count toward army cap)."""
-        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
-        armies_cnt = sum(1 for alist in self.armies.values() for a in alist if a.nation.ring_index == ri)
-        knights_cnt = sum(1 for klist in self.knights.values() for k in klist if k.nation.ring_index == ri)
+        armies_cnt  = sum(1 for alist in self.armies.values()  for a in alist if a.nation is nation)
+        knights_cnt = sum(1 for klist in self.knights.values() for k in klist if k.nation is nation)
         return armies_cnt + knights_cnt
 
     def _has_knight(self, nation) -> bool:
-        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
         return any(
-            k.nation.ring_index == ri
+            k.nation is nation
             for klist in self.knights.values() for k in klist
         )
 
     def _has_champion(self, nation) -> bool:
-        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
         return any(
-            c.nation.ring_index == ri
+            c.nation is nation
             for clist in self.champions.values() for c in clist
         )
 
@@ -312,7 +309,7 @@ class MapGrid:
     @staticmethod
     def _are_allied(n1, n2) -> bool:
         """True if two nations are the same or ring-adjacent (allies)."""
-        return n1.ring_index == n2.ring_index or n1.is_ally(n2)
+        return n1 is n2 or n1.is_ally(n2)
 
     def is_supported(self, unit) -> bool:
         """
@@ -401,17 +398,16 @@ class MapGrid:
                 return True
         return False
 
-    def get_valid_moves(self, unit, mover_secret_nation=None) -> list:
+    def get_valid_moves(self, unit) -> list:
         """
         Return list of (q,r) hexes the unit can move to (non-attack moves only).
-        Army / Knight: adjacent hex with no army/knight AND no enemy units.
-        Champion / Sovereign: adjacent hex with no enemy units.
 
-        mover_secret_nation: the secret nation of the player making the move.
-        If provided and the unit is an enemy Sovereign, destination hexes are
-        restricted to those where the sovereign would be supported (by a piece
-        of its color or an allied piece).
-        When None, no enemy restriction is applied (backward compatible).
+        Terrain entry rules by unit type:
+          Army / Knight : own, ally, unclaimed, enemy territory. Blocked from neutral.
+          Champion      : all terrain types (unclaimed, own, ally, neutral, enemy).
+          Sovereign     : own territory only, AND destination must already be supported
+                          (a friendly unit present there). No player may move a sovereign
+                          to an unsupported hex.
         """
         from armies    import Army
         from champions import Champion, Sovereign
@@ -426,26 +422,31 @@ class MapGrid:
                 continue
             if isinstance(unit, (Army, Knight)) and (self.armies.get((nq, nr)) or self.knights.get((nq, nr))):
                 continue          # only one army/knight per hex
+
+            # --- Terrain entry gate ---
+            owner_name = self.tile_control.get((nq, nr))  # None = UNCLAIMED
+
+            if isinstance(unit, Sovereign):
+                # Sovereign: own territory only
+                if owner_name != nation.color_name:
+                    continue
+
+            elif isinstance(unit, (Army, Knight)):
+                # Army/Knight: blocked from neutral-owned territory
+                if owner_name is not None and owner_name != nation.color_name:
+                    owner_nation = NATIONS_BY_NAME[owner_name]
+                    if nation.get_stance(owner_nation) == 'neutral':
+                        continue
+
+            # Champion: no terrain restriction — all hexes allowed
+
             valid.append((nq, nr))
 
-        # Sovereign movement restrictions:
+        # Sovereign: destination must already be supported (universal rule).
+        # Prevents any player from walking a sovereign into an isolated hex.
         if isinstance(unit, Sovereign):
-            # 1. Sovereign cannot enter enemy-controlled territory
-            def _is_legal_sov_dest(coord):
-                owner_ri = self.tile_control.get(coord)
-                if owner_ri is None:
-                    return True  # neutral / unclaimed
-                owner_nation = NATIONS[owner_ri]
-                return not nation.is_enemy(owner_nation)  # False if enemy territory
-
-            valid = [coord for coord in valid if _is_legal_sov_dest(coord)]
-
-            # 2. Sovereign enemy mover restriction:
-            # An enemy player cannot move a sovereign to a hex where it would not be supported
-            # (by a piece of its color or an allied piece).
-            if (mover_secret_nation is not None
-                    and mover_secret_nation.is_enemy(nation)):
-                valid = [coord for coord in valid if self._would_be_supported_at(nation, *coord)]
+            valid = [coord for coord in valid
+                     if self._would_be_supported_at(nation, *coord)]
 
         return valid
 
@@ -530,25 +531,36 @@ class MapGrid:
 
     def update_hex_control(self, unit, tq, tr):
         """Update hex control at (tq, tr) when unit moves or advances there.
-        - If unclaimed (None) -> claimed by unit.nation
-        - If owned by an enemy -> seized by unit.nation if unit is Army, Knight, or Champion
-        - If owned by a ghost nation -> treated as unclaimed; seized by any Army/Knight/Champion
-        - If owned by an ally -> original owner keeps control ('first come keeps it')
+
+        Seizure rules:
+          - UNCLAIMED (None)  : any Army/Knight/Champion claims it.
+          - OWN / ALLY        : no seizure (friendly territory kept).
+          - NEUTRAL           : no seizure (champion may pass through).
+          - ENEMY             : Army/Knight/Champion seizes it.
+          - Ghost-owned       : treated as unclaimed; any Army/Knight/Champion claims it.
         """
         from armies    import Army
         from champions import Champion, Sovereign
         from knights   import Knight
 
-        curr_ri = self.tile_control.get((tq, tr))
-        unit_ri = unit.nation.ring_index
-        if curr_ri is None:
-            self.tile_control[(tq, tr)] = unit_ri
-        elif curr_ri != unit_ri:
-            owner_nation = NATIONS[curr_ri]
-            if unit.nation.is_enemy(owner_nation) or owner_nation.is_ghost:
-                # Enemy seizure or ghost-owned tile (Armies, Knights, and Champions claim it)
+        curr_name = self.tile_control.get((tq, tr))
+        unit_name = unit.nation.color_name
+
+        if curr_name is None:
+            # UNCLAIMED: first army/knight/champion claims it
+            if isinstance(unit, (Army, Knight, Champion)):
+                self.tile_control[(tq, tr)] = unit_name
+        elif curr_name != unit_name:
+            owner_nation = NATIONS_BY_NAME[curr_name]
+            if owner_nation.is_ghost:
+                # Ghost-owned: treat as unclaimed
                 if isinstance(unit, (Army, Knight, Champion)):
-                    self.tile_control[(tq, tr)] = unit_ri
+                    self.tile_control[(tq, tr)] = unit_name
+            elif unit.nation.get_stance(owner_nation) == 'enemy':
+                # Enemy territory: seize it
+                if isinstance(unit, (Army, Knight, Champion)):
+                    self.tile_control[(tq, tr)] = unit_name
+            # ally or neutral: no seizure
 
     def _move_unit(self, unit, tq, tr):
         """Unconditionally relocate unit to (tq, tr) and update territory control."""
@@ -565,15 +577,12 @@ class MapGrid:
             self.remove_sovereign(unit); unit.q, unit.r = tq, tr; self.add_sovereign(unit)
         self.update_hex_control(unit, tq, tr)
 
-    def apply_move(self, unit, tq, tr, mover_secret_nation=None):
+    def apply_move(self, unit, tq, tr):
         """
         Validate and apply a non-attack move.
         Returns (success: bool, message: str).
-
-        mover_secret_nation: passed through to get_valid_moves for
-        sovereign homeland restriction.  None skips the check.
         """
-        if (tq, tr) not in self.get_valid_moves(unit, mover_secret_nation=mover_secret_nation):
+        if (tq, tr) not in self.get_valid_moves(unit):
             return False, "That move is not legal."
         self._move_unit(unit, tq, tr)
         return True, "Move applied."
@@ -827,8 +836,8 @@ class MapGrid:
 
     def get_controlled_hex_count(self, nation) -> int:
         """Return total number of hexes currently controlled by nation."""
-        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
-        return sum(1 for owner_ri in self.tile_control.values() if owner_ri == ri)
+        name = nation.color_name
+        return sum(1 for owner_name in self.tile_control.values() if owner_name == name)
 
     def get_max_army_cap(self, nation) -> int:
         """Return maximum armies fieldable by nation: 3 base + 1 for every 3 additional hexes over 4."""
@@ -853,10 +862,10 @@ class MapGrid:
         if nation.is_ghost or not self.can_muster_army(nation):
             return []
 
-        ri = nation.ring_index if hasattr(nation, 'ring_index') else nation
+        name = nation.color_name
         valid = []
-        for coord, owner_ri in self.tile_control.items():
-            if owner_ri != ri:
+        for coord, owner_name in self.tile_control.items():
+            if owner_name != name:
                 continue
             if self.armies.get(coord):
                 continue  # already has an army
@@ -893,8 +902,8 @@ class MapGrid:
         if nation.is_ghost or self._has_champion(nation):
             return []
         return [
-            coord for coord in self.NATION_HEXES[nation.ring_index]
-            if any(a.nation.ring_index == nation.ring_index
+            coord for coord in self.NATION_HEXES[nation.color_name]
+            if any(a.nation is nation
                    for a in self.armies.get(coord, []))
         ]
 
@@ -916,8 +925,8 @@ class MapGrid:
         if nation.is_ghost or self._has_knight(nation):
             return []
         return [
-            coord for coord in self.NATION_HEXES[nation.ring_index]
-            if any(a.nation.ring_index == nation.ring_index
+            coord for coord in self.NATION_HEXES[nation.color_name]
+            if any(a.nation is nation
                    for a in self.armies.get(coord, []))
         ]
 
@@ -941,12 +950,12 @@ class MapGrid:
         tiles resolve to their occupier (or neutral if contested/empty).
         """
         living_sov_nations = {
-            s.nation.ring_index
+            s.nation.color_name
             for slist in self.sovereigns.values() for s in slist
         }
         for nation in all_nations:
             was_ghost = nation.is_ghost
-            nation.is_ghost = nation.ring_index not in living_sov_nations
+            nation.is_ghost = nation.color_name not in living_sov_nations
             if nation.is_ghost and not was_ghost:
                 # Nation just collapsed this turn — release its territory
                 self.release_ghost_territory(nation)
@@ -958,9 +967,9 @@ class MapGrid:
         - The single occupying nation if exactly one nation has units there
         - Neutral (None) if empty or contested by 2+ nations
         """
-        ri = nation.ring_index
-        for coord, owner_ri in list(self.tile_control.items()):
-            if owner_ri != ri:
+        name = nation.color_name
+        for coord, owner_name in list(self.tile_control.items()):
+            if owner_name != name:
                 continue
             # Collect all nations with units on this hex
             occupiers = set()
@@ -971,11 +980,11 @@ class MapGrid:
                 self.sovereigns.get(coord, []),
             ):
                 for u in unit_list:
-                    occupiers.add(u.nation.ring_index)
+                    occupiers.add(u.nation.color_name)
             if len(occupiers) == 1:
                 self.tile_control[coord] = next(iter(occupiers))
             else:
-                self.tile_control[coord] = None  # empty or contested → neutral
+                self.tile_control[coord] = None  # empty or contested → unclaimed
 
     def check_win_condition(self, player, all_nations) -> bool:
         """
@@ -1044,18 +1053,18 @@ class MapGrid:
         highlight_move   : set of (q,r) to outline in green (valid moves).
         highlight_attack : set of (q,r) to outline in red   (valid attacks).
         drag_unit        : unit currently being dragged (skip drawing it at original pos).
-        ghost_nations    : set of ring_index values whose territory shading is suppressed.
+        ghost_names    : set of color_name values whose territory shading is suppressed.
         """
         w, h = self.hex_width, self.hex_height
-        _ghost_ri = ghost_nations or set()
+        _ghost_names = ghost_nations or set()
 
         # -- Hex tiles -------------------------------------------------------
         for (q, r), tile in self.tiles.items():
             cx, cy = self.screen_pos(q, r)
 
-            owner_ri = self.tile_control.get((q, r))
-            if owner_ri is not None and owner_ri not in _ghost_ri:
-                owner_nation = NATIONS[owner_ri]
+            owner_name = self.tile_control.get((q, r))
+            if owner_name is not None and owner_name not in _ghost_names:
+                owner_nation = NATIONS_BY_NAME[owner_name]
                 fill   = owner_nation.color_light
                 border = owner_nation.color_rgb
                 bwidth = 3 if tile.is_corner else 2
@@ -1097,7 +1106,7 @@ class MapGrid:
             for i, (utype, unit) in enumerate(units):
                 ux = cx + (i - (n-1)/2.0) * UNIT_SPACING
                 frozen = (frozen_nations is not None
-                          and unit.nation.ring_index in frozen_nations)
+                          and unit.nation.color_name in frozen_nations)
                 self.draw_unit_icon(screen, ux, cy, utype,
                                     unit.nation.color_rgb, UNIT_SIZE,
                                     frozen=frozen)

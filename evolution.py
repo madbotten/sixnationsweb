@@ -372,15 +372,15 @@ class EvolvableBot:
         self.memory.record(turn_number, nation, unit_type_str,
                            from_hex, to_hex, action_type)
         # Simple suspicion: add points for moving a nation
-        self.memory.add_score(nation.ring_index, 3, nation_names)
+        self.memory.add_score(nation.color_name, 3, nation_names)
 
     def guess_opponent_faction(self, nation_list):
-        """Return the suspected ring_index of the opponent's secret nation."""
-        exclude = {self.player.secret_nation.ring_index}
-        guess = self.memory.guess_faction(nation_list, exclude_ring_indices=exclude)
-        return guess.ring_index if guess else None
+        """Return the suspected color_name of the opponent's secret nation."""
+        exclude = {self.player.secret_nation.color_name}
+        guess = self.memory.guess_faction(nation_list, exclude_names=exclude)
+        return guess.color_name if guess else None
 
-    def compute_action(self, grid, global_cooldown_idx, nation_list, turn_number):
+    def compute_action(self, grid, global_cooldown_name, nation_list, turn_number):
         """Select an action without executing it.  Returns action tuple or None."""
         suspected_ri = None
         if turn_number >= self.config.adaptive_turn:
@@ -400,13 +400,13 @@ class EvolvableBot:
                 move_type = 'deceptive'
 
         if move_type == 'intent':
-            return self._compute_intent(grid, global_cooldown_idx, nation_list,
+            return self._compute_intent(grid, global_cooldown_name, nation_list,
                                         turn_number, suspected_ri)
         elif move_type == 'random':
-            return self._compute_random(grid, global_cooldown_idx, nation_list,
+            return self._compute_random(grid, global_cooldown_name, nation_list,
                                         turn_number, suspected_ri)
         else:  # deceptive
-            return self._compute_deceptive(grid, global_cooldown_idx, nation_list,
+            return self._compute_deceptive(grid, global_cooldown_name, nation_list,
                                            turn_number, suspected_ri)
 
     def _compute_intent(self, grid, gci, nation_list, turn, suspected_ri):
@@ -447,18 +447,18 @@ class EvolvableBot:
         if not eligible:
             return None
 
-        allied_ring_set = {n.ring_index for n in nation_list
+        allied_ring_set = {n.color_name for n in nation_list
                            if not self.player.secret_nation.is_enemy(n)}
-        bot_ri = self.player.secret_nation.ring_index
+        bot_ri = self.player.secret_nation.color_name
 
         pool = []
         for nation in eligible:
             for unit in grid.get_all_nation_units(nation):
-                pool += [(0, 'move', unit, c) for c in grid.get_valid_moves(unit, mover_secret_nation=self.player.secret_nation)]
+                pool += [(0, 'move', unit, c) for c in grid.get_valid_moves(unit)]
                 for c in grid.get_valid_attacks(unit):
                     tq, tr = c
                     allied_sovs = [s for s in grid.sovereigns.get((tq, tr), [])
-                                   if s.nation.ring_index in allied_ring_set
+                                   if s.nation.color_name in allied_ring_set
                                    and unit.nation.is_enemy(s.nation)]
                     if not allied_sovs:
                         pool.append((0, 'attack', unit, c))
@@ -491,7 +491,7 @@ class EvolvableBot:
 
         # Pick a random different nation as the fake
         candidates = [n for n in nation_list
-                      if n.ring_index != real_nation.ring_index
+                      if n.color_name != real_nation.color_name
                       and not n.is_ghost]
         if not candidates:
             # Fall back to intent if no valid fake nation
@@ -555,7 +555,7 @@ class HeadlessGame:
 
         # Assign random secret nations (must be different)
         n1 = random.choice(self.nations)
-        n2 = random.choice([n for n in self.nations if n.ring_index != n1.ring_index])
+        n2 = random.choice([n for n in self.nations if n.color_name != n1.color_name])
 
         self.bot1 = EvolvableBot(n1, config1, player_id='bot1')
         self.bot2 = EvolvableBot(n2, config2, player_id='bot2')
@@ -564,7 +564,7 @@ class HeadlessGame:
         self.grid.generate_map()
 
         self.turn_number = 1
-        self.global_cooldown_idx = None
+        self.global_cooldown_name = None
 
         # Guess accuracy tracking (populated after play())
         self.guess_correct = 0   # how many bots guessed correctly
@@ -580,7 +580,7 @@ class HeadlessGame:
             opponent = bots[1 - current]
 
             action = bot.compute_action(
-                self.grid, self.global_cooldown_idx,
+                self.grid, self.global_cooldown_name,
                 self.nations, self.turn_number)
 
             if action is None:
@@ -600,7 +600,7 @@ class HeadlessGame:
 
             # Update cooldowns
             bot.player.add_to_cooldown(moved_nation)
-            self.global_cooldown_idx = moved_nation.ring_index
+            self.global_cooldown_name = moved_nation.color_name
 
             # Record the move for the opponent's memory
             # Extract unit info from the action for recording
@@ -665,7 +665,7 @@ class HeadlessGame:
             guess_ri = guesser.guess_opponent_faction(self.nations)
             if guess_ri is not None:
                 self.guess_total += 1
-                if guess_ri == opponent.secret_nation.ring_index:
+                if guess_ri == opponent.secret_nation.color_name:
                     self.guess_correct += 1
 
 

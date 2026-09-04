@@ -66,22 +66,22 @@ EVAL_WEIGHT_KEYS = list(DEFAULT_EVAL_WEIGHTS.keys())
 # ---------------------------------------------------------------------------
 
 def _derive_ghost_set(grid):
-    """Return a set of ring_indices whose sovereign is absent from a snapshot grid.
+    """Return a set of color_names whose sovereign is absent from a snapshot grid.
 
     Used by lookahead code to derive ghost state from a snapshot without
     touching the shared Nation singleton flags (which live on the real game).
     """
+    import settings
     surviving = set()
     for sov_list in grid.sovereigns.values():
         for sov in sov_list:
-            surviving.add(sov.nation.ring_index)
-    # All ring indices that have no sovereign present are effectively ghost
-    all_ri = set(range(6))
-    return all_ri - surviving
+            surviving.add(sov.nation.color_name)
+    all_names = set(settings.NATION_NAMES)
+    return all_names - surviving
 
 
 def evaluate_position(grid, secret_nation, nation_list, weights=None,
-                      ghost_ri_set=None):
+                      ghost_name_set=None):
     """Score the board position from the perspective of secret_nation.
 
     Parameters:
@@ -90,7 +90,7 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
         nation_list: list of all 6 Nation objects.
         weights: optional dict of weight overrides. Missing keys fall back
                  to DEFAULT_EVAL_WEIGHTS.
-        ghost_ri_set: optional set of ring_index values to treat as ghost
+        ghost_name_set: optional set of color_name values to treat as ghost
                  (sovereign already dead). When provided, overrides n.is_ghost
                  on the Nation singletons. Use this in lookahead snapshots where
                  Nation.is_ghost hasn't been updated.
@@ -108,12 +108,12 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
     enemy_nations = secret_nation.enemy_nations(nation_list)
     allied_nations = [n for n in nation_list if not secret_nation.is_enemy(n)]
 
-    enemy_ri_set = {n.ring_index for n in enemy_nations}
-    allied_ri_set = {n.ring_index for n in allied_nations}
+    enemy_name_set = {n.color_name for n in enemy_nations}
+    allied_name_set = {n.color_name for n in allied_nations}
 
     def _is_ghost(nation):
-        if ghost_ri_set is not None:
-            return nation.ring_index in ghost_ri_set
+        if ghost_name_set is not None:
+            return nation.color_name in ghost_name_set
         return nation.is_ghost
 
     # -----------------------------------------------------------------------
@@ -137,8 +137,8 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
     # Enemy sovereigns — vulnerability is good for us
     for sov_list in grid.sovereigns.values():
         for sov in sov_list:
-            ri = sov.nation.ring_index
-            if ri in enemy_ri_set:
+            ri = sov.nation.color_name
+            if ri in enemy_name_set:
                 trapped = grid.is_trapped(sov)
                 supported = grid.is_supported(sov)
                 if trapped and not supported:
@@ -148,7 +148,7 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
                 elif not supported:
                     score += w['enemy_unsupported']
 
-            elif ri == secret_nation.ring_index:
+            elif ri == secret_nation.color_name:
                 # Own sovereign safety
                 trapped = grid.is_trapped(sov)
                 supported = grid.is_supported(sov)
@@ -162,28 +162,28 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
     # -----------------------------------------------------------------------
     for army_list in grid.armies.values():
         for army in army_list:
-            ri = army.nation.ring_index
-            if ri in allied_ri_set:
+            ri = army.nation.color_name
+            if ri in allied_name_set:
                 score += w['allied_army']
-            elif ri in enemy_ri_set:
+            elif ri in enemy_name_set:
                 score += w['enemy_army']
 
     for knight_list in grid.knights.values():
         for knight in knight_list:
-            ri = knight.nation.ring_index
-            if ri in allied_ri_set:
+            ri = knight.nation.color_name
+            if ri in allied_name_set:
                 score += w['allied_knight']
-            elif ri in enemy_ri_set:
+            elif ri in enemy_name_set:
                 score += w['enemy_knight']
 
     for champ_list in grid.champions.values():
         for champ in champ_list:
-            ri = champ.nation.ring_index
-            if ri in allied_ri_set:
+            ri = champ.nation.color_name
+            if ri in allied_name_set:
                 score += w['allied_champion']
                 if grid.is_supported(champ):
                     score += w['allied_champ_sup']
-            elif ri in enemy_ri_set:
+            elif ri in enemy_name_set:
                 score += w['enemy_champion']
                 if not grid.is_supported(champ):
                     score += w['enemy_champ_unsup']
@@ -196,7 +196,7 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
     enemy_sov_positions = []
     for sov_list in grid.sovereigns.values():
         for sov in sov_list:
-            if sov.nation.ring_index in enemy_ri_set:
+            if sov.nation.color_name in enemy_name_set:
                 enemy_sov_positions.append((sov.q, sov.r))
 
     if enemy_sov_positions:
@@ -206,28 +206,28 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
             # Allied armies adjacent
             for army_list in grid.armies.values():
                 for army in army_list:
-                    if army.nation.ring_index in allied_ri_set:
+                    if army.nation.color_name in allied_name_set:
                         if (army.q, army.r) in neighbors:
                             score += w['adjacent_enemy_sov']
 
             # Allied knights adjacent
             for knight_list in grid.knights.values():
                 for knight in knight_list:
-                    if knight.nation.ring_index in allied_ri_set:
+                    if knight.nation.color_name in allied_name_set:
                         if (knight.q, knight.r) in neighbors:
                             score += w['adjacent_enemy_sov']
 
             # Allied champions adjacent
             for champ_list in grid.champions.values():
                 for champ in champ_list:
-                    if champ.nation.ring_index in allied_ri_set:
+                    if champ.nation.color_name in allied_name_set:
                         if (champ.q, champ.r) in neighbors:
                             score += w['adjacent_enemy_sov']
 
         # Allied champion approach distance
         for champ_list in grid.champions.values():
             for champ in champ_list:
-                if champ.nation.ring_index in allied_ri_set:
+                if champ.nation.color_name in allied_name_set:
                     min_dist = min(
                         _axial_dist(champ.q, champ.r, sq, sr)
                         for sq, sr in enemy_sov_positions)
@@ -241,9 +241,9 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
     if 'territory_control' in w and hasattr(grid, 'tile_control'):
         for owner_ri in grid.tile_control.values():
             if owner_ri is not None:
-                if owner_ri in allied_ri_set:
+                if owner_ri in allied_name_set:
                     score += w['territory_control']
-                elif owner_ri in enemy_ri_set:
+                elif owner_ri in enemy_name_set:
                     score -= w['territory_control']
 
     return score

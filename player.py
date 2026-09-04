@@ -11,7 +11,7 @@ class Player:
     Attributes:
         secret_nation : The Nation this player is secretly rooting for.
         is_bot        : True if AI-controlled.
-        cooldown      : Ring indices of the last 2 nations this player moved
+        cooldown      : Color names of the last 2 nations this player moved
                         (most recent first).  A player cannot move a nation
                         that is in their cooldown list.
         prevail_picks : Up to 3 Nations the player predicts will survive
@@ -24,7 +24,7 @@ class Player:
         self.secret_nation  = secret_nation
         self.is_bot         = is_bot
         self.player_id      = player_id    # 'player1' or 'player2'
-        self.cooldown: list[int] = []      # at most 2 entries
+        self.cooldown: list[str] = []      # at most 2 entries (color_name strings)
         self.prevail_picks: list = []      # list[Nation], max 3
         self.defeat_picks:  list = []      # list[Nation], max 3
 
@@ -34,13 +34,13 @@ class Player:
 
     def add_to_cooldown(self, nation):
         """Record that this player just moved nation; keep only last 2."""
-        self.cooldown.insert(0, nation.ring_index)
+        self.cooldown.insert(0, nation.color_name)
         if len(self.cooldown) > 2:
             self.cooldown.pop()
 
     def nation_on_cooldown(self, nation) -> bool:
         """True if this player is forbidden from moving the given nation."""
-        return nation.ring_index in self.cooldown
+        return nation.color_name in self.cooldown
 
     # -----------------------------------------------------------------------
     # Prediction scoring
