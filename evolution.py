@@ -136,7 +136,7 @@ class BotConfig:
     ev_champion_approach:  float = 5.0
     ev_territory_control:  float = 2.0
 
-    # --- Diplomatic genes (6 fine-grained targeted genes + 1 rank decay gene) ---
+    # --- Diplomatic genes (6 fine-grained targeted genes + 1 rank decay gene + 2 base score genes) ---
     w_dipl_defeat_vs_defeat:  float = 1.8   # wars between nations in defeat list
     w_dipl_prevail_alliance:  float = 1.5   # alliances among nations in prevail list
     w_dipl_prevail_vs_defeat: float = 2.0   # wars between prevail and defeat nations
@@ -144,6 +144,11 @@ class BotConfig:
     w_dipl_opp_defeat_ally:   float = 1.0   # alliances between suspected opp defeat nations
     w_dipl_peace:             float = 0.5   # de-escalation / returning to neutral
     top3_spread:              float = 0.5   # decay factor for 2nd/3rd human-guess rank
+    # Base scores for diplomatic actions — these scale the intrinsic value of a
+    # war/alliance declaration independently of the w_dipl_* multipliers.
+    # Set high enough that a strategic declaration competes with a good attack.
+    dipl_base_war:            float = 300.0  # base score for declaring war
+    dipl_base_ally:           float = 250.0  # base score for declaring alliance
 
     # --- Architectural Genes (evolved) ---
     lookahead_depth:       int   = 2     # 1 = 1-ply, 2 = 2-ply minimax, 3 = 3-ply
@@ -174,6 +179,8 @@ class BotConfig:
             'w_dipl_opp_defeat_ally':   self.w_dipl_opp_defeat_ally,
             'w_dipl_peace':             self.w_dipl_peace,
             'top3_spread':              self.top3_spread,
+            'dipl_base_war':            self.dipl_base_war,
+            'dipl_base_ally':           self.dipl_base_ally,
             # Legacy fallbacks
             'w_diplomacy_war':          self.w_dipl_prevail_vs_defeat,
             'w_diplomacy_ally':         self.w_dipl_prevail_alliance,
@@ -265,6 +272,8 @@ class BotConfig:
             w_dipl_opp_defeat_ally=random.uniform(0.2, 2.0),
             w_dipl_peace=random.uniform(0.0, 1.5),
             top3_spread=random.uniform(0.1, 0.9),
+            dipl_base_war=random.uniform(150.0, 450.0),
+            dipl_base_ally=random.uniform(120.0, 380.0),
             # Evaluator weights — randomize around defaults
             ev_ghost_enemy=random.uniform(200, 800),
             ev_own_sov_dead=random.uniform(-15000, -5000),
@@ -971,6 +980,8 @@ _GENE_RANGES = {
     'w_dipl_opp_defeat_ally':   (0.0, 5.0),
     'w_dipl_peace':             (0.0, 3.0),
     'top3_spread':              (0.0, 1.0),
+    'dipl_base_war':            (50.0, 600.0),
+    'dipl_base_ally':           (50.0, 500.0),
      # Architectural genes (evolvable depth, beam, and hybrid evaluation)
     'lookahead_depth':      (1, 4),
     'lookahead_beam':       (1, 4),

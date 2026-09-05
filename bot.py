@@ -562,6 +562,13 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
         w_opp_df_aly  = _w.get('w_dipl_opp_defeat_ally',   _w.get('w_diplomacy_ally',  1.0))
         w_peace       = _w.get('w_dipl_peace',             _w.get('w_diplomacy_peace', 0.5))
         top3_spread   = _w.get('top3_spread', 0.5)
+        # Base scores for war/alliance declarations. These must be high enough to
+        # compete with typical military move scores (army kill ~250, sov kill ~1000)
+        # because even a 4-ply bot cannot see past the pair-cooldown to the attacks
+        # a war declaration enables. The bot must value the unlock intrinsically.
+        b_war  = _w.get('dipl_base_war',  300.0)
+        b_ally = _w.get('dipl_base_ally', 250.0)
+        b_peace = 35.0   # Peace/renew is maintenance; keep low and not evolvable
 
         # Decay weights for top 3 guessed opponent prevail nations
         # Rank 0 (top guess): 1.0, Rank 1: top3_spread, Rank 2: top3_spread^2
@@ -574,7 +581,7 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
             """Propose a diplomacy action adhering to 2-step rules (neutral <-> ally/enemy).
 
             - If na is nb, or either is ghost, or pair is locked: return.
-            - If curr == desired_stance: propose RENEW (re-lock) at 0.8x score.
+            - If curr == desired_stance: propose RENEW (re-lock) at 0.25x score.
             - If curr == 'neutral': directly propose desired_stance.
             - If curr opposes desired_stance (enemy <-> ally direct jump is illegal):
               propose 'neutral' as Step 1 (e.g. end war between prevail picks, or break
@@ -627,22 +634,22 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
         # Strategy 1: Wars between bot's defeat-goal nations (weaken both)
         for i, da in enumerate(d_nations):
             for db in d_nations[i+1:]:
-                _propose_diplomacy(da, db, 'enemy', 55.0, w_def_vs_def)
+                _propose_diplomacy(da, db, 'enemy', b_war, w_def_vs_def)
 
         # Strategy 2: Wars between prevail-goal and defeat-goal nations
         # Prevail nation gets bonus when it is measurably stronger than the defeat nation.
         for pn in p_nations:
             for dn in d_nations:
-                base = 45.0
+                base = b_war
                 if _nation_strength(pn) >= _nation_strength(dn):
-                    base += 15.0  # +15 tactical edge for dominant prevail attacker
+                    base = b_war * 1.2  # +20% tactical edge for dominant prevail attacker
                 _propose_diplomacy(pn, dn, 'enemy', base, w_prev_vs_def)
 
         # Strategy 3: Alliances between bot's prevail-goal nations
         # (If at war, 2-step machine automatically proposes neutral first to stop the bloodshed)
         for i, pa in enumerate(p_nations):
             for pb in p_nations[i+1:]:
-                _propose_diplomacy(pa, pb, 'ally', 55.0, w_prev_ally)
+                _propose_diplomacy(pa, pb, 'ally', b_ally, w_prev_ally)
 
         # Strategy 4: Wars between suspected opponent prevail nations (disrupt opponent)
         if top3_names:
@@ -651,7 +658,7 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
             for i, ha in enumerate(h_nations):
                 for hb in h_nations[i+1:]:
                     decay = min(t3_rank.get(ha.color_name, 1.0), t3_rank.get(hb.color_name, 1.0))
-                    _propose_diplomacy(ha, hb, 'enemy', 35.0 * decay, w_opp_pv_war)
+                    _propose_diplomacy(ha, hb, 'enemy', b_war * decay, w_opp_pv_war)
 
         # Strategy 5: Alliances between inferred opponent defeat nations
         # (Bottom 3 nations: shielding them prevents opponent from claiming victory)
@@ -660,7 +667,7 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
                          if n.color_name in bottom3_names and not n.is_ghost]
             for i, ba in enumerate(b_nations):
                 for bb in b_nations[i+1:]:
-                    _propose_diplomacy(ba, bb, 'ally', 40.0, w_opp_df_aly)
+                    _propose_diplomacy(ba, bb, 'ally', b_ally, w_opp_df_aly)
 
     # Apply adaptive sovereign intelligence
     adaptive_t  = weights.get('adaptive_turn') if weights else None

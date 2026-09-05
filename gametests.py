@@ -2385,3 +2385,99 @@ class TestBotDiplomacy(unittest.TestCase):
         dipl_actions = [a for a in actions if a[1] == 'diplomacy']
         self.assertEqual(len(dipl_actions), 0,
                          "exclude_diplomacy=True must suppress all diplomacy actions")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 tests — diplomatic base score scaling
+# ---------------------------------------------------------------------------
+
+class TestDiplomacyBaseScores(unittest.TestCase):
+    """Verify that diplomatic base scores are scaled to compete with military scores."""
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        for n in NATIONS:
+            n.is_ghost = False
+        _init_diplomacy(NATIONS)
+        self.grid = MapGrid()
+        self.grid.generate_map()
+        from diplomacy_panel import DiplomacyState
+        self.dipl_state = DiplomacyState()
+
+    def _get_dipl_actions(self, weights=None):
+        from bot import _gather_actions
+        from evolution import BotGoals
+        from player import Player
+        player = Player(is_bot=True)
+        goals = BotGoals(
+            prevail_goals=[NATIONS[0].color_name, NATIONS[1].color_name, NATIONS[2].color_name],
+            defeat_goals=[NATIONS[3].color_name, NATIONS[4].color_name, NATIONS[5].color_name],
+        )
+        actions = _gather_actions(
+            self.grid, player, None, list(NATIONS),
+            weights=weights,
+            dipl_state=self.dipl_state,
+            bot_goals=goals,
+            exclude_diplomacy=False,
+        )
+        return [a for a in actions if a[1] == 'diplomacy']
+
+    def test_war_declaration_score_uses_dipl_base_war(self):
+        """War declaration score should reflect dipl_base_war * w_dipl_* multiplier."""
+        custom_base_war = 400.0
+        weights = {'dipl_base_war': custom_base_war, 'w_dipl_prevail_vs_defeat': 2.0}
+        actions = self._get_dipl_actions(weights=weights)
+        war_actions = [a for a in actions if a[1] == 'diplomacy' and a[4] == 'enemy']
+        self.assertGreater(len(war_actions), 0, "Should generate war declaration actions")
+        # Score should be >= custom_base_war * w_dipl (min multiplier 1.0) for at least one action
+        top_war_score = max(a[0] for a in war_actions)
+        self.assertGreaterEqual(top_war_score, custom_base_war * 1.5,
+                                f"Top war declaration score {top_war_score:.1f} should be >= "
+                                f"{custom_base_war * 1.5:.1f} (base * min_weight)")
+
+    def test_alliance_declaration_score_uses_dipl_base_ally(self):
+        """Alliance declaration score should reflect dipl_base_ally * w_dipl_* multiplier."""
+        custom_base_ally = 350.0
+        weights = {'dipl_base_ally': custom_base_ally, 'w_dipl_prevail_alliance': 2.0}
+        actions = self._get_dipl_actions(weights=weights)
+        ally_actions = [a for a in actions if a[1] == 'diplomacy' and a[4] == 'ally']
+        self.assertGreater(len(ally_actions), 0, "Should generate alliance actions")
+        top_ally_score = max(a[0] for a in ally_actions)
+        self.assertGreaterEqual(top_ally_score, custom_base_ally * 1.5,
+                                f"Top alliance score {top_ally_score:.1f} should be >= "
+                                f"{custom_base_ally * 1.5:.1f} (base * min_weight)")
+
+    def test_default_war_score_exceeds_old_maximum(self):
+        """Default war score (300 * 2.0 = 600) should exceed the old maximum (55 * 3.0 = 165)."""
+        actions = self._get_dipl_actions(weights=None)  # uses defaults
+        war_actions = [a for a in actions if a[1] == 'diplomacy' and a[4] == 'enemy']
+        self.assertGreater(len(war_actions), 0)
+        top_war_score = max(a[0] for a in war_actions)
+        OLD_MAX = 165.0  # 55 * 3.0 (old hardcoded base * max weight)
+        self.assertGreater(top_war_score, OLD_MAX,
+                           f"Default war score {top_war_score:.1f} must exceed old max {OLD_MAX:.1f}")
+
+    def test_botconfig_exports_dipl_base_fields(self):
+        """BotConfig.to_weights_dict() must include dipl_base_war and dipl_base_ally."""
+        from evolution import BotConfig
+        cfg = BotConfig()
+        w = cfg.to_weights_dict()
+        self.assertIn('dipl_base_war', w,
+                      "to_weights_dict() must export dipl_base_war")
+        self.assertIn('dipl_base_ally', w,
+                      "to_weights_dict() must export dipl_base_ally")
+        self.assertEqual(w['dipl_base_war'], cfg.dipl_base_war)
+        self.assertEqual(w['dipl_base_ally'], cfg.dipl_base_ally)
+
+    def test_dipl_base_in_gene_ranges(self):
+        """dipl_base_war and dipl_base_ally must be in _GENE_RANGES for evolution."""
+        from evolution import _GENE_RANGES
+        self.assertIn('dipl_base_war', _GENE_RANGES,
+                      "dipl_base_war must be in _GENE_RANGES for evolution")
+        self.assertIn('dipl_base_ally', _GENE_RANGES,
+                      "dipl_base_ally must be in _GENE_RANGES for evolution")
+        # Verify ranges are sensible
+        lo, hi = _GENE_RANGES['dipl_base_war']
+        self.assertGreater(hi, 200.0, "dipl_base_war upper range should be > 200")
+        lo, hi = _GENE_RANGES['dipl_base_ally']
+        self.assertGreater(hi, 150.0, "dipl_base_ally upper range should be > 150")
