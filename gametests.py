@@ -2130,6 +2130,95 @@ class TestPurePrevailDefeatSystem(unittest.TestCase):
             game.turn_number += 1
             game.dipl_state.tick_cooldowns()
 
+    def test_observe_diplomacy_scoring(self):
+        """Diplomacy observation adjusts guess scores symmetrically: +3 for ally, -1 for enemy."""
+        from bot import BotMemory
+        nations = create_nations()
+        mem = BotMemory()
+
+        na = nations[0]
+        nb = nations[1]
+
+        # Initial scores are 0
+        self.assertEqual(mem.scores[na.color_name], 0)
+        self.assertEqual(mem.scores[nb.color_name], 0)
+
+        # Alliance: +3 for both
+        mem.observe_diplomacy(na, nb, 'ally')
+        self.assertEqual(mem.scores[na.color_name], 3)
+        self.assertEqual(mem.scores[nb.color_name], 3)
+
+        # War: -1 for both
+        mem.observe_diplomacy(na, nb, 'enemy')
+        self.assertEqual(mem.scores[na.color_name], 2)
+        self.assertEqual(mem.scores[nb.color_name], 2)
+
+        # Neutral: no change
+        mem.observe_diplomacy(na, nb, 'neutral')
+        self.assertEqual(mem.scores[na.color_name], 2)
+        self.assertEqual(mem.scores[nb.color_name], 2)
+
+    def test_lookahead_propagates_opp_cooldown(self):
+        """Lookahead search respects opp_cooldown so opponent does not hallucinate illegal moves."""
+        from bot import _lookahead_best
+        from evolution import BotGoals
+        from player import Player
+        grid = MapGrid()
+        nations = create_nations()
+        grid.generate_map(nations=nations)
+
+        bot_player = Player(player_id='bot')
+        goals = BotGoals.random(nations)
+
+        # Give opponent a cooldown
+        opp_cd = [nations[0].color_name, nations[1].color_name]
+
+        # Call _lookahead_best with depth=2, beam=2, mode='position'
+        best_action = _lookahead_best(
+            grid, bot_player, None, nations, 1,
+            opp_goals=None,
+            depth=2, beam=2, mode='position',
+            bot_goals=goals,
+            opp_cooldown=opp_cd
+        )
+        self.assertIsNotNone(best_action)
+        self.assertGreater(len(best_action), 1)
+
+    def test_two_ply_runs_on_turn_1_without_opp_goals(self):
+        """2-ply lookahead executes on Turn 1 even when opp_goals is None."""
+        from bot import _lookahead_best
+        from evolution import BotGoals
+        from player import Player
+        grid = MapGrid()
+        nations = create_nations()
+        grid.generate_map(nations=nations)
+
+        bot_player = Player(player_id='bot')
+        goals = BotGoals.random(nations)
+
+        # Action mode depth=2 on Turn 1 with no opp_goals
+        best_action = _lookahead_best(
+            grid, bot_player, None, nations, 1,
+            opp_goals=None,
+            depth=2, beam=2, mode='action',
+            bot_goals=goals,
+            opp_cooldown=[]
+        )
+        self.assertIsNotNone(best_action)
+        self.assertGreater(len(best_action), 1)
+
+    def test_headless_game_observes_diplomacy(self):
+        """HeadlessGame propagates opponent diplomacy into BotMemory."""
+        from evolution import HeadlessGame, BotConfig
+        cfg1 = BotConfig()
+        cfg2 = BotConfig()
+        game = HeadlessGame(cfg1, cfg2, max_turns=5, seed=42)
+
+        # Manually trigger bot1 observing bot2's diplomacy
+        game.bot1.observe_diplomacy(game.nations[0], game.nations[1], 'ally')
+        self.assertEqual(game.bot1.memory.scores[game.nations[0].color_name], 3)
+        self.assertEqual(game.bot1.memory.scores[game.nations[1].color_name], 3)
+
 
 if __name__ == '__main__':
     unittest.main()

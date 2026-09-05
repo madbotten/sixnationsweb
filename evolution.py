@@ -113,7 +113,7 @@ class BotConfig:
     deceptive_early_turns: int  = 5     # bias toward deceptive for first N turns
 
     # --- Adaptive behaviour ---
-    adaptive_turn:         int  = 25    # when to start using opponent intel
+    adaptive_turn:         int  = 4     # when to start using opponent intel
 
     # --- Evaluator weights (18 genes for position-mode lookahead) ---
     ev_ghost_enemy:        float = 500.0
@@ -256,7 +256,7 @@ class BotConfig:
             w_deceptive=random.uniform(0.0, 0.3),
             random_early_turns=random.randint(0, 15),
             deceptive_early_turns=random.randint(0, 12),
-            adaptive_turn=random.randint(10, 40),
+            adaptive_turn=random.randint(2, 12),
             # Diplomacy genes
             w_dipl_defeat_vs_defeat=random.uniform(0.5, 3.0),
             w_dipl_prevail_alliance=random.uniform(0.5, 3.0),
@@ -406,8 +406,7 @@ def describe_bot(config: BotConfig, rank=None) -> str:
     else:
         opening = f"Bluffing early game (random: {config.w_random*100:.0f}%, deceptive: {config.w_deceptive*100:.0f}% for first {max(config.random_early_turns, config.deceptive_early_turns)} turns)"
     lines.append(f"  • Opening Style: {opening}")
-    lines.append(f"  • Hunter Intelligence: Unlocks adaptive sovereign targeting on Turn {config.adaptive_turn}")
-    lines.append(f"{'='*66}")
+    lines.append(f"  • Hunter Intelligence: Unlocks opponent goal inference on Turn {config.adaptive_turn}")
     # 6. Diplomacy Style
     d_dvd = getattr(config, 'w_dipl_defeat_vs_defeat',  getattr(config, 'w_diplomacy_war', 1.8))
     d_pal = getattr(config, 'w_dipl_prevail_alliance',  getattr(config, 'w_diplomacy_ally', 1.5))
@@ -464,6 +463,10 @@ class EvolvableBot:
         # Simple suspicion: add points for moving a nation
         self.memory.add_score(nation.color_name, 3, nation_names)
 
+    def observe_diplomacy(self, flag_nation, box_nation, new_stance):
+        """Record opponent diplomacy move in memory and adjust suspicion scores."""
+        self.memory.observe_diplomacy(flag_nation, box_nation, new_stance)
+
     def guess_opponent_faction(self, nation_list, exclude_names=()):
         """Return the suspected color_name of the opponent's top prevail nation (top-1 guess)."""
         guess = self.memory.guess_faction(nation_list, exclude_names=set(exclude_names))
@@ -480,11 +483,12 @@ class EvolvableBot:
         return [n.color_name for n, _ in bottom3]
 
     def compute_action(self, grid, global_cooldown_name, nation_list, turn_number,
-                       dipl_state=None, bot_goals=None):
+                       dipl_state=None, bot_goals=None, opp_cooldown=None):
         """Select an action without executing it.  Returns action tuple or None.
 
         dipl_state: DiplomacyState for cooldown checking (None = skip diplomacy).
         bot_goals:  BotGoals with prevail/defeat goal lists.
+        opp_cooldown: list of color_name strings on the opponent's cooldown.
         """
         suspected_ri  = None
         top3_names    = None
@@ -513,7 +517,8 @@ class EvolvableBot:
                                         turn_number, suspected_ri,
                                         dipl_state=dipl_state, bot_goals=bot_goals,
                                         top3_names=top3_names,
-                                        bottom3_names=bottom3_names)
+                                        bottom3_names=bottom3_names,
+                                        opp_cooldown=opp_cooldown)
         elif move_type == 'random':
             return self._compute_random(grid, global_cooldown_name, nation_list,
                                         turn_number, suspected_ri,
@@ -525,7 +530,7 @@ class EvolvableBot:
 
     def _compute_intent(self, grid, gci, nation_list, turn, suspected_ri,
                         dipl_state=None, bot_goals=None, top3_names=None,
-                        bottom3_names=None):
+                        bottom3_names=None, opp_cooldown=None):
         """Strategic intent using config weights, with optional lookahead and hybrid scoring."""
         from bot import _lookahead_best
 
@@ -557,7 +562,8 @@ class EvolvableBot:
                 hybrid_ratio=self.config.hybrid_ratio,
                 bot_goals=bot_goals,
                 top3_names=top3_names,
-                bottom3_names=bottom3_names)
+                bottom3_names=bottom3_names,
+                opp_cooldown=opp_cooldown)
         else:
             mil_actions = _gather_actions(grid, self.player, gci, nation_list,
                                           suspected_human_ri=suspected_ri,
@@ -757,7 +763,8 @@ class HeadlessGame:
                 self.grid, self.global_cooldown_name,
                 self.nations, self.turn_number,
                 dipl_state=self.dipl_state,
-                bot_goals=bot_goal)
+                bot_goals=bot_goal,
+                opp_cooldown=opponent.player.cooldown)
 
             if action is None:
                 # No legal moves — skip turn
@@ -783,7 +790,7 @@ class HeadlessGame:
             bot.player.add_to_cooldown(moved_nation)
             self.global_cooldown_name = moved_nation.color_name
 
-            # Record the move for the opponent's memory (skip for diplomacy actions)
+            # Record the move for the opponent's memory
             # Extract unit info from the action for recording
             _score, atype, *rest = action
             # Strip path label if present
@@ -792,28 +799,32 @@ class HeadlessGame:
             else:
                 payload = rest
 
-            unit_type_str = None
-            from_hex = None
-            to_hex = None
-            if atype in ('move', 'attack') and len(payload) >= 2:
-                unit = payload[0]
-                coord = payload[1]
-                from units import Army
-                from units import Champion, Sovereign
-                if isinstance(unit, Sovereign):
-                    unit_type_str = 'sovereign'
-                elif isinstance(unit, Champion):
-                    unit_type_str = 'champion'
-                elif isinstance(unit, Army):
-                    unit_type_str = 'army'
-                from_hex = unit.hex_location
-                to_hex = coord
-            elif atype in ('recruit', 'promote') and len(payload) >= 2:
-                to_hex = payload[1]
+            if atype == 'diplomacy' and len(payload) >= 3:
+                na, nb, stance = payload[0], payload[1], payload[2]
+                opponent.observe_diplomacy(na, nb, stance)
+            else:
+                unit_type_str = None
+                from_hex = None
+                to_hex = None
+                if atype in ('move', 'attack') and len(payload) >= 2:
+                    unit = payload[0]
+                    coord = payload[1]
+                    from units import Army
+                    from units import Champion, Sovereign
+                    if isinstance(unit, Sovereign):
+                        unit_type_str = 'sovereign'
+                    elif isinstance(unit, Champion):
+                        unit_type_str = 'champion'
+                    elif isinstance(unit, Army):
+                        unit_type_str = 'army'
+                    from_hex = unit.hex_location
+                    to_hex = coord
+                elif atype in ('recruit', 'promote') and len(payload) >= 2:
+                    to_hex = payload[1]
 
-            opponent.record_opponent_move(
-                self.turn_number, moved_nation, unit_type_str,
-                from_hex, to_hex, action_type or atype)
+                opponent.record_opponent_move(
+                    self.turn_number, moved_nation, unit_type_str,
+                    from_hex, to_hex, action_type or atype)
 
             # Check end condition: game ends when 3+ sovereigns are destroyed
             self.grid.check_ghost_nations(self.nations)
@@ -950,7 +961,7 @@ _GENE_RANGES = {
     'w_deceptive':          (0.0, 1.0),
     'random_early_turns':   (0, 30),
     'deceptive_early_turns': (0, 25),
-    'adaptive_turn':         (10, 40),
+    'adaptive_turn':         (2, 20),
     # Diplomacy genes (fine-grained targeted diplomacy)
     'w_dipl_defeat_vs_defeat':  (0.0, 5.0),
     'w_dipl_prevail_alliance':  (0.0, 5.0),

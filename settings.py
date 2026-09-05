@@ -73,10 +73,11 @@ COLOR_PANEL        = ( 13,  17,  27)
 COLOR_PANEL_BORDER = ( 34,  41,  58)
 
 # -- Bot behaviour ------------------------------------------------------------
-# After this turn number the bot begins using suspected-player-faction intel:
-#   • Prioritise attacks on the suspected human sovereign
-#   • Avoid attacks on sovereigns that only benefit the human player
-BOT_ADAPTIVE_TURN = 25
+# After this turn number the bot begins using opponent goal inference:
+#   • Deduces opponent's 3 prevail and 3 defeat picks from movement patterns
+#   • Simulates opponent's goal-driven counter-moves in lookahead search
+#   • Unlocks counter-diplomacy heuristics against opponent targets
+BOT_ADAPTIVE_TURN = 4
 
 # Fraction of moves that are RANDOM at the very start of the game (turn 1).
 # By turn 50 the bot will always be ~10% random regardless of this setting.

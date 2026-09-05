@@ -282,7 +282,6 @@ def build_rules_surfaces(raw_text, font_h, font_b, max_width):
 # ---------------------------------------------------------------------------
 
 def draw_splash(screen, fonts, human_nation=None, mx=0, my=0,
-                evolved_available=False,
                 prevail_nations=None, defeat_nations=None,
                 drag_nation=None, drag_pos=None,
                 buttons_enabled=False):
@@ -392,32 +391,20 @@ def draw_splash(screen, fonts, human_nation=None, mx=0, my=0,
         hint_surf = fonts['small'].render(hint_text, True, (72, 88, 138))
         screen.blit(hint_surf, hint_surf.get_rect(centerx=W // 2, y=H - BTN_STRIP + 8))
 
-    # Bottom button strip
+    # Bottom button strip — always 2 buttons: BOT + HUMAN
     BTN_Y = H - BTN_STRIP + (BTN_STRIP - 56) // 2 + 14
     bw, bh = 230, 56
     gap    = 20
+    total_w = bw * 2 + gap
+    left_x  = W // 2 - total_w // 2 - 180
+    bot_rect   = pygame.Rect(left_x,             BTN_Y, bw, bh)
+    human_rect = pygame.Rect(left_x + bw + gap,  BTN_Y, bw, bh)
     evolved_rect = None
-
-    if evolved_available:
-        n_btns  = 3
-        total_w = bw * n_btns + gap * (n_btns - 1)
-        left_x  = W // 2 - total_w // 2 - 180
-        bot_rect     = pygame.Rect(left_x,               BTN_Y, bw, bh)
-        evolved_rect = pygame.Rect(left_x + bw + gap,    BTN_Y, bw, bh)
-        human_rect   = pygame.Rect(left_x + 2*(bw+gap),  BTN_Y, bw, bh)
-    else:
-        total_w = bw * 2 + gap
-        left_x  = W // 2 - total_w // 2 - 180
-        bot_rect   = pygame.Rect(left_x,             BTN_Y, bw, bh)
-        human_rect = pygame.Rect(left_x + bw + gap,  BTN_Y, bw, bh)
 
     inst_rect = pygame.Rect(W - 294, BTN_Y, 254, bh)
 
     _draw_button_ex(screen, fonts['btn'], "PLAY vs BOT",   bot_rect, nc,
                     bot_rect.collidepoint(mx, my), buttons_enabled)
-    if evolved_available and evolved_rect:
-        _draw_button_ex(screen, fonts['btn'], "EVOLVED BOT", evolved_rect, nc,
-                        evolved_rect.collidepoint(mx, my), buttons_enabled)
     _draw_button_ex(screen, fonts['btn'], "PLAY vs HUMAN", human_rect, nc,
                     human_rect.collidepoint(mx, my), buttons_enabled)
     _draw_button(screen, fonts['btn'], "INSTRUCTIONS", inst_rect, False, nc,

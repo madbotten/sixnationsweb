@@ -41,6 +41,7 @@ evolution.py and BotConfig for the full set of weight genes.
 The bot also keeps a BotMemory record of every opponent move for analysis.
 """
 
+from collections import defaultdict
 import random
 import settings
 from factions import NATIONS_BY_NAME
@@ -55,8 +56,13 @@ class BotMemory:
 
     def __init__(self, debug=False):
         self.moves         = []   # chronological move records
-        self.nation_scores = {}   # color_name -> int score
+        self.nation_scores = defaultdict(int)   # color_name -> int score
         self.debug         = debug
+
+    @property
+    def scores(self):
+        """Property alias for nation_scores dictionary."""
+        return self.nation_scores
 
     def record(self, turn_number, nation, unit_type_str, from_hex, to_hex, action_type):
         """
@@ -178,26 +184,32 @@ class BotMemory:
         return sorted(counts.items(), key=lambda x: -x[1])[:top_n]
 
     def observe_diplomacy(self, flag_nation, box_nation, new_stance):
-        """Update suspicion scores from a human diplomacy move.
+        """Update suspicion scores from an observed diplomacy move.
 
         Alliance signal: both nations in an ally declaration earn +3 prevail
-        suspicion.  The player chose to ally them — a strong signal they want
+        suspicion. The player chose to ally them — a strong signal they want
         both to survive and thrive.
 
-        War signal: deliberately uninformative.  A war could be the player
-        pitting two enemies against each other, OR fighting their own defeat
-        goals.  Without more context we cannot tell which side the player
-        is rooting for, so no points are awarded.
+        War signal: relationships are symmetric, so the player may hold ill will
+        toward flag_nation, box_nation, or both (or be pitting two defeat targets
+        against each other). War reduces suspicion points for both nations to a
+        smaller degree (-1 each).
 
-        Peace signal: also skipped — could be cancelling an old war/ally for
-        many reasons with no clear prevail direction.
+        Peace signal: de-escalation / neutral — no score adjustment.
         """
+        fn_name = flag_nation.color_name if hasattr(flag_nation, 'color_name') else str(flag_nation)
+        bn_name = box_nation.color_name if hasattr(box_nation, 'color_name') else str(box_nation)
+
         if new_stance == 'ally':
-            self.add_score(flag_nation.color_name, 3)
-            self.add_score(box_nation.color_name,  3)
+            self.add_score(fn_name, 3)
+            self.add_score(bn_name, 3)
             if self.debug:
-                print(f"  [Dipl-observe] Alliance {flag_nation.color_name} ↔ "
-                      f"{box_nation.color_name} → +3 each")
+                print(f"  [Dipl-observe] Alliance {fn_name} ↔ {bn_name} → +3 each")
+        elif new_stance == 'enemy':
+            self.add_score(fn_name, -1)
+            self.add_score(bn_name, -1)
+            if self.debug:
+                print(f"  [Dipl-observe] War {fn_name} ↔ {bn_name} → -1 each")
 
 
 # ---------------------------------------------------------------------------
@@ -680,11 +692,12 @@ def _map_action_to_snapshot(action, unit_map):
     return action
 
 
-def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
-                    turn_number, suspected_opp_ri, weights,
-                    depth, beam_width, mode='position', eval_weights=None,
+def _lookahead_best(grid, bot_player, global_cooldown_name=None, nation_list=None,
+                    turn_number=1, suspected_opp_ri=None, weights=None,
+                    depth=1, beam_width=2, mode='position', eval_weights=None,
                     hybrid_ratio=1.0, bot_goals=None,
-                    top3_names=None, bottom3_names=None):
+                    top3_names=None, bottom3_names=None,
+                    opp_cooldown=None, opp_goals=None, **kwargs):
     """Beam-search negamax / hybrid lookahead.
 
     depth: remaining plies to search (0 = evaluate immediate moves, 1 = 1 opponent counter, 2 = 2 counters).
@@ -692,11 +705,30 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
     mode: 'action' (score subtraction) or 'position' (board evaluation).
     hybrid_ratio: 0.0 = 100% move score, 1.0 = 100% positional board eval,
                   0.3..0.7 = blended hybrid scoring.
+    opp_cooldown: list of color_name strings representing nations on the opponent's cooldown.
+    opp_goals: BotGoals instance for opponent (optional, populates top3_names/bottom3_names if given).
 
     Returns an action tuple (final_score, atype, *payload) or None.
     """
     from player import Player
     from evaluator import evaluate_position, _derive_ghost_set
+
+    if 'beam' in kwargs:
+        beam_width = kwargs.pop('beam')
+
+    if opp_goals is not None:
+        if top3_names is None:
+            top3_names = list(opp_goals.prevail_goals)
+        if bottom3_names is None:
+            bottom3_names = list(opp_goals.defeat_goals)
+
+    # Resolve opponent cooldown
+    if opp_cooldown is not None:
+        opp_cd = list(opp_cooldown)
+    elif global_cooldown_name:
+        opp_cd = [global_cooldown_name]
+    else:
+        opp_cd = []
 
     # Gather and score all actions (1-ply move scoring, diplomacy excluded from tree)
     actions = _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
@@ -741,7 +773,7 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
         if moved_nation is None:
             continue
 
-        # Simulate cooldown
+        # Simulate cooldown: the nation we moved becomes the new global cooldown for the opponent
         new_gci = moved_nation.color_name
 
         # If depth == 0 with hybrid evaluation (evaluate position immediately without opponent counter)
@@ -761,20 +793,12 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
             from evolution import BotGoals
             opp_goals = BotGoals(prevail_goals=top3_names or [], defeat_goals=bottom3_names or [])
 
-        if opp_goals is None and suspected_opp_ri is None:
-            # No guess — evaluate our immediate position
-            pos_score = evaluate_position(snap, bot_goals=bot_goals, nation_list=nation_list,
-                                          weights=eval_weights,
-                                          ghost_name_set=_derive_ghost_set(snap))
-            if mode == 'action':
-                net = my_move_score
-            else:
-                net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * pos_score
-        elif mode == 'position' or hybrid_ratio > 0.0:
+        if mode == 'position' or hybrid_ratio > 0.0:
             # 2-STAGE TAPERED BEAM MINIMAX:
             # Round 1 (Plies 1 & 2): Full beam width (test top opponent counters against our move)
             # Round 2 (Plies 3 & 4): Tapered to 1 (principal variation follow-up sequence)
             fake_opp = Player(is_bot=True, player_id='lookahead_opp')
+            fake_opp.cooldown = list(opp_cd)
 
             opp_actions = _gather_actions(
                 snap, fake_opp, new_gci, nation_list,
@@ -814,8 +838,13 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
 
                     if depth > 1 and opp_moved is not None:
                         # Round 2 - Ply 3: Tapered follow-up (our single best reply)
+                        ply3_bot = Player(is_bot=True, player_id='lookahead_bot_ply3')
+                        ply3_bot.cooldown = [moved_nation.color_name] + getattr(bot_player, 'cooldown', [])[:1]
+                        ply3_bot.prevail_picks = getattr(bot_player, 'prevail_picks', [])
+                        ply3_bot.defeat_picks  = getattr(bot_player, 'defeat_picks', [])
+
                         our_followups = _gather_actions(
-                            opp_snap, bot_player, opp_moved.color_name, nation_list,
+                            opp_snap, ply3_bot, opp_moved.color_name, nation_list,
                             suspected_human_ri=suspected_opp_ri,
                             turn_number=turn_number + 2,
                             weights=weights,
@@ -832,8 +861,11 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
 
                             if depth > 2 and our_moved is not None:
                                 # Round 2 - Ply 4: Tapered follow-up (opponent's single best reply)
+                                ply4_opp = Player(is_bot=True, player_id='lookahead_opp_ply4')
+                                ply4_opp.cooldown = [opp_moved.color_name] + fake_opp.cooldown[:1]
+
                                 opp_followups = _gather_actions(
-                                    opp_snap, fake_opp, our_moved.color_name, nation_list,
+                                    opp_snap, ply4_opp, our_moved.color_name, nation_list,
                                     turn_number=turn_number + 3,
                                     weights=weights,
                                     bot_goals=opp_goals,
@@ -862,6 +894,7 @@ def _lookahead_best(grid, bot_player, global_cooldown_name, nation_list,
         else:
             # ACTION MODE: net = my_score - opponent_best_score
             fake_opp = Player(is_bot=True, player_id='lookahead_opp')
+            fake_opp.cooldown = list(opp_cd)
 
             opp_actions = _gather_actions(
                 snap, fake_opp, new_gci, nation_list,
@@ -1076,7 +1109,8 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
                        lookahead_depth=None, lookahead_beam=None, lookahead_mode=None,
                        eval_weights=None, hybrid_ratio=None,
                        dipl_state=None, bot_goals=None,
-                       top3_names=None, bottom3_names=None):
+                       top3_names=None, bottom3_names=None,
+                       opp_cooldown=None):
     """
     Select the bot's next action WITHOUT executing it.
 
@@ -1102,6 +1136,7 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
 
     dipl_state: DiplomacyState instance for cooldown checking.
     bot_goals:  BotGoals with prevail_goals/defeat_goals lists.
+    opp_cooldown: list of color_name strings on the opponent's cooldown.
     """
     if bot_goals is None and bot_player is not None and getattr(bot_player, 'prevail_picks', None):
         from evolution import BotGoals
@@ -1160,7 +1195,8 @@ def compute_bot_action(grid, bot_player, global_cooldown_name, nation_list, turn
                 hybrid_ratio=hybrid_ratio,
                 bot_goals=bot_goals,
                 top3_names=top3_names,
-                bottom3_names=bottom3_names)
+                bottom3_names=bottom3_names,
+                opp_cooldown=opp_cooldown)
 
             # Pick whichever is better: best diplomacy vs best military
             if best_dipl is not None:
@@ -1248,3 +1284,10 @@ def execute_bot_action(grid, action):
     Returns (moved_nation, action_type_str, description).
     """
     return _execute(grid, action)
+
+
+def __getattr__(name):
+    if name == 'BotGoals':
+        from evolution import BotGoals
+        return BotGoals
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
