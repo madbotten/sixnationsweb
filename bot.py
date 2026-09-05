@@ -1005,6 +1005,9 @@ def _execute(grid, action, dipl_state=None):
         return nation_a, 'diplomacy', \
             f"{tag} Diplomacy: {nation_a.color_name} → {new_stance} → {nation_b.color_name}"
 
+    if atype == 'pass':
+        return None, 'pass', f"{tag} Pass (no legal move)."
+
     return None, None, f"{tag} Unknown action: {atype}"
 
 

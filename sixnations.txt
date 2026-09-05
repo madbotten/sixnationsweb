@@ -65,6 +65,7 @@ A game turn action is any one of the following:
   4. Promote an existing Army to a Champion (if the nation has lost its champion).
   5. Promote an existing Army to a Knight (if the nation does not already have a knight).
   6. Conduct Diplomacy to change or renew stances between two nations.
+  7. PASS the turn to the opponent.
 
 COOLDOWNS ON PLAYER MOVES:
 To prevent players from repeatedly manipulating the same nation:

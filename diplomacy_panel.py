@@ -229,7 +229,8 @@ class DiplomacyPanel:
     # Mouse Event Handling
     # -------------------------------------------------------------------------
 
-    def on_mousedown(self, pos: tuple[int, int]) -> bool:
+    def on_mousedown(self, pos: tuple[int, int],
+                      move_cooldown_name: str | None = None) -> bool:
         """Handle mouse down. Returns True if the diplomacy panel consumed the click."""
         mx, my = pos
         # If click is outside the panel area, do not consume
@@ -242,11 +243,15 @@ class DiplomacyPanel:
             if not box_rect.collidepoint(mx, my):
                 continue
 
+            # Nation is in move cooldown — block all drag-starts from this box
+            box_is_move_locked = (move_cooldown_name is not None
+                                  and nation.color_name == move_cooldown_name)
+
             slots = self._flag_slots_for_box(nation, box_rect)
             for slot in slots:
                 if slot.rect.collidepoint(mx, my):
-                    if slot.locked:
-                        # Locked flags cannot be dragged
+                    if slot.locked or box_is_move_locked:
+                        # Locked flags / locked box cannot be dragged
                         return True
                     # Start dragging this flag
                     self.drag = _DragState(
@@ -349,7 +354,8 @@ class DiplomacyPanel:
     # Rendering
     # -------------------------------------------------------------------------
 
-    def draw(self, screen: pygame.Surface, fonts: dict | None = None):
+    def draw(self, screen: pygame.Surface, fonts: dict | None = None,
+              move_cooldown_name: str | None = None):
         """Render the complete diplomacy panel on the right sidebar."""
         font_title = util.get_font(14, bold=True)
         font_label = util.get_font(11, bold=True)
@@ -382,10 +388,16 @@ class DiplomacyPanel:
         # 2. Draw each nation's box
         for i, nation in enumerate(self.nations):
             box_rect = self._box_rect(i)
+            box_is_move_locked = (move_cooldown_name is not None
+                                  and nation.color_name == move_cooldown_name)
 
             # Box Card Background
             pygame.draw.rect(screen, (18, 23, 35), box_rect, border_radius=8)
-            pygame.draw.rect(screen, (36, 46, 68), box_rect, 1, border_radius=8)
+            # Border: red when move-cooldown-locked, normal subtle otherwise
+            if box_is_move_locked:
+                pygame.draw.rect(screen, (210, 45, 50), box_rect, 2, border_radius=8)
+            else:
+                pygame.draw.rect(screen, (36, 46, 68), box_rect, 1, border_radius=8)
 
             # Check if this box is hovered while dragging
             is_box_hovered = (

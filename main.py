@@ -235,8 +235,28 @@ def draw_top_bar(screen, font_large, font_small, active_player,
         centre_col  = settings.COLOR_TEXT_PRIMARY
 
     centre_surf = font_large.render(centre_text, True, centre_col)
-    screen.blit(centre_surf, centre_surf.get_rect(
-        center=(settings.SCREEN_WIDTH // 2, settings.TOP_BAR_HEIGHT // 2)))
+    text_rect   = centre_surf.get_rect(
+        center=(settings.SCREEN_WIDTH // 2, settings.TOP_BAR_HEIGHT // 2))
+    screen.blit(centre_surf, text_rect)
+
+    # PASS button — shown whenever it is a human player's turn
+    pass_rect = None
+    if game_state == STATE_HUMAN_TURN and not current_player.is_bot:
+        btn_w, btn_h = 90, 34
+        btn_x = text_rect.right + 18
+        btn_y = settings.TOP_BAR_HEIGHT // 2 - btn_h // 2
+        pass_rect = pygame.Rect(btn_x, btn_y, btn_w, btn_h)
+        _mx, _my  = pygame.mouse.get_pos()
+        hovered   = pass_rect.collidepoint(_mx, _my)
+        bg_col     = (38, 48, 72) if hovered else (20, 26, 42)
+        border_col = (110, 135, 200) if hovered else (55, 68, 105)
+        txt_col    = (200, 215, 245) if hovered else (105, 122, 168)
+        pygame.draw.rect(screen, bg_col,     pass_rect, border_radius=6)
+        pygame.draw.rect(screen, border_col, pass_rect, 1, border_radius=6)
+        lbl = font_small.render("PASS", True, txt_col)
+        screen.blit(lbl, lbl.get_rect(center=pass_rect.center))
+
+    return pass_rect
 
 
 def draw_predictions_panel(screen, font_small, player):
@@ -752,6 +772,9 @@ async def main():
     bot_flash_button_key  = None
     bot_flash_timer       = 0
 
+    # PASS button rect — cached from last draw_top_bar call
+    pass_button_rect      = None
+
     # Splash / instructions state
     splash_fonts = {
         'title':  util.get_font(80, bold=True),
@@ -845,6 +868,7 @@ async def main():
                     evolved_bot_weights = None
                     bot_memory          = BotMemory(debug=(settings.DEPLOYMENT == 'DEBUG'))
                     bot_goals           = None
+                    pass_button_rect    = None
                     grid.generate_map()
                     dipl_panel.reset()
 
@@ -967,8 +991,32 @@ async def main():
                   and game_state == STATE_HUMAN_TURN):
                 mx, my = event.pos
 
+                # --- PASS button ---
+                if pass_button_rect and pass_button_rect.collidepoint(mx, my):
+                    _move_data = moves_mod.serialize_move('pass', '')
+                    on_local_move_made(_move_data)
+                    if settings.DEPLOYMENT == 'DEBUG':
+                        print(f"[{active_player.player_id} pass] T{turn_number}")
+                    # No cooldown for a pass
+                    dipl_panel.tick_cooldowns()
+                    if check_trigger_game_end(grid, nation_list):
+                        game_state  = STATE_GAME_OVER
+                        game_result = True
+                    elif game_mode == 'vs_bot':
+                        game_state      = STATE_BOT_THINKING
+                        bot_think_timer = BOT_THINK_MS
+                        current_player_idx = 1
+                    elif game_mode == 'network':
+                        game_state = STATE_WAITING_OPPONENT
+                        turn_number += 1
+                    else:
+                        current_player_idx = 1 - current_player_idx
+                        turn_number += 1
+                    continue
+
                 # Check if diplomacy panel consumed the click
-                if dipl_panel.on_mousedown(event.pos):
+                if dipl_panel.on_mousedown(event.pos,
+                                           move_cooldown_name=global_cooldown_name):
                     action_pending = pending_nation = None
                     highlight_muster = highlight_promo = set()
                     continue
@@ -1447,7 +1495,11 @@ async def main():
                     bottom3_names=_bottom3_names,
                     opp_cooldown=player1.cooldown)
                 if bot_pending_action is None:
-                    # No legal move at all; skip straight to human turn
+                    # No legal move at all; bot passes
+                    _pass_data = moves_mod.serialize_move('pass', '')
+                    on_local_move_made(_pass_data)
+                    if settings.DEPLOYMENT == 'DEBUG':
+                        print(f"[Bot] No legal moves — PASS T{turn_number}")
                     game_state         = STATE_HUMAN_TURN
                     current_player_idx = 0
                     turn_number       += 1
@@ -1598,12 +1650,13 @@ async def main():
                                  drag_promote_nation=drag_promote_nation)
 
             # Draw Diplomacy Panel on right sidebar
-            dipl_panel.draw(screen, splash_fonts)
+            dipl_panel.draw(screen, splash_fonts,
+                            move_cooldown_name=global_cooldown_name)
 
             current_player = players[current_player_idx]
             # In vs_bot, always show the human's secret nation (player1)
             display_player = player1 if game_mode == 'vs_bot' else active_player
-            draw_top_bar(screen, font_large, font_small,
+            pass_button_rect = draw_top_bar(screen, font_large, font_small,
                          display_player, current_player, turn_number,
                          game_state, game_mode)
             draw_predictions_panel(screen, font_small, player1)

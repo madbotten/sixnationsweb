@@ -14,11 +14,11 @@ def serialize_move(move_type, nation_name, unit_type=None,
     """
     Produce a JSON-serializable dict describing a game action.
 
-    move_type : 'move' | 'attack' | 'recruit' | 'promote'
-    nation_name : color_name of the nation being moved
-    unit_type : 'army' | 'champion' | 'sovereign' (None for recruit/promote)
-    from_hex  : (q, r) source hex  (None for recruit)
-    to_hex    : (q, r) target hex  (None for promote-in-place)
+    move_type : 'move' | 'attack' | 'recruit' | 'promote' | 'pass'
+    nation_name : color_name of the nation being moved (empty string for 'pass')
+    unit_type : 'army' | 'champion' | 'sovereign' (None for recruit/promote/pass)
+    from_hex  : (q, r) source hex  (None for recruit/pass)
+    to_hex    : (q, r) target hex  (None for promote-in-place/pass)
     """
     return {
         'type':      move_type,
@@ -72,6 +72,10 @@ def apply_serialized_move(grid, move_data, nation_list, turn_number=None):
     unit_type   = move_data.get('unit_type')
     from_hex    = tuple(move_data['from']) if move_data.get('from') else None
     to_hex      = tuple(move_data['to'])   if move_data.get('to')   else None
+
+    # ── Pass ──────────────────────────────────────────────────────────────────
+    if mtype == 'pass':
+        return True, "Passed.", None, []
 
     nation = _find_nation(nation_list, nation_name)
     if nation is None:
@@ -141,3 +145,4 @@ def apply_serialized_move(grid, move_data, nation_list, turn_number=None):
         return True, "Promoted to knight.", nation, []
 
     return False, f"Unknown move type: {mtype}", None, []
+
