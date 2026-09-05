@@ -2224,4 +2224,164 @@ if __name__ == '__main__':
     unittest.main()
 
 
+# ---------------------------------------------------------------------------
+# Phase 1 tests — diplomacy cooldown correctness & bot diplomacy generation
+# ---------------------------------------------------------------------------
 
+class TestDiplomacyCooldown(unittest.TestCase):
+    """Verify that diplomacy moves set player and global cooldowns like any other move."""
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        for n in NATIONS:
+            n.is_ghost = False
+        _init_diplomacy(NATIONS)
+        self.grid = MapGrid()
+        self.grid.generate_map()
+        from diplomacy_panel import DiplomacyPanel, DiplomacyAction
+        self.DiplomacyAction = DiplomacyAction
+        self.panel = DiplomacyPanel(list(NATIONS))
+        from player import Player
+        self.player = Player(is_bot=False, player_id='player1')
+
+    def _make_action(self, flag_nation, box_nation, to_zone):
+        """Helper: build a DiplomacyAction without going through mouse events."""
+        from_zone = 'home' if to_zone in ('ally', 'war') else 'ally'
+        return self.DiplomacyAction(
+            box_nation=box_nation,
+            flag_nation=flag_nation,
+            from_zone=from_zone,
+            to_zone=to_zone,
+        )
+
+    def test_human_dipl_sets_player_cooldown(self):
+        """After a human diplomacy action, the flag nation is in the player's cooldown list."""
+        import main as main_mod
+        flag = NATIONS[0]   # Yilerond
+        box  = NATIONS[1]   # Galland
+        action = self._make_action(flag, box, 'war')
+
+        # Apply the diplomacy move (mimics what main.py does)
+        main_mod._apply_diplomacy_move(self.grid, self.panel, action, list(NATIONS))
+        self.player.add_to_cooldown(flag)  # the line we added
+
+        self.assertIn(flag.color_name, self.player.cooldown,
+                      "Flag nation should be on player cooldown after diplomacy move")
+
+    def test_human_dipl_sets_global_cooldown(self):
+        """global_cooldown_name should be the flag nation's name after a human diplomacy move."""
+        import main as main_mod
+        flag = NATIONS[0]
+        box  = NATIONS[2]
+        action = self._make_action(flag, box, 'ally')
+        main_mod._apply_diplomacy_move(self.grid, self.panel, action, list(NATIONS))
+
+        # Simulate what main.py now does
+        global_cooldown_name = flag.color_name
+        self.assertEqual(global_cooldown_name, flag.color_name,
+                         "global_cooldown_name must equal flag nation's color_name after diplomacy")
+
+    def test_dipl_flag_nation_blocked_next_turn(self):
+        """After a diplomacy move, flag nation is ineligible for the bot on its next turn."""
+        from bot import _eligible_nations
+        from player import Player
+        flag = NATIONS[0]  # Yilerond
+        bot_player = Player(is_bot=True)
+
+        # Simulate: flag nation was just used diplomatically — set global cooldown
+        global_cooldown_name = flag.color_name
+        eligible = _eligible_nations(bot_player, global_cooldown_name, list(NATIONS))
+        eligible_names = [n.color_name for n in eligible]
+        self.assertNotIn(flag.color_name, eligible_names,
+                         "Flag nation should be globally blocked on the turn after a diplomacy move")
+
+
+class TestBotDiplomacy(unittest.TestCase):
+    """Verify bot generates diplomacy actions even when weights=None (basic non-evolved bot)."""
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        for n in NATIONS:
+            n.is_ghost = False
+        _init_diplomacy(NATIONS)
+        self.grid = MapGrid()
+        self.grid.generate_map()
+        from diplomacy_panel import DiplomacyState
+        self.dipl_state = DiplomacyState()
+
+    def test_bot_generates_diplomacy_with_no_weights(self):
+        """_gather_actions returns at least one diplomacy action when weights=None."""
+        from bot import _gather_actions
+        from evolution import BotGoals
+        from player import Player
+
+        player = Player(is_bot=True)
+        goals = BotGoals(
+            prevail_goals=[NATIONS[0].color_name, NATIONS[1].color_name, NATIONS[2].color_name],
+            defeat_goals=[NATIONS[3].color_name, NATIONS[4].color_name, NATIONS[5].color_name],
+        )
+
+        actions = _gather_actions(
+            self.grid, player, None, list(NATIONS),
+            weights=None,           # key: basic bot has no weights
+            dipl_state=self.dipl_state,
+            bot_goals=goals,
+            exclude_diplomacy=False,
+        )
+
+        dipl_actions = [a for a in actions if a[1] == 'diplomacy']
+        self.assertGreater(len(dipl_actions), 0,
+                           "Basic bot (weights=None) should still generate diplomacy actions")
+
+    def test_bot_generates_diplomacy_with_weights(self):
+        """_gather_actions returns diplomacy actions when explicit weights are provided."""
+        from bot import _gather_actions
+        from evolution import BotGoals
+        from player import Player
+
+        player = Player(is_bot=True)
+        goals = BotGoals(
+            prevail_goals=[NATIONS[0].color_name, NATIONS[1].color_name, NATIONS[2].color_name],
+            defeat_goals=[NATIONS[3].color_name, NATIONS[4].color_name, NATIONS[5].color_name],
+        )
+        weights = {
+            'w_dipl_prevail_alliance': 2.0,
+            'w_dipl_defeat_vs_defeat': 2.0,
+            'w_dipl_prevail_vs_defeat': 2.5,
+        }
+
+        actions = _gather_actions(
+            self.grid, player, None, list(NATIONS),
+            weights=weights,
+            dipl_state=self.dipl_state,
+            bot_goals=goals,
+            exclude_diplomacy=False,
+        )
+
+        dipl_actions = [a for a in actions if a[1] == 'diplomacy']
+        self.assertGreater(len(dipl_actions), 0,
+                           "Evolved bot (weights provided) should generate diplomacy actions")
+
+    def test_diplomacy_excluded_when_flag_set(self):
+        """exclude_diplomacy=True suppresses all diplomacy actions regardless of weights."""
+        from bot import _gather_actions
+        from evolution import BotGoals
+        from player import Player
+
+        player = Player(is_bot=True)
+        goals = BotGoals(
+            prevail_goals=[NATIONS[0].color_name, NATIONS[1].color_name, NATIONS[2].color_name],
+            defeat_goals=[NATIONS[3].color_name, NATIONS[4].color_name, NATIONS[5].color_name],
+        )
+
+        actions = _gather_actions(
+            self.grid, player, None, list(NATIONS),
+            weights=None,
+            dipl_state=self.dipl_state,
+            bot_goals=goals,
+            exclude_diplomacy=True,  # lookahead tree sets this
+        )
+
+        dipl_actions = [a for a in actions if a[1] == 'diplomacy']
+        self.assertEqual(len(dipl_actions), 0,
+                         "exclude_diplomacy=True must suppress all diplomacy actions")

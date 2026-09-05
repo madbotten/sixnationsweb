@@ -551,15 +551,17 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
             actions.append((s, 'promote_knight', nation, coord))
 
     # --- Diplomacy actions ---
-    if not exclude_diplomacy and dipl_state is not None and bot_goals is not None and weights is not None:
-        # Fine-grained diplomacy genes with fallbacks to legacy genes
-        w_def_vs_def  = weights.get('w_dipl_defeat_vs_defeat',  weights.get('w_diplomacy_war',   1.8))
-        w_prev_ally   = weights.get('w_dipl_prevail_alliance',  weights.get('w_diplomacy_ally',  1.5))
-        w_prev_vs_def = weights.get('w_dipl_prevail_vs_defeat', weights.get('w_diplomacy_war',   2.0))
-        w_opp_pv_war  = weights.get('w_dipl_opp_prevail_war',   weights.get('w_diplomacy_war',   1.2))
-        w_opp_df_aly  = weights.get('w_dipl_opp_defeat_ally',   weights.get('w_diplomacy_ally',  1.0))
-        w_peace       = weights.get('w_dipl_peace',             weights.get('w_diplomacy_peace', 0.5))
-        top3_spread   = weights.get('top3_spread', 0.5)
+    # weights=None means basic (non-evolved) bot — use empty dict so .get() defaults apply
+    if not exclude_diplomacy and dipl_state is not None and bot_goals is not None:
+        _w = weights if weights is not None else {}
+        # Fine-grained diplomacy genes with fallbacks to legacy genes, then to hardcoded defaults
+        w_def_vs_def  = _w.get('w_dipl_defeat_vs_defeat',  _w.get('w_diplomacy_war',   1.8))
+        w_prev_ally   = _w.get('w_dipl_prevail_alliance',  _w.get('w_diplomacy_ally',  1.5))
+        w_prev_vs_def = _w.get('w_dipl_prevail_vs_defeat', _w.get('w_diplomacy_war',   2.0))
+        w_opp_pv_war  = _w.get('w_dipl_opp_prevail_war',   _w.get('w_diplomacy_war',   1.2))
+        w_opp_df_aly  = _w.get('w_dipl_opp_defeat_ally',   _w.get('w_diplomacy_ally',  1.0))
+        w_peace       = _w.get('w_dipl_peace',             _w.get('w_diplomacy_peace', 0.5))
+        top3_spread   = _w.get('top3_spread', 0.5)
 
         # Decay weights for top 3 guessed opponent prevail nations
         # Rank 0 (top guess): 1.0, Rank 1: top3_spread, Rank 2: top3_spread^2

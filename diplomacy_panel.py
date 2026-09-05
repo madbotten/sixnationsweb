@@ -243,14 +243,17 @@ class DiplomacyPanel:
             if not box_rect.collidepoint(mx, my):
                 continue
 
-            # Nation is in move cooldown — block all drag-starts from this box
+            # Block all drag-starts from this box if:
+            #   - Nation is in move cooldown (temporary), OR
+            #   - Nation is a ghost (permanently fallen)
             box_is_move_locked = (move_cooldown_name is not None
                                   and nation.color_name == move_cooldown_name)
+            box_is_ghost_locked = nation.is_ghost
 
             slots = self._flag_slots_for_box(nation, box_rect)
             for slot in slots:
                 if slot.rect.collidepoint(mx, my):
-                    if slot.locked or box_is_move_locked:
+                    if slot.locked or box_is_move_locked or box_is_ghost_locked:
                         # Locked flags / locked box cannot be dragged
                         return True
                     # Start dragging this flag
@@ -388,13 +391,16 @@ class DiplomacyPanel:
         # 2. Draw each nation's box
         for i, nation in enumerate(self.nations):
             box_rect = self._box_rect(i)
-            box_is_move_locked = (move_cooldown_name is not None
-                                  and nation.color_name == move_cooldown_name)
+            box_is_move_locked  = (move_cooldown_name is not None
+                                   and nation.color_name == move_cooldown_name)
+            box_is_ghost_locked = nation.is_ghost
 
             # Box Card Background
             pygame.draw.rect(screen, (18, 23, 35), box_rect, border_radius=8)
-            # Border: red when move-cooldown-locked, normal subtle otherwise
-            if box_is_move_locked:
+            # Border priority: ghost (permanent, muted crimson) > move-cooldown (bright red) > normal
+            if box_is_ghost_locked:
+                pygame.draw.rect(screen, (95, 28, 32), box_rect, 2, border_radius=8)
+            elif box_is_move_locked:
                 pygame.draw.rect(screen, (210, 45, 50), box_rect, 2, border_radius=8)
             else:
                 pygame.draw.rect(screen, (36, 46, 68), box_rect, 1, border_radius=8)

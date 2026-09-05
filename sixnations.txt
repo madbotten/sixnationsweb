@@ -71,6 +71,7 @@ COOLDOWNS ON PLAYER MOVES:
 To prevent players from repeatedly manipulating the same nation:
   - Player Move Cooldown: A player cannot move a nation they moved on either of their last 2 turns.
   - Global Move Cooldown: A player cannot move the nation that their opponent moved on the immediately preceding turn.
+  - A pass move does not generate a cooldown since no nation took a move.
 
 
 TERM DEFINITIONS & UNIT CAPABILITIES
@@ -249,7 +250,7 @@ When a sovereign is destroyed, that nation immediately becomes a Ghost Nation:
     - Any hex that is empty, or occupied by units of two or more nations, reverts to neutral/unclaimed.
   - Ghost nations can never recruit new armies, promote champions, or promote knights.
   - Ghost nation pieces remain on the board; players may still maneuver or sacrifice them on future turns subject to normal move cooldowns.
-
+  - Ghost nation diplomacy: A ghost nation cannot initiate diplomacy, but may be the target of diplomacy from other nations.
 
 VICTORY & SCORING: PREVAIL / DEFEAT
 ===================================

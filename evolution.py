@@ -767,7 +767,8 @@ class HeadlessGame:
                 opp_cooldown=opponent.player.cooldown)
 
             if action is None:
-                # No legal moves — skip turn
+                # No legal moves — bot passes; cooldowns tick but no new cooldown generated
+                self.global_cooldown_name = None
                 self.dipl_state.tick_cooldowns()
                 current = 1 - current
                 self.turn_number += 1

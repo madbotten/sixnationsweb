@@ -997,7 +997,8 @@ async def main():
                     on_local_move_made(_move_data)
                     if settings.DEPLOYMENT == 'DEBUG':
                         print(f"[{active_player.player_id} pass] T{turn_number}")
-                    # No cooldown for a pass
+                    # Pass: no new cooldown generated; existing cooldowns still tick
+                    global_cooldown_name = None
                     dipl_panel.tick_cooldowns()
                     if check_trigger_game_end(grid, nation_list):
                         game_state  = STATE_GAME_OVER
@@ -1167,6 +1168,9 @@ async def main():
                 action = dipl_panel.on_mouseup(event.pos)
                 if action:
                     _apply_diplomacy_move(grid, dipl_panel, action, nation_list)
+                    # Diplomacy is a real move — flag nation gets both cooldowns
+                    active_player.add_to_cooldown(action.flag_nation)
+                    global_cooldown_name = action.flag_nation.color_name
                     dipl_panel.tick_cooldowns()
                     # Let the bot observe what the human did diplomatically
                     if game_mode == 'vs_bot':
@@ -1500,6 +1504,8 @@ async def main():
                     on_local_move_made(_pass_data)
                     if settings.DEPLOYMENT == 'DEBUG':
                         print(f"[Bot] No legal moves — PASS T{turn_number}")
+                    # Pass: no new cooldown generated; existing cooldowns still tick
+                    global_cooldown_name = None
                     game_state         = STATE_HUMAN_TURN
                     current_player_idx = 0
                     turn_number       += 1
@@ -1517,6 +1523,9 @@ async def main():
                             to_zone='war' if new_stance == 'enemy' else
                                     'ally' if new_stance == 'ally' else 'home')
                         _apply_diplomacy_move(grid, dipl_panel, dipl_action, nation_list)
+                        # Diplomacy is a real move — flag nation (nation_a) gets both cooldowns
+                        player2.add_to_cooldown(nation_a)
+                        global_cooldown_name = nation_a.color_name
                         # No flash — immediately transition to post-flash / turn end
                         if settings.DEPLOYMENT == 'DEBUG':
                             print(f"[Bot-dipl] {nation_a.color_name} -> {new_stance} -> {nation_b.color_name}")
