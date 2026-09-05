@@ -242,13 +242,21 @@ def _nearest_enemy_sov_dist(grid, q, r, enemy_name_set) -> int:
     return best
 
 
+# !! SHARED RULES — CRITICAL MAINTENANCE NOTE !!
+# Nation eligibility (who can move this turn) is defined once in rules.py.
+# DO NOT copy or re-implement the eligibility filter here.
+# If the eligibility rule changes (e.g. new cooldown type, new restriction)
+# update rules.get_eligible_nations and the change propagates automatically
+# to both human turns (main.py) and all bot/evolution code paths.
+from rules import get_eligible_nations as _get_eligible_nations, move_consequence
+
 def _eligible_nations(player, global_cooldown_name, nation_list):
-    return [
-        n for n in nation_list
-        if not player.nation_on_cooldown(n)
-        and (global_cooldown_name is None or n.color_name != global_cooldown_name)
-        and not n.is_ghost
-    ]
+    """Backward-compat alias — delegates to rules.get_eligible_nations.
+
+    DO NOT expand this function with extra logic.  All eligibility rules
+    belong in rules.get_eligible_nations so human and bot always agree.
+    """
+    return _get_eligible_nations(player, global_cooldown_name, nation_list)
 
 
 # ---------------------------------------------------------------------------
@@ -937,87 +945,20 @@ def _execute(grid, action, dipl_state=None):
     Execute one scored action tuple  (score, atype, actor, coord[, path]).
     path is 'intent' | 'random' — used for the debug description label.
     Returns (moved_nation, action_type_str, description) or (None, None, reason).
+
+    !! SHARED RULES — CRITICAL MAINTENANCE NOTE !!
+    This function is intentionally a thin wrapper around rules.execute_action.
+    DO NOT add action-type handling logic here.  If you add a new move type,
+    implement it in rules.execute_action so that both the bot (this path) and
+    the human player (main.py) execute it identically.  Putting rules here
+    means the bot and human play different games — exactly the problem
+    Phase 3 was built to prevent.
     """
-    score, atype, *rest = action
-    # Last element may be a path label; everything before it is payload
-    if rest and isinstance(rest[-1], str) and rest[-1] in ('intent', 'random', 'deceptive'):
-        payload, path = rest[:-1], rest[-1]
-        tag = f"[Bot-{path}]"
-    else:
-        payload = rest
-        tag = "[Bot]"
-
-    if atype == 'attack':
-        unit, coord = payload
-        success, msg, _ = grid.resolve_attack(unit, *coord)
-        if success:
-            return unit.nation, 'attack', \
-                f"{tag} Attack {unit.nation.color_name} -> {coord}  score={score:.0f}  {msg}"
-        return None, None, f"{tag} Attack failed: {msg}"
-
-    if atype == 'move':
-        unit, coord = payload
-        grid.apply_move(unit, *coord)
-        return unit.nation, 'move', \
-            f"{tag} Move {unit.nation.color_name} -> {coord}  score={score:.0f}"
-
-    if atype == 'recruit':
-        nation, coord = payload
-        eff_turn = getattr(grid, 'turn_number', None)
-        grid.recruit_army(nation, *coord, turn_number=eff_turn)
-        return nation, 'recruit', f"{tag} Recruit {nation.color_name} at {coord}"
-
-    if atype == 'promote':
-        nation, coord = payload
-        armies_here = [a for a in grid.armies.get(coord, [])
-                       if a.nation.color_name == nation.color_name]
-        if armies_here:
-            grid.promote_to_champion(armies_here[0])
-            return nation, 'promote', f"{tag} Promote {nation.color_name} at {coord}"
-        return None, None, f"{tag} Promote: no army found"
-
-    if atype == 'promote_knight':
-        nation, coord = payload
-        armies_here = [a for a in grid.armies.get(coord, [])
-                       if a.nation.color_name == nation.color_name]
-        if armies_here:
-            grid.promote_to_knight(armies_here[0])
-            return nation, 'promote_knight', f"{tag} Promote Knight {nation.color_name} at {coord}"
-        return None, None, f"{tag} Promote Knight: no army found"
-
-    if atype == 'diplomacy':
-        # payload = (nation_a, nation_b, new_stance[, dipl_state])
-        # dipl_state is optional — headless games pass it; main.py handles locking via panel
-        nation_a, nation_b, new_stance = payload[0], payload[1], payload[2]
-        dipl_state_local = payload[3] if len(payload) > 3 else dipl_state
-        if new_stance == 'ally':
-            nation_a.set_ally(nation_b)
-        elif new_stance == 'enemy':
-            nation_a.set_enemy(nation_b)
-        else:
-            nation_a.set_neutral(nation_b)
-        if dipl_state_local is not None:
-            if new_stance == 'neutral':
-                dipl_state_local.unlock_pair(nation_a, nation_b)
-            else:
-                dipl_state_local.lock_pair(nation_a, nation_b)
-        try:
-            from map import reconcile_stance_change
-            events = reconcile_stance_change(
-                grid, nation_a, nation_b, new_stance,
-                list(getattr(grid, 'nations', NATIONS_BY_NAME.values())))
-            for ev in events:
-                if settings.DEPLOYMENT == 'DEBUG':
-                    print(f"[Bot-diplomacy] {ev}")
-        except (ImportError, AttributeError):
-            pass
-        return nation_a, 'diplomacy', \
-            f"{tag} Diplomacy: {nation_a.color_name} → {new_stance} → {nation_b.color_name}"
-
-    if atype == 'pass':
-        return None, 'pass', f"{tag} Pass (no legal move)."
-
-    return None, None, f"{tag} Unknown action: {atype}"
+    from rules import execute_action as _rules_exec
+    moved_nation, atype_str, desc, _p_cd, _g_cd = _rules_exec(
+        grid, action, dipl_state=dipl_state,
+        turn_number=getattr(grid, 'turn_number', None))
+    return moved_nation, atype_str, desc
 
 
 

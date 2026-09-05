@@ -783,10 +783,16 @@ class HeadlessGame:
                 self.turn_number += 1
                 continue
 
-            # Execute the action
-            moved_nation, action_type, desc = _execute(self.grid, action, dipl_state=self.dipl_state)
+            # !! SHARED RULES — execute via the shared layer, not inline.
+            # If you need to add a new action type or change how consequences
+            # work, do it in rules.execute_action.  This keeps the headless
+            # evolution games and the live human game running identical rules.
+            from rules import execute_action as _rules_exec
+            moved_nation, action_type, desc, p_cd, new_gcd = _rules_exec(
+                self.grid, action, dipl_state=self.dipl_state,
+                turn_number=self.turn_number)
 
-            if moved_nation is None:
+            if moved_nation is None and action_type != 'pass':
                 # Execution failed — skip turn
                 self.dipl_state.tick_cooldowns()
                 current = 1 - current
@@ -796,9 +802,10 @@ class HeadlessGame:
             # Tick diplomacy cooldowns every turn
             self.dipl_state.tick_cooldowns()
 
-            # Update cooldowns
-            bot.player.add_to_cooldown(moved_nation)
-            self.global_cooldown_name = moved_nation.color_name
+            # Apply cooldown consequences from rules layer
+            if p_cd is not None:
+                bot.player.add_to_cooldown(p_cd)
+            self.global_cooldown_name = new_gcd
 
             # Record the move for the opponent's memory
             # Extract unit info from the action for recording

@@ -2481,3 +2481,142 @@ class TestDiplomacyBaseScores(unittest.TestCase):
         self.assertGreater(hi, 200.0, "dipl_base_war upper range should be > 200")
         lo, hi = _GENE_RANGES['dipl_base_ally']
         self.assertGreater(hi, 150.0, "dipl_base_ally upper range should be > 150")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 tests — shared rules layer
+# ---------------------------------------------------------------------------
+
+class TestRulesLayer(unittest.TestCase):
+    """Verify rules.py is the single source of truth and matches all callers."""
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        for n in NATIONS:
+            n.is_ghost = False
+        _init_diplomacy(NATIONS)
+        self.grid = MapGrid()
+        self.grid.generate_map()
+
+    # ── get_eligible_nations parity ─────────────────────────────────────────
+
+    def test_eligible_nations_parity_with_bot(self):
+        """rules.get_eligible_nations and bot._eligible_nations return same set."""
+        from rules import get_eligible_nations
+        from bot import _eligible_nations
+        from player import Player
+
+        player = Player(is_bot=True)
+        player.add_to_cooldown(NATIONS[0])   # put one nation on personal cooldown
+        global_cd = NATIONS[1].color_name    # put another on global cooldown
+
+        rules_result  = set(n.color_name for n in
+                            get_eligible_nations(player, global_cd, list(NATIONS)))
+        bot_result    = set(n.color_name for n in
+                            _eligible_nations(player, global_cd, list(NATIONS)))
+
+        self.assertEqual(rules_result, bot_result,
+                         "rules.get_eligible_nations must match bot._eligible_nations exactly")
+
+    def test_eligible_excludes_player_cooldown(self):
+        """A nation on player cooldown is excluded."""
+        from rules import get_eligible_nations
+        from player import Player
+        player = Player(is_bot=False)
+        player.add_to_cooldown(NATIONS[0])
+        eligible = get_eligible_nations(player, None, list(NATIONS))
+        self.assertNotIn(NATIONS[0], eligible)
+
+    def test_eligible_excludes_global_cooldown(self):
+        """A nation matching global_cooldown_name is excluded."""
+        from rules import get_eligible_nations
+        from player import Player
+        player = Player(is_bot=False)
+        eligible = get_eligible_nations(player, NATIONS[2].color_name, list(NATIONS))
+        names = [n.color_name for n in eligible]
+        self.assertNotIn(NATIONS[2].color_name, names)
+
+    def test_eligible_excludes_ghost_nations(self):
+        """Ghost nations are always excluded."""
+        from rules import get_eligible_nations
+        from player import Player
+        player = Player(is_bot=False)
+        NATIONS[3].is_ghost = True
+        try:
+            eligible = get_eligible_nations(player, None, list(NATIONS))
+            names = [n.color_name for n in eligible]
+            self.assertNotIn(NATIONS[3].color_name, names)
+        finally:
+            NATIONS[3].is_ghost = False
+
+    # ── move_consequence cooldown rules ─────────────────────────────────────
+
+    def test_pass_generates_no_cooldown(self):
+        """PASS returns (None, None) — no player or global cooldown."""
+        from rules import move_consequence
+        p_cd, g_cd = move_consequence('pass', None)
+        self.assertIsNone(p_cd)
+        self.assertIsNone(g_cd)
+
+    def test_pass_with_nation_still_no_cooldown(self):
+        """Even if a nation is passed in, PASS never generates a cooldown."""
+        from rules import move_consequence
+        p_cd, g_cd = move_consequence('pass', NATIONS[0])
+        self.assertIsNone(p_cd)
+        self.assertIsNone(g_cd)
+
+    def test_move_generates_cooldown(self):
+        """A 'move' action returns the moved nation as both cooldowns."""
+        from rules import move_consequence
+        nation = NATIONS[0]
+        p_cd, g_cd = move_consequence('move', nation)
+        self.assertIs(p_cd, nation)
+        self.assertEqual(g_cd, nation.color_name)
+
+    def test_diplomacy_generates_cooldown_for_flag_nation(self):
+        """Diplomacy sets cooldown for the flag nation (nation_a)."""
+        from rules import move_consequence
+        flag = NATIONS[0]
+        p_cd, g_cd = move_consequence('diplomacy', flag)
+        self.assertIs(p_cd, flag)
+        self.assertEqual(g_cd, flag.color_name)
+
+    def test_all_non_pass_types_generate_cooldown(self):
+        """Every non-pass action type returns nation + color_name cooldown."""
+        from rules import move_consequence
+        nation = NATIONS[1]
+        for atype in ('move', 'attack', 'recruit', 'promote', 'promote_knight', 'diplomacy'):
+            with self.subTest(atype=atype):
+                p_cd, g_cd = move_consequence(atype, nation)
+                self.assertIs(p_cd, nation, f"{atype} should set player cooldown")
+                self.assertEqual(g_cd, nation.color_name,
+                                 f"{atype} should set global cooldown")
+
+    # ── execute_action integration ──────────────────────────────────────────
+
+    def test_execute_action_pass(self):
+        """execute_action for 'pass' returns None nation and no cooldowns."""
+        from rules import execute_action
+        action = (0.0, 'pass')
+        moved, atype, desc, p_cd, g_cd = execute_action(self.grid, action)
+        self.assertIsNone(moved)
+        self.assertEqual(atype, 'pass')
+        self.assertIsNone(p_cd)
+        self.assertIsNone(g_cd)
+
+    def test_execute_action_recruit_returns_cooldown(self):
+        """execute_action for 'recruit' returns the nation as cooldown."""
+        from rules import execute_action
+        # Find a valid recruit hex
+        nation = NATIONS[0]
+        hexes = list(self.grid.get_recruit_hexes(nation, turn_number=0))
+        if not hexes:
+            self.skipTest("No recruit hexes available for this map seed")
+        coord = hexes[0]
+        action = (50.0, 'recruit', nation, coord)
+        moved, atype, desc, p_cd, g_cd = execute_action(
+            self.grid, action, turn_number=0)
+        self.assertIs(moved, nation)
+        self.assertEqual(atype, 'recruit')
+        self.assertIs(p_cd, nation)
+        self.assertEqual(g_cd, nation.color_name)

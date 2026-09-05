@@ -132,14 +132,15 @@ UNIT_SPACING = 47
 # Game state helpers
 # ---------------------------------------------------------------------------
 
-def get_eligible_nations(player, global_cooldown_name, all_nations):
-    """Nations the current player is allowed to move this turn."""
-    return [
-        n for n in all_nations
-        if not player.nation_on_cooldown(n)
-        and (global_cooldown_name is None or n.color_name != global_cooldown_name)
-        and not n.is_ghost
-    ]
+# !! SHARED RULES — CRITICAL MAINTENANCE NOTE !!
+# All move legality and action consequence logic lives in rules.py.
+# DO NOT re-implement eligibility checks or cooldown assignments here.
+# If you add a new move type or change a rule, change rules.py ONLY.
+# Both this file (human player) and bot.py / evolution.py (AI players)
+# import from rules.py so that every code path always plays the same game.
+# A rule implemented twice WILL diverge — that is how the diplomacy
+# cooldown bug was introduced in the first place.
+from rules import get_eligible_nations, move_consequence, execute_action as rules_execute_action
 
 
 def get_unit_at_screen(grid, mx, my):
