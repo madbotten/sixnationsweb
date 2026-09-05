@@ -1042,18 +1042,6 @@ class MapGrid:
             else:
                 self.tile_control[coord] = None  # empty or contested → unclaimed
 
-    def check_win_condition(self, player, all_nations) -> bool:
-        """
-        Player wins if 2 of their 3 enemy nations are ghost nations
-        (sovereigns destroyed).
-        """
-        enemies       = player.secret_nation.enemy_nations(all_nations)
-        ghost_enemies = [e for e in enemies if e.is_ghost]
-        return len(ghost_enemies) >= 2
-
-    def check_loss_condition(self, player) -> bool:
-        """Player loses immediately if their own secret nation becomes a ghost."""
-        return player.secret_nation.is_ghost
 
     def count_ghost_nations(self, all_nations) -> int:
         """Return the number of nations whose sovereign has been destroyed."""

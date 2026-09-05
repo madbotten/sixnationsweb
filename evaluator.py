@@ -1,7 +1,7 @@
 """
 Six Nations — Positional Board Evaluator
 
-Scores a board position from the perspective of a given secret nation.
+Scores a board position from the perspective of a player's goals (BotGoals).
 Higher values = better position for that player.
 
 Used by the multi-ply lookahead in bot.py (mode='position') to evaluate
@@ -80,13 +80,13 @@ def _derive_ghost_set(grid):
     return all_names - surviving
 
 
-def evaluate_position(grid, secret_nation, nation_list, weights=None,
-                      ghost_name_set=None, bot_goals=None):
-    """Score the board position from the perspective of secret_nation.
+def evaluate_position(grid, bot_goals=None, nation_list=None, weights=None,
+                      ghost_name_set=None):
+    """Score the board position from the perspective of bot_goals.
 
     Parameters:
         grid: MapGrid instance (or snapshot).
-        secret_nation: the Nation object of the evaluating player.
+        bot_goals: optional BotGoals instance with prevail_goals and defeat_goals.
         nation_list: list of all 6 Nation objects.
         weights: optional dict of weight overrides. Missing keys fall back
                  to DEFAULT_EVAL_WEIGHTS.
@@ -94,11 +94,9 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
                  (sovereign already dead). When provided, overrides n.is_ghost
                  on the Nation singletons. Use this in lookahead snapshots where
                  Nation.is_ghost hasn't been updated.
-        bot_goals: optional BotGoals instance. When provided, prevail_goals
-                 are treated as allies and defeat_goals as enemies.
 
     Returns:
-        float score — higher is better for the secret_nation player.
+        float score — higher is better for the evaluating player.
     """
     # Build effective weights: defaults + overrides
     w = dict(DEFAULT_EVAL_WEIGHTS)
@@ -108,13 +106,15 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
     score = 0.0
 
     if bot_goals is not None:
-        prevail_set = set(bot_goals.prevail_goals) | {secret_nation.color_name}
-        defeat_set  = set(bot_goals.defeat_goals) | {n.color_name for n in secret_nation.enemy_nations(nation_list)}
-        allied_nations = [n for n in nation_list if n.color_name in prevail_set]
-        enemy_nations  = [n for n in nation_list if n.color_name in defeat_set]
+        prevail_set = set(bot_goals.prevail_goals)
+        defeat_set  = set(bot_goals.defeat_goals)
+        allied_nations = [n for n in (nation_list or []) if n.color_name in prevail_set]
+        enemy_nations  = [n for n in (nation_list or []) if n.color_name in defeat_set]
     else:
-        enemy_nations = secret_nation.enemy_nations(nation_list)
-        allied_nations = [n for n in nation_list if not secret_nation.is_enemy(n)]
+        enemy_nations  = []
+        allied_nations = []
+        prevail_set    = set()
+        defeat_set     = set()
 
     enemy_name_set = {n.color_name for n in enemy_nations}
     allied_name_set = {n.color_name for n in allied_nations}
@@ -127,16 +127,20 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
     # -----------------------------------------------------------------------
     # 1. Win / loss progress  (ghost nations = sovereigns already killed)
     # -----------------------------------------------------------------------
-    for n in enemy_nations:
-        if _is_ghost(n):
-            score += w['ghost_enemy']
+    if bot_goals is not None:
+        # Score defeat targets: killing them gains points, weighted by priority
+        for idx, d_name in enumerate(bot_goals.defeat_goals):
+            d_mult = (3.0, 2.0, 1.0)[idx] if idx < 3 else 1.0
+            dn = next((n for n in (nation_list or []) if n.color_name == d_name), None)
+            if dn and _is_ghost(dn):
+                score += w['ghost_enemy'] * (d_mult / 2.0)
 
-    if _is_ghost(secret_nation):
-        return w['own_sov_dead']  # game over, nothing else matters
-
-    for n in allied_nations:
-        if n is not secret_nation and _is_ghost(n):
-            score += w['ally_sov_dead']
+        # Score prevail targets: protecting them avoids penalty
+        for idx, p_name in enumerate(bot_goals.prevail_goals):
+            p_mult = (3.0, 2.0, 1.0)[idx] if idx < 3 else 1.0
+            pn = next((n for n in (nation_list or []) if n.color_name == p_name), None)
+            if pn and _is_ghost(pn):
+                score += (-w['ghost_enemy']) * (p_mult / 2.0)
 
     # -----------------------------------------------------------------------
     # 2. Sovereign vulnerability
@@ -150,15 +154,15 @@ def evaluate_position(grid, secret_nation, nation_list, weights=None,
                 supported = grid.is_supported(sov)
                 if not supported:
                     score += w['enemy_killable']
-                elif grid.is_trapped(sov):
+                elif hasattr(grid, 'is_trapped') and grid.is_trapped(sov):
                     score += w['enemy_trapped']
 
-            elif ri == secret_nation.color_name:
-                # Own sovereign safety
+            elif ri in allied_name_set:
+                # Friendly sovereign safety
                 supported = grid.is_supported(sov)
                 if not supported:
                     score += w['own_sov_killable']
-                elif grid.is_trapped(sov):
+                elif hasattr(grid, 'is_trapped') and grid.is_trapped(sov):
                     score += w['own_sov_trapped']
 
     # -----------------------------------------------------------------------

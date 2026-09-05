@@ -58,20 +58,19 @@ class BotGoals:
     defeat_goals:  list = field(default_factory=list)
 
     @staticmethod
-    def random_for(secret_nation, all_nations):
+    def random(all_nations):
         """Assign 3 random prevail + 3 random defeat goals across all 6 nations.
 
         Rules:
-        - Prevail goals include the secret_nation + 2 other nations.
-        - Defeat goals include the remaining 3 nations.
+        - Prevail goals: 3 random nations (ranked slots: 3, 2, 1 pts).
+        - Defeat goals: the remaining 3 nations (ranked slots: 3, 2, 1 pts).
         - The two lists do not overlap and cover all 6 nations.
         """
-        others = [n.color_name for n in all_nations
-                  if n.color_name != secret_nation.color_name]
-        random.shuffle(others)
-        prevail = [secret_nation.color_name] + others[:2]
-        defeat  = others[2:5]
-        return BotGoals(prevail_goals=prevail, defeat_goals=defeat)
+        all_names = [n.color_name if hasattr(n, 'color_name') else n for n in all_nations]
+        shuffled = list(all_names)
+        random.shuffle(shuffled)
+        return BotGoals(prevail_goals=shuffled[:3], defeat_goals=shuffled[3:])
+
 
 
 # ---------------------------------------------------------------------------
@@ -450,16 +449,12 @@ class EvolvableBot:
     matching the same pattern as bot.py's compute_bot_action / execute_bot_action.
     """
 
-    def __init__(self, secret_nation, config: BotConfig, player_id='bot'):
-        self.player = Player(secret_nation, is_bot=True, player_id=player_id)
+    def __init__(self, config: BotConfig = None, player_id='bot'):
+        self.player = Player(is_bot=True, player_id=player_id)
         self.config = config
         self.memory = BotMemory(debug=False)
-        self._weights = config.to_weights_dict()
-        self._eval_weights = config.to_evaluator_weights()
-
-    @property
-    def secret_nation(self):
-        return self.player.secret_nation
+        self._weights = config.to_weights_dict() if config else {}
+        self._eval_weights = config.to_evaluator_weights() if config else {}
 
     def record_opponent_move(self, turn_number, nation, unit_type_str,
                              from_hex, to_hex, action_type, nation_names=None):
@@ -469,22 +464,19 @@ class EvolvableBot:
         # Simple suspicion: add points for moving a nation
         self.memory.add_score(nation.color_name, 3, nation_names)
 
-    def guess_opponent_faction(self, nation_list):
-        """Return the suspected color_name of the opponent's secret nation (top-1 guess)."""
-        exclude = {self.player.secret_nation.color_name}
-        guess = self.memory.guess_faction(nation_list, exclude_names=exclude)
+    def guess_opponent_faction(self, nation_list, exclude_names=()):
+        """Return the suspected color_name of the opponent's top prevail nation (top-1 guess)."""
+        guess = self.memory.guess_faction(nation_list, exclude_names=set(exclude_names))
         return guess.color_name if guess else None
 
-    def guess_top3_opponents(self, nation_list):
-        """Return list of up to 3 color_name strings (ranked guesses) for the opponent."""
-        exclude = {self.player.secret_nation.color_name}
-        top3 = self.memory.guess_top3_factions(nation_list, exclude_names=exclude)
+    def guess_top3_opponents(self, nation_list, exclude_names=()):
+        """Return list of up to 3 color_name strings (ranked prevail guesses) for the opponent."""
+        top3 = self.memory.guess_top3_factions(nation_list, exclude_names=set(exclude_names))
         return [n.color_name for n, _ in top3]
 
-    def guess_bottom3_opponents(self, nation_list):
+    def guess_bottom3_opponents(self, nation_list, exclude_names=()):
         """Return list of up to 3 color_name strings (inferred opponent defeat targets)."""
-        exclude = {self.player.secret_nation.color_name}
-        bottom3 = self.memory.guess_bottom3_factions(nation_list, exclude_names=exclude)
+        bottom3 = self.memory.guess_bottom3_factions(nation_list, exclude_names=set(exclude_names))
         return [n.color_name for n, _ in bottom3]
 
     def compute_action(self, grid, global_cooldown_name, nation_list, turn_number,
@@ -498,8 +490,9 @@ class EvolvableBot:
         top3_names    = None
         bottom3_names = None
         if turn_number >= self.config.adaptive_turn:
-            top3_names    = self.guess_top3_opponents(nation_list)
-            bottom3_names = self.guess_bottom3_opponents(nation_list)
+            exclude = set(bot_goals.prevail_goals) if bot_goals else set()
+            top3_names    = self.guess_top3_opponents(nation_list, exclude_names=exclude)
+            bottom3_names = self.guess_bottom3_opponents(nation_list, exclude_names=exclude)
             suspected_ri  = top3_names[0] if top3_names else None
 
         # Decide move type: intent, random, or deceptive
@@ -591,10 +584,9 @@ class EvolvableBot:
                 return (*best_dipl, 'intent')
             if self.config.hybrid_ratio > 0.0 and self.config.lookahead_mode == 'position':
                 from evaluator import evaluate_position, _derive_ghost_set
-                root_pos = evaluate_position(grid, self.player.secret_nation, nation_list,
+                root_pos = evaluate_position(grid, bot_goals=bot_goals, nation_list=nation_list,
                                              weights=self._eval_weights,
-                                             ghost_name_set=_derive_ghost_set(grid),
-                                             bot_goals=bot_goals)
+                                             ghost_name_set=_derive_ghost_set(grid))
                 dipl_eff_score = (1.0 - self.config.hybrid_ratio) * best_dipl[0] + self.config.hybrid_ratio * root_pos
             else:
                 dipl_eff_score = best_dipl[0]
@@ -612,11 +604,12 @@ class EvolvableBot:
         if not eligible:
             return None
 
-        bot_ri = self.player.secret_nation.color_name
         if bot_goals is not None:
-            allied_name_set = set(bot_goals.prevail_goals) | {bot_ri}
+            allied_name_set = set(bot_goals.prevail_goals)
+        elif getattr(self.player, 'prevail_picks', None):
+            allied_name_set = {n.color_name for n in self.player.prevail_picks}
         else:
-            allied_name_set = {n.color_name for n in nation_list if not self.player.secret_nation.is_enemy(n)}
+            allied_name_set = set()
 
         pool = []
         for nation in eligible:
@@ -639,7 +632,7 @@ class EvolvableBot:
 
         # Apply adaptive adjustments even to random pool
         pool = _adaptive_sovereign_adjustments(
-            grid, pool, bot_ri, suspected_ri, turn,
+            grid, pool, turn_number=turn,
             nation_list=nation_list, bot_goals=bot_goals)
         valid = [a for a in pool if a[0] > -1000]
         if valid:
@@ -649,36 +642,31 @@ class EvolvableBot:
         return (*chosen, 'random')
 
     def _compute_deceptive(self, grid, gci, nation_list, turn, suspected_ri, bot_goals=None):
-        """Deceptive move: temporarily pretend to have a different secret nation.
+        """Deceptive move: temporarily pretend to have different goals.
 
-        Uses intent scoring but with a fake secret nation, so the move
-        *looks* like the bot is fighting for a different faction.
+        Uses intent scoring with randomized fake goals so the move
+        looks like the bot is fighting for a different set of nations.
         """
-        real_nation = self.player.secret_nation
-
-        # Pick a random different nation as the fake
-        candidates = [n for n in nation_list
-                      if n.color_name != real_nation.color_name
-                      and not n.is_ghost]
-        if not candidates:
-            # Fall back to intent if no valid fake nation
+        if bot_goals is not None:
+            fake_goals = BotGoals.random(nation_list)
+            actions = _gather_actions(grid, self.player, gci, nation_list,
+                                      suspected_human_ri=suspected_ri,
+                                      turn_number=turn,
+                                      weights=self.config.to_weights_dict(),
+                                      bot_goals=fake_goals)
+            if not actions:
+                return None
+            valid = [a for a in actions if a[0] > -1000]
+            if valid:
+                actions = valid
+            best = max(a[0] for a in actions)
+            threshold = (best * 0.85) if best > 0 else (best - 50)
+            top_tier = [a for a in actions if a[0] >= threshold]
+            chosen = random.choice(top_tier)
+            return (*chosen, 'deceptive')
+        else:
             return self._compute_intent(grid, gci, nation_list, turn, suspected_ri,
                                         bot_goals=bot_goals)
-
-        fake_nation = random.choice(candidates)
-
-        # Temporarily swap
-        self.player.secret_nation = fake_nation
-        fake_weights = self.config.to_weights_dict()
-
-        actions = _gather_actions(grid, self.player, gci, nation_list,
-                                  suspected_human_ri=suspected_ri,
-                                  turn_number=turn,
-                                  weights=fake_weights,
-                                  bot_goals=bot_goals)
-
-        # Restore real nation
-        self.player.secret_nation = real_nation
 
         if not actions:
             return None
@@ -722,16 +710,12 @@ class HeadlessGame:
         # Fresh independent nations for this game
         self.nations = create_nations()
 
-        # Assign random secret nations (must be different)
-        n1 = random.choice(self.nations)
-        n2 = random.choice([n for n in self.nations if n.color_name != n1.color_name])
+        # Assign random goals for each bot across all 6 nations
+        self.bot1_goals = BotGoals.random(self.nations)
+        self.bot2_goals = BotGoals.random(self.nations)
 
-        self.bot1 = EvolvableBot(n1, config1, player_id='bot1')
-        self.bot2 = EvolvableBot(n2, config2, player_id='bot2')
-
-        # Assign random goals for each bot (parallel to human prevail/defeat picks)
-        self.bot1_goals = BotGoals.random_for(n1, self.nations)
-        self.bot2_goals = BotGoals.random_for(n2, self.nations)
+        self.bot1 = EvolvableBot(config1, player_id='bot1')
+        self.bot2 = EvolvableBot(config2, player_id='bot2')
 
         # Wire goals into player prediction slots so compute_score() works.
         # BotGoals stores color_name strings; player picks need Nation objects.
@@ -851,13 +835,14 @@ class HeadlessGame:
         return RESULT_DRAW
 
     def _record_guess_accuracy(self):
-        """Check each bot's guess of the opponent's secret nation."""
-        for guesser, opponent in [(self.bot1, self.bot2),
-                                   (self.bot2, self.bot1)]:
-            guess_ri = guesser.guess_opponent_faction(self.nations)
+        """Check each bot's guess of the opponent's prevail nations."""
+        for guesser, opp_goals in [(self.bot1, self.bot2_goals),
+                                   (self.bot2, self.bot1_goals)]:
+            my_goals = self.bot1_goals if guesser is self.bot1 else self.bot2_goals
+            guess_ri = guesser.guess_opponent_faction(self.nations, exclude_names=my_goals.prevail_goals)
             if guess_ri is not None:
                 self.guess_total += 1
-                if guess_ri == opponent.secret_nation.color_name:
+                if guess_ri in opp_goals.prevail_goals:
                     self.guess_correct += 1
 
 

@@ -211,8 +211,8 @@ def draw_top_bar(screen, font_large, font_small, active_player,
                      (0, settings.TOP_BAR_HEIGHT - 1),
                      (settings.SCREEN_WIDTH, settings.TOP_BAR_HEIGHT - 1), 1)
 
-    # Left accent: thin nation-colour stripe so the bar isn't empty
-    nc = active_player.secret_nation.color_rgb
+    # Left accent: thin accent stripe so the bar isn't empty
+    nc = settings.COLOR_PANEL_BORDER
     pygame.draw.rect(screen, nc, (0, 0, 4, settings.TOP_BAR_HEIGHT))
 
     if game_state == STATE_GAME_OVER:
@@ -269,12 +269,9 @@ def draw_predictions_panel(screen, font_small, player):
 
     cy = y + PADDING
 
-    # Header row: "GOALS" label + secret-nation colour dot
-    nc  = player.secret_nation.color_rgb
+    # Header row: "GOALS" label
     hdr = font_small.render("SECRET GOALS", True, settings.COLOR_TEXT_MUTED)
     screen.blit(hdr, (x + PADDING, cy))
-    pygame.draw.circle(screen, nc,
-                       (x + PANEL_W - PADDING - 7, cy + hdr.get_height() // 2), 6)
     cy += HDR_H + 6
 
     # Thin divider
@@ -413,14 +410,12 @@ def draw_score_screen(screen, player1, player2, nation_list):
     y = 128
 
     for rank_i, (label, player, score) in enumerate(entries):
-        nc = player.secret_nation.color_rgb
-
         # -- Player header row ------------------------------------------------
         rank_surf  = fnt_rank.render(f"#{rank_i + 1}", True, (190, 206, 255))
         screen.blit(rank_surf, (ROW_X, y))
 
-        full_label = f"{label}  |  secret: {player.secret_nation.color_name}"
-        name_surf  = fnt_name.render(full_label, True, nc)
+        full_label = f"{label}"
+        name_surf  = fnt_name.render(full_label, True, (210, 222, 255))
         screen.blit(name_surf,
                     name_surf.get_rect(midleft=(ROW_X + 72, y + fnt_rank.get_height() // 2)))
 
@@ -696,13 +691,8 @@ async def main():
     nation_list  = list(NATIONS)
     dipl_panel   = DiplomacyPanel(nation_list)
 
-    # Player objects — created after splash screen selects game_mode.
-    # Initialise with vs_bot defaults so the splash can show the secret nation.
-    p1_nation = random.choice(nation_list)
-    p2_nation = random.choice([n for n in nation_list if n is not p1_nation])
-
-    player1 = Player(secret_nation=p1_nation, is_bot=False, player_id='player1')
-    player2 = Player(secret_nation=p2_nation, is_bot=True,  player_id='player2')
+    player1 = Player(is_bot=False, player_id='player1')
+    player2 = Player(is_bot=True,  player_id='player2')
     players = [player1, player2]
 
     current_player_idx  = 0
@@ -828,10 +818,8 @@ async def main():
                     _rnd.shuffle(nation_list)
                     for _n in nation_list:
                         _n.is_ghost = False
-                    p1_nation = nation_list[0]
-                    p2_nation = nation_list[1]
-                    player1 = Player(secret_nation=p1_nation, is_bot=False, player_id='player1')
-                    player2 = Player(secret_nation=p2_nation, is_bot=True,  player_id='player2')
+                    player1 = Player(is_bot=False, player_id='player1')
+                    player2 = Player(is_bot=True,  player_id='player2')
                     players = [player1, player2]
                     current_player_idx  = 0
                     global_cooldown_name = None
@@ -889,7 +877,8 @@ async def main():
                         game_mode = 'vs_bot'
                         player2.is_bot = True
                         if _HAS_EVOLUTION:
-                            bot_goals = BotGoals.random_for(p2_nation, nation_list)
+                            bot_goals = BotGoals(prevail_goals=[n.color_name for n in player2.prevail_picks],
+                                                 defeat_goals=[n.color_name for n in player2.defeat_picks])
                         game_state     = STATE_HUMAN_TURN
                         game_mode_global = game_mode
                         # Always try to load an evolved config; fall back to basic bot
@@ -1433,13 +1422,14 @@ async def main():
             if bot_think_timer <= 0:
                 # Compute the action (don't execute yet — animate first)
                 # Build top-3 suspicion list for this turn
+                _exclude = tuple(bot_goals.prevail_goals) if bot_goals else ()
                 _top3_pairs = bot_memory.guess_top3_factions(
                     nation_list,
-                    exclude_names=(p2_nation.color_name,))
+                    exclude_names=_exclude)
                 _top3_names = [n.color_name for n, _ in _top3_pairs]
                 _bottom3_pairs = bot_memory.guess_bottom3_factions(
                     nation_list,
-                    exclude_names=(p2_nation.color_name,))
+                    exclude_names=_exclude)
                 _bottom3_names = [n.color_name for n, _ in _bottom3_pairs]
                 _suspected_name = _top3_names[0] if _top3_names else None
                 bot_pending_action = bot_ai.compute_bot_action(

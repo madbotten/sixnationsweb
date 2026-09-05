@@ -1,6 +1,6 @@
 """
 Player System -- Six Nations
-Represents a human or bot player holding a secret nation assignment.
+Represents a human or bot player with prevail and defeat prediction goals.
 """
 
 
@@ -9,8 +9,8 @@ class Player:
     A player in the game.
 
     Attributes:
-        secret_nation : The Nation this player is secretly rooting for.
         is_bot        : True if AI-controlled.
+        player_id     : 'player1' or 'player2'.
         cooldown      : Color names of the last 2 nations this player moved
                         (most recent first).  A player cannot move a nation
                         that is in their cooldown list.
@@ -20,8 +20,7 @@ class Player:
                         (sovereign destroyed at game end).
     """
 
-    def __init__(self, secret_nation, is_bot: bool = False, player_id: str = 'player1'):
-        self.secret_nation  = secret_nation
+    def __init__(self, is_bot: bool = False, player_id: str = 'player1'):
         self.is_bot         = is_bot
         self.player_id      = player_id    # 'player1' or 'player2'
         self.cooldown: list[str] = []      # at most 2 entries (color_name strings)
@@ -65,9 +64,11 @@ class Player:
     # -----------------------------------------------------------------------
 
     def get_enemies(self, all_nations):
-        """The 3 nations that are enemies of this player's secret nation."""
-        return self.secret_nation.enemy_nations(all_nations)
+        """Enemies based on defeat picks."""
+        if self.defeat_picks:
+            return list(self.defeat_picks)
+        return []
 
     def __repr__(self) -> str:
         kind = "Bot" if self.is_bot else "Human"
-        return f"Player({kind}, secret={self.secret_nation.color_name})"
+        return f"Player({kind}, id={self.player_id})"
