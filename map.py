@@ -467,6 +467,20 @@ class MapGrid:
 
             # Champion: no terrain restriction — all hexes allowed
 
+            # --- Neutral sovereign protection (applies to ALL unit types) ---
+            # No unit may move onto a hex containing the sovereign of a nation
+            # with which the moving unit's nation is Neutral.  Ally sovereigns
+            # are fine (shared stacking).  Enemy sovereigns are already excluded
+            # above by _has_enemy_unit_at (would be an attack, not a move).
+            neutral_sov_present = False
+            for sov in self.sovereigns.get((nq, nr), []):
+                if (sov.nation is not nation
+                        and nation.get_stance(sov.nation) == 'neutral'):
+                    neutral_sov_present = True
+                    break
+            if neutral_sov_present:
+                continue
+
             valid.append((nq, nr))
 
         # Sovereign: destination must already be supported (universal rule).

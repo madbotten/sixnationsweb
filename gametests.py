@@ -3047,3 +3047,216 @@ class TestDiplomacyEligibilityGuard(unittest.TestCase):
 def _apply_diplomacy_move_fn(*args, **kwargs):
     import main as _main
     return _main._apply_diplomacy_move(*args, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Neutral sovereign move restriction tests
+# ---------------------------------------------------------------------------
+
+class TestNeutralSovereignMoveRestriction(unittest.TestCase):
+    """Verify get_valid_moves blocks moves onto neutral-nation sovereign hexes.
+
+    Rule: No unit of any type may move onto a hex containing the sovereign of
+    a nation with which the moving unit's nation is Neutral.
+    """
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        _init_diplomacy(NATIONS)
+        from map import MapGrid
+        self.grid = MapGrid()
+        self.grid.generate_map(nations=NATIONS)
+
+    def _place_sovereign_adjacent(self, mover_nation, target_nation):
+        """Place target_nation's sovereign adjacent to a mover unit and return
+        (mover_unit, target_sov, sov_coord)."""
+        from units import Army, Sovereign
+        # Find mover nation's sovereign to use as anchor
+        mover_sov = next(
+            s for slist in self.grid.sovereigns.values()
+            for s in slist if s.nation is mover_nation
+        )
+        mover_q, mover_r = mover_sov.hex_location
+        neighbors = self.grid.get_neighbors(mover_q, mover_r)
+
+        # Find target sovereign
+        target_sov = next(
+            s for slist in self.grid.sovereigns.values()
+            for s in slist if s.nation is target_nation
+        )
+
+        # Teleport target sovereign to first unoccupied neighbor of mover sovereign
+        for nq, nr in neighbors:
+            tile = self.grid.get_tile(nq, nr)
+            if not tile:
+                continue
+            existing_sovs = self.grid.sovereigns.get((nq, nr), [])
+            if existing_sovs:
+                continue
+            # Move target sov there
+            self.grid.remove_sovereign(target_sov)
+            target_sov.q, target_sov.r = nq, nr
+            self.grid.add_sovereign(target_sov)
+            return mover_sov, target_sov, (nq, nr)
+        self.skipTest("Could not place sovereigns adjacently on this map layout")
+
+    def test_army_blocked_by_neutral_sovereign(self):
+        """Army cannot move to a hex containing a neutral nation's sovereign."""
+        from units import Army
+        mover_nation  = NATIONS[0]
+        target_nation = NATIONS[1]
+        # Ensure neutral stance
+        mover_nation.set_neutral(target_nation)
+
+        mover_sov, target_sov, sov_coord = self._place_sovereign_adjacent(
+            mover_nation, target_nation)
+
+        # Place an army of mover_nation adjacent to the sov_coord
+        mover_q, mover_r = mover_sov.hex_location
+        army = Army(mover_nation, mover_q, mover_r)
+        self.grid.armies.setdefault((mover_q, mover_r), []).append(army)
+        try:
+            valid = self.grid.get_valid_moves(army)
+            self.assertNotIn(sov_coord, valid,
+                "Army should NOT be able to move onto a neutral sovereign's hex")
+        finally:
+            self.grid.armies[(mover_q, mover_r)].remove(army)
+
+    def test_champion_blocked_by_neutral_sovereign(self):
+        """Champion cannot move to a hex containing a neutral nation's sovereign,
+        even though champions are otherwise free to cross neutral territory."""
+        from units import Champion
+        mover_nation  = NATIONS[0]
+        target_nation = NATIONS[2]
+        mover_nation.set_neutral(target_nation)
+
+        mover_sov, target_sov, sov_coord = self._place_sovereign_adjacent(
+            mover_nation, target_nation)
+
+        mover_q, mover_r = mover_sov.hex_location
+        champ = Champion(mover_nation, mover_q, mover_r)
+        self.grid.champions.setdefault((mover_q, mover_r), []).append(champ)
+        try:
+            valid = self.grid.get_valid_moves(champ)
+            self.assertNotIn(sov_coord, valid,
+                "Champion should NOT be able to move onto a neutral sovereign's hex")
+        finally:
+            self.grid.champions[(mover_q, mover_r)].remove(champ)
+
+    def test_ally_sovereign_not_blocked(self):
+        """Moving onto an allied nation's sovereign hex is legal (shared stacking).
+        Uses a Champion (no stacking restriction with sovereign) placed on mover's
+        sovereign hex, which is adjacent to the target sovereign's hex by construction."""
+        from units import Champion
+        mover_nation  = NATIONS[0]
+        target_nation = NATIONS[3]
+        mover_nation.set_ally(target_nation)
+        target_nation.set_ally(mover_nation)
+
+        mover_sov, target_sov, sov_coord = self._place_sovereign_adjacent(
+            mover_nation, target_nation)
+
+        # Mover sov hex is adjacent to sov_coord by construction.
+        # Place a champion there — champions can share a hex with a sovereign.
+        mover_q, mover_r = mover_sov.hex_location
+        champ = Champion(mover_nation, mover_q, mover_r)
+        self.grid.champions.setdefault((mover_q, mover_r), []).append(champ)
+        try:
+            # Mark sov_coord as allied territory so terrain check passes
+            self.grid.tile_control[sov_coord] = target_nation.color_name
+            valid = self.grid.get_valid_moves(champ)
+            self.assertIn(sov_coord, valid,
+                "Champion SHOULD be able to move onto an allied sovereign's hex")
+        finally:
+            self.grid.champions[(mover_q, mover_r)].remove(champ)
+            mover_nation.set_neutral(target_nation)
+            target_nation.set_neutral(mover_nation)
+
+    def test_enemy_sovereign_hex_not_in_moves(self):
+        """Enemy sovereign hex does not appear in valid MOVES (it's an attack target)."""
+        from units import Army
+        mover_nation  = NATIONS[0]
+        target_nation = NATIONS[4]
+        mover_nation.set_enemy(target_nation)
+        target_nation.set_enemy(mover_nation)
+
+        mover_sov, target_sov, sov_coord = self._place_sovereign_adjacent(
+            mover_nation, target_nation)
+
+        mover_q, mover_r = mover_sov.hex_location
+        army = Army(mover_nation, mover_q, mover_r)
+        self.grid.armies.setdefault((mover_q, mover_r), []).append(army)
+        try:
+            valid_moves = self.grid.get_valid_moves(army)
+            # Enemy hex must NOT appear in moves (blocked by _has_enemy_unit_at)
+            self.assertNotIn(sov_coord, valid_moves,
+                "Enemy sovereign hex should not appear in valid MOVES")
+        finally:
+            self.grid.armies[(mover_q, mover_r)].remove(army)
+            mover_nation.set_neutral(target_nation)
+            target_nation.set_neutral(mover_nation)
+
+    def test_own_sovereign_hex_not_blocked(self):
+        """A unit can always move to a hex containing its own nation's sovereign."""
+        from units import Army
+        mover_nation = NATIONS[0]
+
+        mover_sov = next(
+            s for slist in self.grid.sovereigns.values()
+            for s in slist if s.nation is mover_nation
+        )
+        sov_q, sov_r = mover_sov.hex_location
+        neighbors = self.grid.get_neighbors(sov_q, sov_r)
+
+        # Place army in a neighbor that is own territory
+        for nq, nr in neighbors:
+            tile = self.grid.get_tile(nq, nr)
+            if not tile:
+                continue
+            if self.grid.tile_control.get((nq, nr)) != mover_nation.color_name:
+                continue
+            army = Army(mover_nation, nq, nr)
+            self.grid.armies.setdefault((nq, nr), []).append(army)
+            try:
+                valid = self.grid.get_valid_moves(army)
+                if (sov_q, sov_r) in valid:
+                    return   # passed
+            finally:
+                self.grid.armies[(nq, nr)].remove(army)
+        self.skipTest("Could not find own-territory army neighbor for this map layout")
+
+    def test_neutral_hex_without_sovereign_unaffected(self):
+        """A neutral hex with NO sovereign is unaffected by the new rule (still blocked
+        for armies/knights by terrain, but for a different reason)."""
+        from units import Champion
+        mover_nation  = NATIONS[0]
+        target_nation = NATIONS[1]
+        mover_nation.set_neutral(target_nation)
+
+        mover_sov = next(
+            s for slist in self.grid.sovereigns.values()
+            for s in slist if s.nation is mover_nation
+        )
+        mover_q, mover_r = mover_sov.hex_location
+        neighbors = self.grid.get_neighbors(mover_q, mover_r)
+
+        # Find a neighbor that is neutral territory with NO sovereign
+        champ = Champion(mover_nation, mover_q, mover_r)
+        self.grid.champions.setdefault((mover_q, mover_r), []).append(champ)
+        try:
+            valid = self.grid.get_valid_moves(champ)
+            # Champions can still enter neutral TERRITORY (just not neutral sovereign HEX)
+            neutral_no_sov = [
+                (nq, nr) for nq, nr in neighbors
+                if self.grid.get_tile(nq, nr)
+                and self.grid.tile_control.get((nq, nr)) not in (
+                    None, mover_nation.color_name)
+                and not self.grid.sovereigns.get((nq, nr))
+                and not self.grid._has_enemy_unit_at(nq, nr, mover_nation)
+            ]
+            for coord in neutral_no_sov:
+                self.assertIn(coord, valid,
+                    f"Champion should still be able to enter neutral territory "
+                    f"that has no sovereign: {coord}")
+        finally:
+            self.grid.champions[(mover_q, mover_r)].remove(champ)

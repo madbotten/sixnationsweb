@@ -114,6 +114,14 @@ Movement is to an adjacent hex that contains no enemy units. In addition, terrai
      - OWN TERRITORY ONLY: A sovereign can ONLY move into adjacent hexes currently controlled by their own nation. A sovereign can never leave their home borders or enter neutral, allied, or enemy hexes.
      - MANDATORY SUPPORT: A sovereign may ONLY move into a hex that is already occupied by a friendly unit (must be supported upon arrival). A player can never walk a sovereign into an empty or isolated hex.
 
+4. NEUTRAL SOVEREIGN PROTECTION (Universal Rule):
+   - No unit of any type (Army, Knight, Champion, or Sovereign) may move onto a hex that is currently occupied by the sovereign of a nation with which the moving unit's nation is Neutral.
+   - This restriction applies even to Champions, who are otherwise free to enter neutral territory.
+   - To enter a hex containing a neutral sovereign, the moving nation must first declare War or Alliance with that sovereign's nation:
+     - Declaring WAR makes the hex a valid attack target (not a move target).
+     - Declaring ALLIANCE makes the hex a valid move/stack target.
+   - Moving onto a hex containing an allied sovereign is always legal (units of allied nations may share hexes).
+   - Moving onto a hex containing an enemy sovereign is handled by the attack system, not the move system.
 
 DIPLOMACY SYSTEM
 ================
