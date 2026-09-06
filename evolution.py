@@ -936,17 +936,33 @@ class Tournament:
     """Round-robin tournament for a population of BotConfigs."""
 
     def __init__(self, configs: list, games_per_pair: int = 1,
-                 max_turns: int = MAX_TURNS):
-        self.configs = configs
+                 max_turns: int = MAX_TURNS, move_log_path: str = None, gen: int = None):
+        self.configs       = configs
         self.games_per_pair = games_per_pair
-        self.max_turns = max_turns
+        self.max_turns     = max_turns
+        self.move_log_path = move_log_path
+        self.gen           = gen
+        # Running stats accumulated during run() for per-gen diagnostic
+        self._log_move_count   = 0
+        self._log_dipl_count   = 0
+        self._log_pass_count   = 0
+        self._log_score_sum    = 0.0
+        self._log_score_n      = 0
 
     def run(self) -> list:
         """Play all matchups and return configs with updated fitness scores.
 
         Fitness scoring: +3 win, +1 tie, +0 loss/draw.
         Also tracks aggregate guess accuracy across all games.
+
+        If move_log_path is set, move records are appended to that JSONL
+        file incrementally (one JSON object per line), and game summaries
+        to <move_log_path>.summary.jsonl.  Zero overhead otherwise.
         """
+        import json as _json
+        log_moves = bool(self.move_log_path)
+        summary_path = (self.move_log_path + '.summary.jsonl') if log_moves else None
+
         n = len(self.configs)
         # Reset fitness
         for c in self.configs:
@@ -956,6 +972,9 @@ class Tournament:
         self.guess_total   = 0
         self.draws         = 0
         self.total_games   = 0
+        self._log_move_count = self._log_dipl_count = self._log_pass_count = 0
+        self._log_score_sum = 0.0
+        self._log_score_n   = 0
 
         total_matches = n * (n - 1) // 2 * self.games_per_pair
         played = 0
@@ -964,9 +983,11 @@ class Tournament:
             for j in range(i + 1, n):
                 for g in range(self.games_per_pair):
                     seed = random.randint(0, 2**31)
+                    game_id = f"{seed}-{i}v{j}-{g}" + (f"-gen{self.gen}" if self.gen else "")
                     game = HeadlessGame(
                         self.configs[i], self.configs[j],
-                        max_turns=self.max_turns, seed=seed)
+                        max_turns=self.max_turns, seed=seed,
+                        log_moves=log_moves)
                     result = game.play()
 
                     # Accumulate guess stats
@@ -994,6 +1015,30 @@ class Tournament:
                         else:
                             self.configs[i].fitness += 1
                             self.configs[j].fitness += 1
+
+                    # Write move log records incrementally
+                    if log_moves and game.move_log:
+                        with open(self.move_log_path, 'a') as _f:
+                            for rec in game.move_log:
+                                rec['game_id'] = game_id
+                                _f.write(_json.dumps(rec) + '\n')
+                        # Accumulate per-gen diagnostic stats
+                        self._log_move_count += len(game.move_log)
+                        for rec in game.move_log:
+                            if rec['action_type'] == 'diplomacy':
+                                self._log_dipl_count += 1
+                            elif rec['action_type'] == 'pass':
+                                self._log_pass_count += 1
+                            if rec['action_type'] not in ('pass',):
+                                self._log_score_sum += rec['score']
+                                self._log_score_n   += 1
+
+                        if game.game_summary:
+                            with open(summary_path, 'a') as _sf:
+                                summ = dict(game.game_summary)
+                                summ['game_id'] = game_id
+                                summ['gen'] = self.gen
+                                _sf.write(_json.dumps(summ) + '\n')
 
                     played += 1
 
@@ -1149,17 +1194,22 @@ class GeneticAlgorithm:
             if c.lookahead_depth >= 4:
                 c.lookahead_beam = min(3, c.lookahead_beam)
 
-    def evolve(self, progress_callback=None):
+    def evolve(self, progress_callback=None, move_log_path: str = None):
         """Run the full evolution.  Returns the final sorted population.
 
         progress_callback(gen, best_fitness, avg_fitness, best_config)
         is called after each generation if provided.
+
+        move_log_path: if set, every bot move in every game is appended to
+        this JSONL file for later analysis via analyze_moves.py.
         """
         for gen in range(1, self.generations + 1):
             # Run tournament
             tournament = Tournament(self.population,
                                     games_per_pair=self.games_per_pair,
-                                    max_turns=self.max_turns)
+                                    max_turns=self.max_turns,
+                                    move_log_path=move_log_path,
+                                    gen=gen)
             tournament.run()
 
             # Sort by fitness (descending)
@@ -1173,7 +1223,8 @@ class GeneticAlgorithm:
                 top4 = self.population[:4]
                 progress_callback(gen, best_fit, avg_fit, self.population[0],
                                   guess_accuracy=guess_acc, top4=top4,
-                                  decisive_rate=tournament.decisive_rate)
+                                  decisive_rate=tournament.decisive_rate,
+                                  tournament=tournament if move_log_path else None)
 
             # Build next generation
             next_gen = []
@@ -1357,7 +1408,7 @@ def load_top_configs(filepath=DEFAULT_CONFIG_PATH) -> list:
 # ---------------------------------------------------------------------------
 
 def _progress(gen, best_fit, avg_fit, best_config, guess_accuracy=None, top4=None,
-              decisive_rate=None):
+              decisive_rate=None, tournament=None):
     """Print progress and rich human-readable personality explainer for each generation."""
     guess_str    = f"{guess_accuracy*100:.0f}%"  if guess_accuracy  is not None else "n/a"
     decisive_str = f"{decisive_rate*100:.0f}%"   if decisive_rate   is not None else "n/a"
@@ -1372,6 +1423,18 @@ def _progress(gen, best_fit, avg_fit, best_config, guess_accuracy=None, top4=Non
             d = getattr(cfg, 'lookahead_depth', 1)
             parts.append(f"#{i} {d}ply f={cfg.fitness:.1f}")
         print(f"  Leaderboard: {' | '.join(parts)}")
+
+    # Move log diagnostic line (only when --move-log is active)
+    if tournament is not None and tournament._log_move_count > 0:
+        t = tournament
+        dipl_pct  = 100 * t._log_dipl_count  / t._log_move_count
+        pass_pct  = 100 * t._log_pass_count  / t._log_move_count
+        avg_score = t._log_score_sum / t._log_score_n if t._log_score_n else 0
+        print(f"  Move log: {t._log_move_count:,} moves recorded"
+              f" | Diplomacy: {dipl_pct:.0f}%"
+              f" | Pass: {pass_pct:.0f}%"
+              f" | Avg score: {avg_score:.0f}")
+
     print(f"{'='*66}")
 
     configs_to_show = top4 if top4 else [best_config]
@@ -1404,6 +1467,9 @@ def main():
     parser.add_argument('--mode', type=str, default='position',
                         choices=['action', 'position'],
                         help='Lookahead mode (default: position)')
+    parser.add_argument('--move-log', type=str, default=None, metavar='PATH',
+                        help='Record all bot moves to a JSONL file for analysis '
+                             '(default: off). Summaries go to PATH.summary.jsonl.')
     args = parser.parse_args()
 
     print("=" * 66)
@@ -1415,6 +1481,9 @@ def main():
         print(f"  Lookahead override: depth={args.depth}  beam={args.beam}  mode={args.mode}")
     else:
         print(f"  Evolving: Depth (1-3), Beam (1-4), Hybrid Eval (0-100%), Move & Board Weights")
+    if args.move_log:
+        print(f"  Move log: ON  → {args.move_log}")
+        print(f"  Summaries: {args.move_log}.summary.jsonl")
 
     seed_configs = None
     should_resume = not args.freshstart
@@ -1451,7 +1520,7 @@ def main():
     t0 = time.time()
     interrupted = False
     try:
-        final = ga.evolve(progress_callback=_progress)
+        final = ga.evolve(progress_callback=_progress, move_log_path=args.move_log)
     except KeyboardInterrupt:
         interrupted = True
         print("\n\n  !! Interrupted — saving best configs so far...")

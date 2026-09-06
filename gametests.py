@@ -2721,3 +2721,90 @@ class TestHeadlessGameMoveLog(unittest.TestCase):
             self.assertEqual(summary['winner_ply'], 2)  # cfg2 is depth=2
         else:
             self.assertIsNone(summary['winner_ply'])
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 tests — Tournament move log wiring
+# ---------------------------------------------------------------------------
+
+class TestTournamentMoveLog(unittest.TestCase):
+    """Verify Tournament.run() writes JSONL files when move_log_path is set."""
+
+    def _run_tiny_tournament(self, move_log_path=None):
+        from evolution import Tournament, BotConfig
+        cfg1 = BotConfig(lookahead_depth=1)
+        cfg2 = BotConfig(lookahead_depth=2)
+        t = Tournament([cfg1, cfg2], games_per_pair=1, max_turns=20,
+                       move_log_path=move_log_path, gen=1)
+        t.run()
+        return t
+
+    def test_no_log_no_file(self):
+        """Without move_log_path, no extra files are created."""
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_path = os.path.join(tmp, 'moves.jsonl')
+            self._run_tiny_tournament(move_log_path=None)
+            self.assertFalse(os.path.exists(fake_path))
+
+    def test_log_creates_jsonl_file(self):
+        """With move_log_path set, a JSONL file is created with records."""
+        import tempfile, os, json
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'moves.jsonl')
+            self._run_tiny_tournament(move_log_path=path)
+            self.assertTrue(os.path.exists(path), "JSONL file was not created")
+            with open(path) as f:
+                lines = [l.strip() for l in f if l.strip()]
+            self.assertGreater(len(lines), 0, "JSONL file is empty")
+            for i, line in enumerate(lines):
+                obj = json.loads(line)
+                self.assertIn('game_id', obj, f"Line {i} missing game_id")
+                self.assertIn('action_type', obj, f"Line {i} missing action_type")
+
+    def test_summary_file_created(self):
+        """A .summary.jsonl file is created alongside the main JSONL file."""
+        import tempfile, os, json
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'moves.jsonl')
+            self._run_tiny_tournament(move_log_path=path)
+            summary_path = path + '.summary.jsonl'
+            self.assertTrue(os.path.exists(summary_path),
+                            "Summary JSONL file was not created")
+            with open(summary_path) as f:
+                lines = [l.strip() for l in f if l.strip()]
+            self.assertGreater(len(lines), 0)
+            for line in lines:
+                obj = json.loads(line)
+                self.assertIn('gen', obj, "Summary record missing 'gen' field")
+                self.assertEqual(obj['gen'], 1)
+                self.assertIn('result', obj)
+
+    def test_gen_tag_in_game_id(self):
+        """game_id contains 'gen1' when gen=1."""
+        import tempfile, os, json
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'moves.jsonl')
+            self._run_tiny_tournament(move_log_path=path)
+            with open(path) as f:
+                first = json.loads(f.readline())
+            self.assertIn('gen1', first['game_id'],
+                          f"game_id does not contain gen tag: {first['game_id']!r}")
+
+    def test_tournament_stats_accumulated(self):
+        """_log_move_count and related stats are accumulated during run()."""
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'moves.jsonl')
+            t = self._run_tiny_tournament(move_log_path=path)
+            self.assertGreater(t._log_move_count, 0)
+
+    def test_zero_overhead_without_log(self):
+        """move_log is empty on game objects when log_moves=False."""
+        from evolution import HeadlessGame, BotConfig
+        cfg1 = BotConfig(lookahead_depth=1)
+        cfg2 = BotConfig(lookahead_depth=2)
+        game = HeadlessGame(cfg1, cfg2, max_turns=20, seed=99, log_moves=False)
+        game.play()
+        self.assertEqual(game.move_log, [])
+        self.assertEqual(game.game_summary, {})
