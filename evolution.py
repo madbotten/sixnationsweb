@@ -145,10 +145,13 @@ class BotConfig:
     w_dipl_peace:             float = 0.5   # de-escalation / returning to neutral
     top3_spread:              float = 0.5   # decay factor for 2nd/3rd human-guess rank
     # Base scores for diplomatic actions — these scale the intrinsic value of a
-    # war/alliance declaration independently of the w_dipl_* multipliers.
-    # Set high enough that a strategic declaration competes with a good attack.
+    # Base scores for war/alliance declarations (competed against with military move scores)
     dipl_base_war:            float = 300.0  # base score for declaring war
     dipl_base_ally:           float = 250.0  # base score for declaring alliance
+
+    # Diplomacy portfolio saturation targets
+    dipl_war_target:          float = 2.0    # target # of favorable wars (at target → low priority)
+    dipl_ally_target:         float = 2.0    # target # of favorable alliances (at target → low priority)
 
     # --- Architectural Genes (evolved) ---
     lookahead_depth:       int   = 2     # 1 = 1-ply, 2 = 2-ply minimax (3 excluded: odd-ply horizon)
@@ -182,6 +185,8 @@ class BotConfig:
             'top3_spread':              self.top3_spread,
             'dipl_base_war':            self.dipl_base_war,
             'dipl_base_ally':           self.dipl_base_ally,
+            'dipl_war_target':          self.dipl_war_target,
+            'dipl_ally_target':         self.dipl_ally_target,
             # Legacy fallbacks
             'w_diplomacy_war':          self.w_dipl_prevail_vs_defeat,
             'w_diplomacy_ally':         self.w_dipl_prevail_alliance,
@@ -1090,6 +1095,8 @@ _GENE_RANGES = {
     'top3_spread':              (0.0, 1.0),
     'dipl_base_war':            (50.0, 600.0),
     'dipl_base_ally':           (50.0, 500.0),
+    'dipl_war_target':          (1.0, 4.0),   # target # of favorable wars before low priority
+    'dipl_ally_target':         (1.0, 3.0),   # target # of favorable alliances before low priority
      # Architectural genes — depth restricted to {1,2,4}: 3-ply horizon is confirmed harmful
     'lookahead_depth':      (1, 4),   # mutation must use choice([1,2,4]), not uniform int
     'lookahead_beam':       (1, 4),

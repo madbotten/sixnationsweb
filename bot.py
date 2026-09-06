@@ -490,6 +490,70 @@ def _score_move(grid, unit, tq, tr, enemy_name_set, allied_name_set,
 
 
 # ---------------------------------------------------------------------------
+# Diplomacy portfolio helpers
+# ---------------------------------------------------------------------------
+
+def _count_favorable_alliances(nation_list, prevail_goals):
+    """Count active ally stances between live (non-ghost) PREVAIL–PREVAIL pairs.
+
+    Each unique unordered pair is counted once.  Ghost nations are excluded:
+    once a PREVAIL nation is eliminated its alliances no longer matter for
+    the bot's goals.
+    """
+    live_prevail = [n for n in nation_list
+                    if n.color_name in prevail_goals and not n.is_ghost]
+    count = 0
+    for i, a in enumerate(live_prevail):
+        for b in live_prevail[i + 1:]:
+            if a.get_stance(b) == 'ally':
+                count += 1
+    return count
+
+
+def _count_favorable_wars(nation_list, defeat_goals):
+    """Count active enemy stances involving at least one live (non-ghost) DEFEAT nation.
+
+    Covers both DEFEAT–DEFEAT and PREVAIL–DEFEAT wars.  Ghost nations are
+    excluded: once a DEFEAT nation is eliminated that war no longer matters
+    for the bot's goals.
+
+    Each unique unordered pair is counted once.
+    """
+    defeat_set = set(defeat_goals)
+    live = [n for n in nation_list if not n.is_ghost]
+    seen = set()
+    count = 0
+    for i, a in enumerate(live):
+        for b in live[i + 1:]:
+            pair = (min(a.color_name, b.color_name), max(a.color_name, b.color_name))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            if a.get_stance(b) == 'enemy':
+                if a.color_name in defeat_set or b.color_name in defeat_set:
+                    count += 1
+    return count
+
+
+def _dipl_saturation(count, target, low_water=0.05):
+    """Saturation multiplier for diplomacy scoring.
+
+    Returns a value in [low_water, 1.0]:
+      count = 0        → 1.0    (full priority — portfolio empty)
+      count = target   → low_water (near-zero — portfolio full)
+      0 < count < target → linear interpolation
+
+    low_water > 0 so the bot still occasionally adds beyond the target if
+    nothing else is attractive, but the action won't be prioritised.
+    """
+    if count <= 0:
+        return 1.0
+    if count >= target:
+        return low_water
+    return 1.0 - (1.0 - low_water) * (count / target)
+
+
+# ---------------------------------------------------------------------------
 # Action gathering
 # ---------------------------------------------------------------------------
 
@@ -639,25 +703,39 @@ def _gather_actions(grid, bot_player, global_cooldown_name, nation_list,
                              for u in ul if u.nation is nation])
             return territory + armies + champions * 2 + sov * 3
 
+        # Portfolio saturation: value of adding a new war/alliance drops as the
+        # running count of favorable ones rises.  Counts are read from live game
+        # state each turn — no counter to maintain.  Ghost nations are excluded
+        # (a war/alliance with a ghost nation no longer serves the bot's goals).
+        war_target  = max(1.0, _w.get('dipl_war_target',  2.0))
+        ally_target = max(1.0, _w.get('dipl_ally_target', 2.0))
+        n_fav_wars  = _count_favorable_wars(nation_list, bot_goals.defeat_goals)
+        n_fav_allys = _count_favorable_alliances(nation_list, bot_goals.prevail_goals)
+        war_sat  = _dipl_saturation(n_fav_wars,  war_target)
+        ally_sat = _dipl_saturation(n_fav_allys, ally_target)
+
         # Strategy 1: Wars between bot's defeat-goal nations (weaken both)
+        # Saturation-gated: value drops as favorable war count rises.
         for i, da in enumerate(d_nations):
             for db in d_nations[i+1:]:
-                _propose_diplomacy(da, db, 'enemy', b_war, w_def_vs_def)
+                _propose_diplomacy(da, db, 'enemy', b_war * war_sat, w_def_vs_def)
 
         # Strategy 2: Wars between prevail-goal and defeat-goal nations
         # Prevail nation gets bonus when it is measurably stronger than the defeat nation.
+        # Saturation-gated: shares the same war_sat multiplier (both strategies add to n_fav_wars).
         for pn in p_nations:
             for dn in d_nations:
-                base = b_war
+                base = b_war * war_sat
                 if _nation_strength(pn) >= _nation_strength(dn):
-                    base = b_war * 1.2  # +20% tactical edge for dominant prevail attacker
+                    base = base * 1.2  # +20% tactical edge for dominant prevail attacker
                 _propose_diplomacy(pn, dn, 'enemy', base, w_prev_vs_def)
 
         # Strategy 3: Alliances between bot's prevail-goal nations
+        # Saturation-gated: value drops as favorable alliance count rises.
         # (If at war, 2-step machine automatically proposes neutral first to stop the bloodshed)
         for i, pa in enumerate(p_nations):
             for pb in p_nations[i+1:]:
-                _propose_diplomacy(pa, pb, 'ally', b_ally, w_prev_ally)
+                _propose_diplomacy(pa, pb, 'ally', b_ally * ally_sat, w_prev_ally)
 
         # Strategy 4: Wars between suspected opponent prevail nations (disrupt opponent)
         if top3_names:

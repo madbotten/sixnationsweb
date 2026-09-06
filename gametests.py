@@ -3260,3 +3260,159 @@ class TestNeutralSovereignMoveRestriction(unittest.TestCase):
                     f"that has no sovereign: {coord}")
         finally:
             self.grid.champions[(mover_q, mover_r)].remove(champ)
+
+
+class TestDiplomacySaturation(unittest.TestCase):
+    """Verify diplomacy portfolio saturation helpers and their effect on scoring.
+
+    _count_favorable_alliances: counts live PREVAIL-PREVAIL ally pairs.
+    _count_favorable_wars:      counts live wars involving at least one DEFEAT nation.
+    _dipl_saturation:           multiplier that drops from 1.0 to low_water as count rises.
+    """
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        _init_diplomacy(NATIONS)
+        self.prevail = [NATIONS[0].color_name, NATIONS[1].color_name, NATIONS[2].color_name]
+        self.defeat  = [NATIONS[3].color_name, NATIONS[4].color_name, NATIONS[5].color_name]
+        for n in NATIONS:
+            n.is_ghost = False
+
+    def tearDown(self):
+        from factions import _init_diplomacy
+        _init_diplomacy(NATIONS)
+        for n in NATIONS:
+            n.is_ghost = False
+
+    # ── _count_favorable_alliances ────────────────────────────────────────────
+
+    def test_count_favorable_alliances_zero(self):
+        from bot import _count_favorable_alliances
+        self.assertEqual(_count_favorable_alliances(NATIONS, self.prevail), 0)
+
+    def test_count_favorable_alliances_counts_prevail_ally(self):
+        from bot import _count_favorable_alliances
+        NATIONS[0].set_ally(NATIONS[1])
+        self.assertEqual(_count_favorable_alliances(NATIONS, self.prevail), 1)
+
+    def test_count_favorable_alliances_two_pairs(self):
+        from bot import _count_favorable_alliances
+        NATIONS[0].set_ally(NATIONS[1])
+        NATIONS[1].set_ally(NATIONS[2])
+        self.assertEqual(_count_favorable_alliances(NATIONS, self.prevail), 2)
+
+    def test_count_favorable_alliances_ignores_non_prevail_ally(self):
+        """PREVAIL-DEFEAT ally should NOT count as a favorable alliance."""
+        from bot import _count_favorable_alliances
+        NATIONS[0].set_ally(NATIONS[3])
+        self.assertEqual(_count_favorable_alliances(NATIONS, self.prevail), 0)
+
+    def test_count_favorable_alliances_ignores_ghost_prevail(self):
+        """Ghost PREVAIL nations are excluded from the count."""
+        from bot import _count_favorable_alliances
+        NATIONS[0].set_ally(NATIONS[1])
+        NATIONS[1].is_ghost = True
+        self.assertEqual(_count_favorable_alliances(NATIONS, self.prevail), 0)
+
+    # ── _count_favorable_wars ─────────────────────────────────────────────────
+
+    def test_count_favorable_wars_zero(self):
+        from bot import _count_favorable_wars
+        self.assertEqual(_count_favorable_wars(NATIONS, self.defeat), 0)
+
+    def test_count_favorable_wars_defeat_defeat(self):
+        from bot import _count_favorable_wars
+        NATIONS[3].set_enemy(NATIONS[4])
+        self.assertEqual(_count_favorable_wars(NATIONS, self.defeat), 1)
+
+    def test_count_favorable_wars_prevail_defeat(self):
+        from bot import _count_favorable_wars
+        NATIONS[0].set_enemy(NATIONS[3])
+        self.assertEqual(_count_favorable_wars(NATIONS, self.defeat), 1)
+
+    def test_count_favorable_wars_prevail_prevail_not_counted(self):
+        """PREVAIL-PREVAIL war does NOT count (no DEFEAT nation involved)."""
+        from bot import _count_favorable_wars
+        NATIONS[0].set_enemy(NATIONS[1])
+        self.assertEqual(_count_favorable_wars(NATIONS, self.defeat), 0)
+
+    def test_count_favorable_wars_ignores_ghost_defeat(self):
+        """War involving a ghost DEFEAT nation is excluded."""
+        from bot import _count_favorable_wars
+        NATIONS[3].set_enemy(NATIONS[4])
+        NATIONS[3].is_ghost = True
+        self.assertEqual(_count_favorable_wars(NATIONS, self.defeat), 0)
+
+    # ── _dipl_saturation ──────────────────────────────────────────────────────
+
+    def test_saturation_at_zero_count(self):
+        from bot import _dipl_saturation
+        self.assertAlmostEqual(_dipl_saturation(0, target=2), 1.0)
+
+    def test_saturation_at_target_count(self):
+        from bot import _dipl_saturation
+        self.assertAlmostEqual(_dipl_saturation(2, target=2, low_water=0.05), 0.05)
+
+    def test_saturation_strictly_decreasing(self):
+        from bot import _dipl_saturation
+        target = 3
+        values = [_dipl_saturation(c, target=target) for c in range(target + 1)]
+        for i in range(len(values) - 1):
+            self.assertGreater(values[i], values[i + 1])
+
+    def test_saturation_above_target_clamps_to_low_water(self):
+        from bot import _dipl_saturation
+        self.assertAlmostEqual(_dipl_saturation(5, target=2, low_water=0.05), 0.05)
+
+    # ── End-to-end ────────────────────────────────────────────────────────────
+
+    def test_gather_actions_war_score_drops_with_saturation(self):
+        """Diplomacy score for a new war is higher with empty portfolio than full."""
+        from map import MapGrid
+        from factions import _init_diplomacy
+        from player import Player
+        from bot import _gather_actions
+        from evolution import BotGoals
+        from diplomacy_panel import DiplomacyState
+
+        _init_diplomacy(NATIONS)
+        grid = MapGrid()
+        grid.generate_map(nations=NATIONS)
+        dipl_state = DiplomacyState()
+
+        bot_player = Player(is_bot=True)
+        bot_player.cooldown = []
+        bot_goals = BotGoals(prevail_goals=self.prevail, defeat_goals=self.defeat)
+        weights = {
+            'dipl_base_war': 300.0, 'dipl_base_ally': 250.0,
+            'dipl_war_target': 2.0, 'dipl_ally_target': 2.0,
+            'w_dipl_defeat_vs_defeat': 1.0,
+            'w_dipl_prevail_vs_defeat': 1.0,
+            'w_dipl_prevail_alliance': 1.0,
+            'w_dipl_opp_prevail_war': 1.0,
+            'w_dipl_opp_defeat_ally': 1.0,
+            'w_dipl_peace': 0.0, 'top3_spread': 0.5,
+        }
+
+        # Empty portfolio → high war scores
+        actions_empty = _gather_actions(
+            grid, bot_player, None, NATIONS,
+            dipl_state=dipl_state,
+            bot_goals=bot_goals, weights=weights)
+        war_empty = [a for a in actions_empty if a[1] == 'diplomacy' and a[4] == 'enemy']
+        self.assertTrue(len(war_empty) > 0,
+            "Should propose war actions when portfolio is empty")
+        max_score_empty = max(a[0] for a in war_empty)
+
+        # Full portfolio (2 wars = target) → lower war scores
+        NATIONS[3].set_enemy(NATIONS[4])
+        NATIONS[3].set_enemy(NATIONS[5])
+        actions_full = _gather_actions(
+            grid, bot_player, None, NATIONS,
+            dipl_state=dipl_state,
+            bot_goals=bot_goals, weights=weights)
+        war_full = [a for a in actions_full if a[1] == 'diplomacy' and a[4] == 'enemy']
+        if war_full:
+            max_score_full = max(a[0] for a in war_full)
+            self.assertLess(max_score_full, max_score_empty,
+                "War score should drop when portfolio is already at target")
