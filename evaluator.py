@@ -51,7 +51,9 @@ DEFAULT_EVAL_WEIGHTS = {
 
     # Proximity / threat
     'adjacent_enemy_sov': 25.0,   # per allied unit adjacent to enemy sovereign
-    'champion_approach':   5.0,   # per hex closer an allied champion is to enemy sov
+    'champion_approach':   5.0,   # per hex closer a PREVAIL champion is to a DEFEAT sovereign
+    'enemy_champ_threat':  5.0,   # per hex closer a DEFEAT champion is to a PREVAIL sovereign
+                                  # (closer = larger penalty; mirrors champion_approach)
 
     # Territory
     'territory_control':   2.0,   # per net controlled hex (allied vs enemy)
@@ -232,7 +234,7 @@ def evaluate_position(grid, bot_goals=None, nation_list=None, weights=None,
                         if (champ.q, champ.r) in neighbors:
                             score += w['adjacent_enemy_sov']
 
-        # Allied champion approach distance
+        # PREVAIL champion approach: closer to DEFEAT sovereign = better
         for champ_list in grid.champions.values():
             for champ in champ_list:
                 if champ.nation.color_name in allied_name_set:
@@ -242,6 +244,24 @@ def evaluate_position(grid, bot_goals=None, nation_list=None, weights=None,
                     # Closer = better; max hex distance on the board is ~6
                     approach_bonus = max(0, 6 - min_dist) * w['champion_approach']
                     score += approach_bonus
+
+    # DEFEAT champion threat: closer to a PREVAIL sovereign = worse for us
+    prevail_sov_positions = []
+    for sov_list in grid.sovereigns.values():
+        for sov in sov_list:
+            if sov.nation.color_name in allied_name_set:
+                prevail_sov_positions.append((sov.q, sov.r))
+
+    if prevail_sov_positions:
+        for champ_list in grid.champions.values():
+            for champ in champ_list:
+                if champ.nation.color_name in enemy_name_set:
+                    min_dist = min(
+                        _axial_dist(champ.q, champ.r, sq, sr)
+                        for sq, sr in prevail_sov_positions)
+                    # Closer = bigger penalty (mirrors champion_approach logic)
+                    threat_penalty = max(0, 6 - min_dist) * w['enemy_champ_threat']
+                    score -= threat_penalty
 
     # -----------------------------------------------------------------------
     # 5. Territory control
