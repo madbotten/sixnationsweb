@@ -374,8 +374,14 @@ def draw_cooldown_panel(screen, font_small, players, global_cooldown_name):
     _draw_row("Bot:", players[1], y + 64)
 
     if global_cooldown_name is not None:
-        glbl  = font_small.render(f"Global block: {global_cooldown_name}", True, (90, 105, 140))
-        screen.blit(glbl, (x + 12, y + 94))
+        # Show as a labeled color block, consistent with the player cooldown display
+        glbl_lbl = font_small.render("Global:", True, (90, 105, 140))
+        screen.blit(glbl_lbl, (x + 12, y + 94))
+        col = settings.NATION_COLORS.get(global_cooldown_name)
+        if col:
+            bx = x + 70
+            pygame.draw.rect(screen, col, (bx, y + 92, 28, 20), border_radius=3)
+            pygame.draw.rect(screen, (255, 255, 255), (bx, y + 92, 28, 20), 2, border_radius=3)
 
     leg = font_small.render("(white border = global block)", True, (70, 80, 110))
     screen.blit(leg, (x + 12, y + h - 24))
@@ -647,18 +653,43 @@ def check_trigger_game_end(grid, nation_list) -> bool:
     return grid.count_ghost_nations(nation_list) >= 3
 
 
-def _apply_diplomacy_move(grid, panel, action: DiplomacyAction, all_nations):
+def _apply_diplomacy_move(grid, panel, action: DiplomacyAction, all_nations,
+                          player=None, global_cooldown_name=None):
     """
-    Apply a diplomacy move between two nations:
-    - Renew: re-lock only, stance unchanged.
-    - Declare war: set_enemy, lock pair (cooldown), and reconcile.
-    - Declare ally: set_ally, lock pair (cooldown), and reconcile.
-    - End war/ally: set_neutral, unlock pair (NO cooldown), and reconcile.
+    Apply a diplomacy move between two nations.
+
+    Performs a rules-layer eligibility check via rules.get_eligible_nations
+    before mutating any state.  Returns True on success, False if the move
+    is illegal (flag nation on cooldown or ghost).  A False return means the
+    UI sent us an illegal move — the caller should surface an error.
+
+    Move types:
+    - Renew   : re-lock only, stance unchanged.
+    - Declare war  : set_enemy, lock pair (cooldown), and reconcile.
+    - Declare ally : set_ally, lock pair (cooldown), and reconcile.
+    - End war/ally : set_neutral, unlock pair (NO cooldown), and reconcile.
     """
+    # !! CRITICAL MAINTENANCE CONTRACT — rules-layer gate:
+    # The human UI path bypasses rules.execute_action, so we enforce eligibility
+    # here to keep human and bot behaviour identical.  If you change cooldown
+    # semantics in rules.get_eligible_nations, this guard updates automatically.
+    if player is not None:
+        from rules import get_eligible_nations
+        eligible = get_eligible_nations(player, global_cooldown_name, all_nations)
+        eligible_names = {n.color_name for n in eligible}
+        if action.flag_nation.color_name not in eligible_names:
+            # This should never happen if the UI locks correctly — log it loudly.
+            print(f"[RULES VIOLATION] _apply_diplomacy_move rejected illegal diplomacy: "
+                  f"{action.flag_nation.color_name} is on cooldown or ghost "
+                  f"(global_cd={global_cooldown_name!r}, "
+                  f"player_cd={list(getattr(player, 'cooldown', []))})"
+                  f" — move was NOT applied.")
+            return False
+
     box, flag = action.box_nation, action.flag_nation
     if action.from_zone == action.to_zone:       # renew: same zone, re-lock only
         panel.lock_pair(flag, box)
-        return
+        return True
     elif action.to_zone == 'war':
         flag.set_enemy(box)
         panel.lock_pair(flag, box)
@@ -678,6 +709,7 @@ def _apply_diplomacy_move(grid, panel, action: DiplomacyAction, all_nations):
             print(f"[Diplomacy Reconciliation] {ev}")
     except (ImportError, AttributeError):
         pass
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1016,9 +1048,14 @@ async def main():
                         turn_number += 1
                     continue
 
-                # Check if diplomacy panel consumed the click
+                # Check if diplomacy panel consumed the click.
+                # Pass the full set of nations the active player cannot act on:
+                # global cooldown + personal player cooldowns.
+                _locked = set(active_player.cooldown)
+                if global_cooldown_name:
+                    _locked.add(global_cooldown_name)
                 if dipl_panel.on_mousedown(event.pos,
-                                           move_cooldown_name=global_cooldown_name):
+                                           locked_nation_names=_locked):
                     action_pending = pending_nation = None
                     highlight_muster = highlight_promo = set()
                     continue
@@ -1166,13 +1203,25 @@ async def main():
             # ---- Human diplomacy drop --------------------------------------
             elif (event.type == pygame.MOUSEBUTTONUP and event.button == 1
                   and game_state == STATE_HUMAN_TURN and dipl_panel.drag):
-                action = dipl_panel.on_mouseup(event.pos)
+                _locked_up = set(active_player.cooldown)
+                if global_cooldown_name:
+                    _locked_up.add(global_cooldown_name)
+                action = dipl_panel.on_mouseup(event.pos, locked_nation_names=_locked_up)
                 if action:
-                    _apply_diplomacy_move(grid, dipl_panel, action, nation_list)
-                    # Diplomacy is a real move — flag nation gets both cooldowns
-                    active_player.add_to_cooldown(action.flag_nation)
-                    global_cooldown_name = action.flag_nation.color_name
-                    dipl_panel.tick_cooldowns()
+                    ok = _apply_diplomacy_move(
+                        grid, dipl_panel, action, nation_list,
+                        player=active_player,
+                        global_cooldown_name=global_cooldown_name)
+                    if not ok:
+                        # Rules layer caught an illegal move the UI let through —
+                        # flash a visible warning so the player (and developer) notice.
+                        error_message = "[BUG] Illegal diplomacy move blocked by rules layer!"
+                        error_alpha   = 255.0
+                    else:
+                        # Diplomacy is a real move — flag nation gets both cooldowns
+                        active_player.add_to_cooldown(action.flag_nation)
+                        global_cooldown_name = action.flag_nation.color_name
+                        dipl_panel.tick_cooldowns()
                     # Let the bot observe what the human did diplomatically
                     if game_mode == 'vs_bot':
                         _new_stance = ('ally'    if action.to_zone == 'ally'
@@ -1523,7 +1572,10 @@ async def main():
                             from_zone='home',   # bot-generated; reconcile handles effects
                             to_zone='war' if new_stance == 'enemy' else
                                     'ally' if new_stance == 'ally' else 'home')
-                        _apply_diplomacy_move(grid, dipl_panel, dipl_action, nation_list)
+                        _apply_diplomacy_move(
+                            grid, dipl_panel, dipl_action, nation_list,
+                            player=player2,
+                            global_cooldown_name=global_cooldown_name)
                         # Diplomacy is a real move — flag nation (nation_a) gets both cooldowns
                         player2.add_to_cooldown(nation_a)
                         global_cooldown_name = nation_a.color_name
@@ -1659,9 +1711,13 @@ async def main():
                                  drag_recruit_nation=drag_recruit_nation,
                                  drag_promote_nation=drag_promote_nation)
 
-            # Draw Diplomacy Panel on right sidebar
+            # Draw Diplomacy Panel on right sidebar.
+            # Pass the full ineligible set: global cooldown + active player cooldowns.
+            _dipl_locked = set(active_player.cooldown)
+            if global_cooldown_name:
+                _dipl_locked.add(global_cooldown_name)
             dipl_panel.draw(screen, splash_fonts,
-                            move_cooldown_name=global_cooldown_name)
+                            locked_nation_names=_dipl_locked)
 
             current_player = players[current_player_idx]
             # In vs_bot, always show the human's secret nation (player1)

@@ -2808,3 +2808,242 @@ class TestTournamentMoveLog(unittest.TestCase):
         game.play()
         self.assertEqual(game.move_log, [])
         self.assertEqual(game.game_summary, {})
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 tests — analyze_moves.py
+# ---------------------------------------------------------------------------
+
+class TestAnalyzeMoves(unittest.TestCase):
+    """Verify analyze_moves.py runs correctly on synthetic JSONL fixtures."""
+
+    MOVE_RECORDS = [
+        # bot1 (1-ply) — intent attack, wins
+        {'turn':1,'bot_idx':0,'ply_depth':1,'beam':3,'hybrid':0.5,
+         'path':'intent','action_type':'attack','nation':'Yilerond',
+         'score':800.0,'result':'bot1_win','game_id':'seed-0v1-0-gen1'},
+        # bot2 (2-ply) — random move, loses
+        {'turn':1,'bot_idx':1,'ply_depth':2,'beam':3,'hybrid':0.5,
+         'path':'random','action_type':'move','nation':'Galland',
+         'score':120.0,'result':'bot1_win','game_id':'seed-0v1-0-gen1'},
+        # bot1 (1-ply) — diplomacy
+        {'turn':2,'bot_idx':0,'ply_depth':1,'beam':3,'hybrid':0.5,
+         'path':'intent','action_type':'diplomacy','nation':'Yilerond',
+         'score':300.0,'result':'bot1_win','game_id':'seed-0v1-0-gen1'},
+        # bot2 (2-ply) — pass
+        {'turn':2,'bot_idx':1,'ply_depth':2,'beam':3,'hybrid':0.5,
+         'path':'intent','action_type':'pass','nation':None,
+         'score':0.0,'result':'bot1_win','game_id':'seed-0v1-0-gen1'},
+    ]
+
+    SUMMARY_RECORDS = [
+        {'game_id':'seed-0v1-0-gen1','bot1_ply':1,'bot2_ply':2,
+         'winner_ply':1,'turns':20,'result':'bot1_win',
+         'bot1_score':6,'bot2_score':2,'gen':1},
+    ]
+
+    def _write_fixture(self, tmpdir):
+        import os
+        move_path    = os.path.join(tmpdir, 'moves.jsonl')
+        summary_path = move_path + '.summary.jsonl'
+        import json
+        with open(move_path, 'w') as f:
+            for r in self.MOVE_RECORDS:
+                f.write(json.dumps(r) + '\n')
+        with open(summary_path, 'w') as f:
+            for r in self.SUMMARY_RECORDS:
+                f.write(json.dumps(r) + '\n')
+        return move_path, summary_path
+
+    def test_script_runs_without_error(self):
+        """analyze_moves.py main() completes without exception on fixture data."""
+        import tempfile, os, sys, io
+        with tempfile.TemporaryDirectory() as tmp:
+            move_path, summary_path = self._write_fixture(tmp)
+            import analyze_moves
+            # Capture stdout so test output stays clean
+            captured = io.StringIO()
+            old_stdout = sys.stdout
+            sys.stdout = captured
+            try:
+                # Simulate CLI args
+                old_argv = sys.argv
+                sys.argv = ['analyze_moves.py', move_path, '--summary', summary_path]
+                analyze_moves.main()
+            finally:
+                sys.stdout = old_stdout
+                sys.argv = old_argv
+            output = captured.getvalue()
+            self.assertIn('WIN RATE', output)
+            self.assertIn('ACTION TYPE', output)
+
+    def test_win_rate_correct(self):
+        """Win rate calculated correctly from known fixture."""
+        import analyze_moves
+        summaries = self.SUMMARY_RECORDS
+        # 1-ply bot won 1/1 games → 100%; 2-ply won 0/1 → 0%
+        from collections import defaultdict, Counter
+        ply_games = defaultdict(int)
+        ply_wins  = defaultdict(int)
+        for s in summaries:
+            ply_games[s['bot1_ply']] += 1
+            ply_games[s['bot2_ply']] += 1
+            if s.get('winner_ply') is not None:
+                ply_wins[s['winner_ply']] += 1
+        self.assertEqual(ply_wins[1], 1)
+        self.assertEqual(ply_wins.get(2, 0), 0)
+
+    def test_action_pct_sums_to_100(self):
+        """Action type percentages sum to 100% per ply group."""
+        import analyze_moves
+        from collections import Counter
+        groups = analyze_moves.by_ply(self.MOVE_RECORDS)
+        for ply, recs in groups.items():
+            total = len(recs)
+            counts = Counter(r['action_type'] for r in recs)
+            pct_sum = sum(analyze_moves._pct(counts.get(a, 0), total)
+                          for a in analyze_moves.ACTION_TYPES)
+            self.assertAlmostEqual(pct_sum, 100.0, places=1,
+                                   msg=f"Percentages don't sum to 100 for ply={ply}")
+
+    def test_ply_filter(self):
+        """load_moves ply_filter correctly excludes non-matching records."""
+        import tempfile, analyze_moves
+        with tempfile.TemporaryDirectory() as tmp:
+            move_path, _ = self._write_fixture(tmp)
+            only_ply1 = analyze_moves.load_moves(move_path, ply_filter=[1])
+            only_ply2 = analyze_moves.load_moves(move_path, ply_filter=[2])
+            self.assertTrue(all(r['ply_depth'] == 1 for r in only_ply1))
+            self.assertTrue(all(r['ply_depth'] == 2 for r in only_ply2))
+
+
+# ---------------------------------------------------------------------------
+# Diplomacy eligibility guard tests
+# ---------------------------------------------------------------------------
+
+class TestDiplomacyEligibilityGuard(unittest.TestCase):
+    """Verify _apply_diplomacy_move enforces rules-layer eligibility.
+
+    These tests are the regression guard that ensures a cooldown nation can
+    never execute a diplomacy action, even if the UI somehow lets the drag
+    through.  They test the RULE layer, not the UI.
+    """
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        _init_diplomacy(NATIONS)
+        # Use a lightweight DiplomacyPanel stub that just wraps DiplomacyState
+        from diplomacy_panel import DiplomacyState
+        self.dipl_state = DiplomacyState()
+
+        class _PanelStub:
+            """Minimal stub: only needs lock_pair / unlock_pair / is_locked."""
+            def __init__(self, state):
+                self._s = state
+            def lock_pair(self, a, b):
+                self._s.lock_pair(a, b)
+            def unlock_pair(self, a, b):
+                self._s.unlock_pair(a, b)
+            def is_locked(self, a, b):
+                return self._s.is_locked(a, b)
+
+        self.panel = _PanelStub(self.dipl_state)
+        from map import MapGrid
+        self.grid = MapGrid()
+        self.grid.generate_map(nations=NATIONS)
+
+    def _make_action(self, flag_nation, box_nation, to_zone='war'):
+        from diplomacy_panel import DiplomacyAction
+        return DiplomacyAction(
+            box_nation=box_nation,
+            flag_nation=flag_nation,
+            from_zone='home',
+            to_zone=to_zone,
+        )
+
+    def _make_player(self, cooldown_nations=None):
+        from player import Player
+        p = Player()
+        for n in (cooldown_nations or []):
+            p.add_to_cooldown(n)
+        return p
+
+    def test_legal_move_succeeds(self):
+        """A diplomacy move with no cooldowns returns True and applies the stance."""
+        player = self._make_player()
+        flag = NATIONS[0]
+        box  = NATIONS[1]
+        action = self._make_action(flag, box, to_zone='war')
+
+        result = _apply_diplomacy_move_fn(
+            self.grid, self.panel, action, list(NATIONS),
+            player=player, global_cooldown_name=None)
+
+        self.assertTrue(result, "_apply_diplomacy_move should return True for a legal move")
+        self.assertTrue(flag.is_enemy(box), "War stance should have been applied")
+
+    def test_player_cooldown_blocks_diplomacy(self):
+        """A nation on player cooldown cannot perform a diplomacy action."""
+        flag = NATIONS[0]
+        box  = NATIONS[1]
+        player = self._make_player(cooldown_nations=[flag])  # flag is on cooldown
+        action = self._make_action(flag, box, to_zone='war')
+
+        result = _apply_diplomacy_move_fn(
+            self.grid, self.panel, action, list(NATIONS),
+            player=player, global_cooldown_name=None)
+
+        self.assertFalse(result,
+                         "Diplomacy from a player-cooldown nation must be blocked at rule layer")
+        # Stance must NOT have changed
+        self.assertFalse(flag.is_enemy(box),
+                         "War stance must NOT be applied when the move is blocked")
+
+    def test_global_cooldown_blocks_diplomacy(self):
+        """A nation on global cooldown cannot perform a diplomacy action."""
+        flag = NATIONS[2]
+        box  = NATIONS[3]
+        player = self._make_player()
+        action = self._make_action(flag, box, to_zone='ally')
+
+        result = _apply_diplomacy_move_fn(
+            self.grid, self.panel, action, list(NATIONS),
+            player=player, global_cooldown_name=flag.color_name)
+
+        self.assertFalse(result,
+                         "Diplomacy from a global-cooldown nation must be blocked at rule layer")
+        self.assertFalse(flag.is_ally(box),
+                         "Ally stance must NOT be applied when the move is blocked")
+
+    def test_no_player_arg_skips_guard(self):
+        """If player=None the guard is skipped (backward compat / bot path pre-check)."""
+        flag = NATIONS[0]
+        box  = NATIONS[1]
+        action = self._make_action(flag, box, to_zone='war')
+
+        result = _apply_diplomacy_move_fn(
+            self.grid, self.panel, action, list(NATIONS),
+            player=None, global_cooldown_name=None)
+
+        self.assertTrue(result, "With player=None guard is skipped, move should proceed")
+
+    def test_ghost_nation_blocked(self):
+        """A ghost nation (sovereign destroyed) cannot perform diplomacy."""
+        flag = NATIONS[4]
+        box  = NATIONS[5]
+        flag.is_ghost = True
+        try:
+            player = self._make_player()
+            action = self._make_action(flag, box, to_zone='ally')
+            result = _apply_diplomacy_move_fn(
+                self.grid, self.panel, action, list(NATIONS),
+                player=player, global_cooldown_name=None)
+            self.assertFalse(result, "Ghost nation diplomacy must be blocked")
+        finally:
+            flag.is_ghost = False
+
+
+# Lazily import the function under test so it survives module reload
+def _apply_diplomacy_move_fn(*args, **kwargs):
+    import main as _main
+    return _main._apply_diplomacy_move(*args, **kwargs)

@@ -230,12 +230,18 @@ class DiplomacyPanel:
     # -------------------------------------------------------------------------
 
     def on_mousedown(self, pos: tuple[int, int],
-                      move_cooldown_name: str | None = None) -> bool:
-        """Handle mouse down. Returns True if the diplomacy panel consumed the click."""
+                      locked_nation_names: set | None = None) -> bool:
+        """Handle mouse down. Returns True if the diplomacy panel consumed the click.
+
+        locked_nation_names: set of color_name strings for nations the active
+        player cannot act on this turn (global cooldown + player cooldowns).
+        """
         mx, my = pos
         # If click is outside the panel area, do not consume
         if mx < settings.DIPL_PANEL_X - 10:
             return False
+
+        locked = locked_nation_names or set()
 
         # Hit test flags
         for i, nation in enumerate(self.nations):
@@ -243,11 +249,9 @@ class DiplomacyPanel:
             if not box_rect.collidepoint(mx, my):
                 continue
 
-            # Block all drag-starts from this box if:
-            #   - Nation is in move cooldown (temporary), OR
-            #   - Nation is a ghost (permanently fallen)
-            box_is_move_locked = (move_cooldown_name is not None
-                                  and nation.color_name == move_cooldown_name)
+            # Block all drag-starts from this box if the nation is ineligible
+            # (on global cooldown, player cooldown, or is a ghost)
+            box_is_move_locked = nation.color_name in locked
             box_is_ghost_locked = nation.is_ghost
 
             slots = self._flag_slots_for_box(nation, box_rect)
@@ -278,16 +282,26 @@ class DiplomacyPanel:
         if self.drag is not None:
             self.drag.curr_pos = pos
 
-    def on_mouseup(self, pos: tuple[int, int]) -> DiplomacyAction | None:
+    def on_mouseup(self, pos: tuple[int, int],
+                    locked_nation_names: set | None = None) -> DiplomacyAction | None:
         """
         Handle mouse release.
         Returns a valid DiplomacyAction if a legal drop occurred, or None to cancel/snap back.
+
+        locked_nation_names: set of color_name strings for nations the active
+        player cannot act on this turn.  Acts as a second line of defence —
+        even if a drag somehow started for a locked nation it is cancelled here.
         """
         if self.drag is None:
             return None
 
         ds = self.drag
         self.drag = None
+
+        # Second-line defence: cancel if the dragged flag's nation is locked
+        locked = locked_nation_names or set()
+        if ds.flag_nation.color_name in locked:
+            return None
 
         hit = self._get_box_and_index_at(pos)
         if not hit:
@@ -358,8 +372,13 @@ class DiplomacyPanel:
     # -------------------------------------------------------------------------
 
     def draw(self, screen: pygame.Surface, fonts: dict | None = None,
-              move_cooldown_name: str | None = None):
-        """Render the complete diplomacy panel on the right sidebar."""
+              locked_nation_names: set | None = None):
+        """Render the complete diplomacy panel on the right sidebar.
+
+        locked_nation_names: set of color_name strings for nations the active
+        player cannot act on this turn (global cooldown + player cooldowns).
+        Nations in this set get a red locked border.
+        """
         font_title = util.get_font(14, bold=True)
         font_label = util.get_font(11, bold=True)
         font_micro = util.get_font(11)
@@ -388,11 +407,12 @@ class DiplomacyPanel:
         hovered_valid_action: str | None = None
         hover_action_pos: tuple[int, int] = (0, 0)
 
+        locked = locked_nation_names or set()
+
         # 2. Draw each nation's box
         for i, nation in enumerate(self.nations):
             box_rect = self._box_rect(i)
-            box_is_move_locked  = (move_cooldown_name is not None
-                                   and nation.color_name == move_cooldown_name)
+            box_is_move_locked  = nation.color_name in locked
             box_is_ghost_locked = nation.is_ghost
 
             # Box Card Background
