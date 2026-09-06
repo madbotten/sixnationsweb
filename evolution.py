@@ -716,7 +716,7 @@ class HeadlessGame:
     """
 
     def __init__(self, config1: BotConfig, config2: BotConfig,
-                 max_turns: int = MAX_TURNS, seed=None):
+                 max_turns: int = MAX_TURNS, seed=None, log_moves: bool = False):
         self.max_turns = max_turns
 
         if seed is not None:
@@ -755,6 +755,11 @@ class HeadlessGame:
         # Guess accuracy tracking (populated after play())
         self.guess_correct = 0   # how many bots guessed correctly
         self.guess_total   = 0   # total guesses attempted (0, 1, or 2)
+
+        # Move logging — opt-in, zero overhead when disabled
+        self.log_moves    = log_moves
+        self.move_log     = []   # list of per-turn dicts (only populated when log_moves=True)
+        self.game_summary = {}   # one dict written at game end (only when log_moves=True)
 
     def play(self) -> str:
         """Play the full game.  Returns a RESULT_* constant."""
@@ -807,6 +812,27 @@ class HeadlessGame:
                 bot.player.add_to_cooldown(p_cd)
             self.global_cooldown_name = new_gcd
 
+            # --- Per-turn move logging (only when --move-log is active) ---
+            if self.log_moves:
+                # Extract path label from action tuple if present
+                _raw = action[2:] if len(action) > 2 else []
+                if _raw and isinstance(_raw[-1], str) and _raw[-1] in ('intent', 'random', 'deceptive'):
+                    _path = _raw[-1]
+                else:
+                    _path = 'intent'  # diplomacy and pass are always intent-driven
+                self.move_log.append({
+                    'turn':        self.turn_number,
+                    'bot_idx':     current,
+                    'ply_depth':   bot.config.lookahead_depth,
+                    'beam':        bot.config.lookahead_beam,
+                    'hybrid':      round(bot.config.hybrid_ratio, 3),
+                    'path':        _path,
+                    'action_type': action_type or 'unknown',
+                    'nation':      moved_nation.color_name if moved_nation else None,
+                    'score':       round(float(action[0]), 2),
+                    'result':      None,   # back-filled at game end
+                })
+
             # Record the move for the opponent's memory
             # Extract unit info from the action for recording
             _score, atype, *rest = action
@@ -850,9 +876,12 @@ class HeadlessGame:
                 s2 = self.bot2.player.compute_score()
                 self._record_guess_accuracy()
                 if s1 > s2:
+                    self._finalise_move_log(RESULT_BOT1_WIN, self.turn_number, s1, s2)
                     return RESULT_BOT1_WIN
                 if s2 > s1:
+                    self._finalise_move_log(RESULT_BOT2_WIN, self.turn_number, s1, s2)
                     return RESULT_BOT2_WIN
+                self._finalise_move_log(RESULT_TIE, self.turn_number, s1, s2)
                 return RESULT_TIE
 
             # Advance turn
@@ -860,7 +889,32 @@ class HeadlessGame:
             self.turn_number += 1
 
         self._record_guess_accuracy()
+        s1 = self.bot1.player.compute_score()
+        s2 = self.bot2.player.compute_score()
+        self._finalise_move_log(RESULT_DRAW, self.turn_number, s1, s2)
         return RESULT_DRAW
+
+    def _finalise_move_log(self, result: str, turns: int, s1: float, s2: float):
+        """Back-fill result into every move record and write game_summary."""
+        if not self.log_moves:
+            return
+        # Determine winner's ply depth
+        winner_ply = None
+        if result == RESULT_BOT1_WIN:
+            winner_ply = self.bot1.config.lookahead_depth
+        elif result == RESULT_BOT2_WIN:
+            winner_ply = self.bot2.config.lookahead_depth
+        for rec in self.move_log:
+            rec['result'] = result
+        self.game_summary = {
+            'bot1_ply':   self.bot1.config.lookahead_depth,
+            'bot2_ply':   self.bot2.config.lookahead_depth,
+            'winner_ply': winner_ply,
+            'turns':      turns,
+            'result':     result,
+            'bot1_score': s1,
+            'bot2_score': s2,
+        }
 
     def _record_guess_accuracy(self):
         """Check each bot's guess of the opponent's prevail nations."""

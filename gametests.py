@@ -2620,3 +2620,104 @@ class TestRulesLayer(unittest.TestCase):
         self.assertEqual(atype, 'recruit')
         self.assertIs(p_cd, nation)
         self.assertEqual(g_cd, nation.color_name)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 tests — HeadlessGame move logging
+# ---------------------------------------------------------------------------
+
+class TestHeadlessGameMoveLog(unittest.TestCase):
+    """Verify HeadlessGame.play() move logging is correct and zero-overhead by default."""
+
+    REQUIRED_KEYS = {
+        'turn', 'bot_idx', 'ply_depth', 'beam', 'hybrid',
+        'path', 'action_type', 'nation', 'score', 'result',
+    }
+
+    def _run_game(self, log_moves=False, seed=42, max_turns=30):
+        from evolution import HeadlessGame, BotConfig
+        cfg1 = BotConfig(lookahead_depth=1)
+        cfg2 = BotConfig(lookahead_depth=2)
+        game = HeadlessGame(cfg1, cfg2, max_turns=max_turns, seed=seed,
+                            log_moves=log_moves)
+        result = game.play()
+        return game, result
+
+    def test_no_log_by_default(self):
+        """log_moves=False (default): move_log is empty, game_summary is empty."""
+        game, _ = self._run_game(log_moves=False)
+        self.assertEqual(game.move_log, [],
+                         "move_log must be empty when log_moves=False")
+        self.assertEqual(game.game_summary, {},
+                         "game_summary must be empty when log_moves=False")
+
+    def test_log_moves_produces_records(self):
+        """log_moves=True: move_log is non-empty after a game."""
+        game, _ = self._run_game(log_moves=True)
+        self.assertGreater(len(game.move_log), 0,
+                           "move_log must contain records when log_moves=True")
+
+    def test_required_keys_present(self):
+        """Every move record contains all required keys."""
+        game, _ = self._run_game(log_moves=True)
+        for i, rec in enumerate(game.move_log):
+            missing = self.REQUIRED_KEYS - rec.keys()
+            self.assertEqual(missing, set(),
+                             f"Record {i} missing keys: {missing}\nRecord: {rec}")
+
+    def test_pass_records_have_null_nation(self):
+        """Pass/failed-action records have nation=None."""
+        game, _ = self._run_game(log_moves=True)
+        for rec in game.move_log:
+            if rec['action_type'] == 'pass':
+                self.assertIsNone(rec['nation'],
+                                  f"Pass record should have nation=None: {rec}")
+
+    def test_result_backfilled_into_all_records(self):
+        """Every record's result field matches the game result."""
+        game, result = self._run_game(log_moves=True)
+        for i, rec in enumerate(game.move_log):
+            self.assertEqual(rec['result'], result,
+                             f"Record {i} result mismatch: {rec['result']!r} != {result!r}")
+
+    def test_game_summary_populated(self):
+        """game_summary contains the required fields when log_moves=True."""
+        required_summary_keys = {
+            'bot1_ply', 'bot2_ply', 'winner_ply',
+            'turns', 'result', 'bot1_score', 'bot2_score',
+        }
+        game, result = self._run_game(log_moves=True)
+        missing = required_summary_keys - game.game_summary.keys()
+        self.assertEqual(missing, set(),
+                         f"game_summary missing keys: {missing}")
+        self.assertEqual(game.game_summary['result'], result,
+                         "game_summary result must match play() return value")
+
+    def test_ply_depth_matches_config(self):
+        """bot_idx=0 records have ply_depth matching cfg1, bot_idx=1 matches cfg2."""
+        game, _ = self._run_game(log_moves=True)
+        for rec in game.move_log:
+            expected = 1 if rec['bot_idx'] == 0 else 2
+            self.assertEqual(rec['ply_depth'], expected,
+                             f"ply_depth mismatch for bot_idx={rec['bot_idx']}: {rec}")
+
+    def test_bot_idx_alternates(self):
+        """bot_idx values in the log should alternate between 0 and 1."""
+        game, _ = self._run_game(log_moves=True)
+        indices = [rec['bot_idx'] for rec in game.move_log]
+        # Consecutive records should differ (turns alternate between bots)
+        for i in range(1, len(indices)):
+            self.assertNotEqual(indices[i], indices[i-1],
+                                f"bot_idx did not alternate at position {i}: {indices[i-1]} -> {indices[i]}")
+
+    def test_winner_ply_matches_result(self):
+        """game_summary winner_ply corresponds to the winning bot's config depth."""
+        from evolution import RESULT_BOT1_WIN, RESULT_BOT2_WIN
+        game, result = self._run_game(log_moves=True)
+        summary = game.game_summary
+        if result == RESULT_BOT1_WIN:
+            self.assertEqual(summary['winner_ply'], 1)  # cfg1 is depth=1
+        elif result == RESULT_BOT2_WIN:
+            self.assertEqual(summary['winner_ply'], 2)  # cfg2 is depth=2
+        else:
+            self.assertIsNone(summary['winner_ply'])
