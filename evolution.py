@@ -151,10 +151,11 @@ class BotConfig:
     dipl_base_ally:           float = 250.0  # base score for declaring alliance
 
     # --- Architectural Genes (evolved) ---
-    lookahead_depth:       int   = 2     # 1 = 1-ply, 2 = 2-ply minimax, 3 = 3-ply
+    lookahead_depth:       int   = 2     # 1 = 1-ply, 2 = 2-ply minimax (3 excluded: odd-ply horizon)
     lookahead_beam:        int   = 3     # 1 to 4 candidate moves per ply
     hybrid_ratio:          float = 0.5   # 0.0 = 100% move score, 1.0 = 100% pos eval
     lookahead_mode:        str   = 'position'  # 'position' or 'action'
+    pos_score_scale:       float = 10.0  # divisor to bring pos_score onto action_score scale
 
     # --- Runtime (not part of genome, not persisted) ---
     fitness:               float = 0.0
@@ -309,11 +310,11 @@ class BotConfig:
             c.lookahead_beam = random.randint(2, 3)
             c.hybrid_ratio = random.uniform(0.35, 0.65)
         elif archetype == 'deep':
-            c.lookahead_depth = random.choice([3, 4])
+            c.lookahead_depth = 4   # 3-ply removed: odd-ply horizon is harmful
             c.lookahead_beam = random.randint(1, 3)
             c.hybrid_ratio = random.uniform(0.5, 1.0)
         else:  # wild
-            c.lookahead_depth = random.randint(1, 4)
+            c.lookahead_depth = random.choice([1, 2, 4])  # 3-ply excluded (odd-ply horizon)
             c.lookahead_beam = random.randint(1, 3) if c.lookahead_depth >= 4 else random.randint(1, 4)
             c.hybrid_ratio = random.uniform(0.0, 1.0)
 
@@ -569,6 +570,7 @@ class EvolvableBot:
                 mode=self.config.lookahead_mode,
                 eval_weights=self._eval_weights,
                 hybrid_ratio=self.config.hybrid_ratio,
+                pos_score_scale=self.config.pos_score_scale,
                 bot_goals=bot_goals,
                 top3_names=top3_names,
                 bottom3_names=bottom3_names,
@@ -1088,10 +1090,11 @@ _GENE_RANGES = {
     'top3_spread':              (0.0, 1.0),
     'dipl_base_war':            (50.0, 600.0),
     'dipl_base_ally':           (50.0, 500.0),
-     # Architectural genes (evolvable depth, beam, and hybrid evaluation)
-    'lookahead_depth':      (1, 4),
+     # Architectural genes — depth restricted to {1,2,4}: 3-ply horizon is confirmed harmful
+    'lookahead_depth':      (1, 4),   # mutation must use choice([1,2,4]), not uniform int
     'lookahead_beam':       (1, 4),
     'hybrid_ratio':         (0.0, 1.0),
+    'pos_score_scale':      (1.0, 50.0),  # scale pos_score to match action_score range
     # Evaluator weights
     'ev_ghost_enemy':       (100.0, 1000.0),
     'ev_own_sov_dead':      (-20000.0, -2000.0),
@@ -1302,7 +1305,10 @@ class GeneticAlgorithm:
                 lo, hi = _GENE_RANGES[gene]
                 if random.random() < self.mutation_reset_rate:
                     # Full random reset (escape local optima)
-                    if gene in _INT_GENES:
+                    if gene == 'lookahead_depth':
+                        # 3-ply excluded: odd-ply horizon is confirmed harmful
+                        setattr(config, gene, random.choice([1, 2, 4]))
+                    elif gene in _INT_GENES:
                         setattr(config, gene, random.randint(int(lo), int(hi)))
                     else:
                         setattr(config, gene, random.uniform(lo, hi))
@@ -1312,7 +1318,10 @@ class GeneticAlgorithm:
                     spread = (hi - lo) * 0.20
                     new_val = current + random.gauss(0, spread)
                     new_val = max(lo, min(hi, new_val))
-                    if gene in _INT_GENES:
+                    if gene == 'lookahead_depth':
+                        # Snap to nearest valid value in {1, 2, 4}
+                        new_val = min([1, 2, 4], key=lambda v: abs(v - new_val))
+                    elif gene in _INT_GENES:
                         new_val = int(round(new_val))
                     setattr(config, gene, new_val)
 
@@ -1399,6 +1408,11 @@ def load_top_configs(filepath=DEFAULT_CONFIG_PATH) -> list:
                     val = int(val)
                 setattr(c, gene, val)
         c.fitness = d.get('fitness', 0.0)
+        # Sanitize: snap lookahead_depth to valid set {1,2,4}.
+        # Depth=3 is excluded (odd-ply horizon); any saved config with depth=3
+        # is corrected here rather than waiting for random mutation.
+        if c.lookahead_depth not in (1, 2, 4):
+            c.lookahead_depth = min([1, 2, 4], key=lambda v: abs(v - c.lookahead_depth))
         configs.append(c)
     return configs
 

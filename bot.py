@@ -714,7 +714,8 @@ def _lookahead_best(grid, bot_player, global_cooldown_name=None, nation_list=Non
                     depth=1, beam_width=2, mode='position', eval_weights=None,
                     hybrid_ratio=1.0, bot_goals=None,
                     top3_names=None, bottom3_names=None,
-                    opp_cooldown=None, opp_goals=None, **kwargs):
+                    opp_cooldown=None, opp_goals=None,
+                    pos_score_scale=10.0, **kwargs):
     """Beam-search negamax / hybrid lookahead.
 
     depth: remaining plies to search (0 = evaluate immediate moves, 1 = 1 opponent counter, 2 = 2 counters).
@@ -722,6 +723,9 @@ def _lookahead_best(grid, bot_player, global_cooldown_name=None, nation_list=Non
     mode: 'action' (score subtraction) or 'position' (board evaluation).
     hybrid_ratio: 0.0 = 100% move score, 1.0 = 100% positional board eval,
                   0.3..0.7 = blended hybrid scoring.
+    pos_score_scale: divisor applied to pos_score before the hybrid blend to
+                  bring it onto the same scale as the action scorer (~100-800).
+                  Default 10.0.  Evolvable via the 'pos_score_scale' gene.
     opp_cooldown: list of color_name strings representing nations on the opponent's cooldown.
     opp_goals: BotGoals instance for opponent (optional, populates top3_names/bottom3_names if given).
 
@@ -798,7 +802,8 @@ def _lookahead_best(grid, bot_player, global_cooldown_name=None, nation_list=Non
             pos_score = evaluate_position(snap, bot_goals=bot_goals, nation_list=nation_list,
                                           weights=eval_weights,
                                           ghost_name_set=_derive_ghost_set(snap))
-            net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * pos_score
+            scaled_pos = pos_score / max(1.0, pos_score_scale)
+            net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * scaled_pos
             if net > best_net:
                 best_net = net
                 best_action = action
@@ -817,18 +822,31 @@ def _lookahead_best(grid, bot_player, global_cooldown_name=None, nation_list=Non
             fake_opp = Player(is_bot=True, player_id='lookahead_opp')
             fake_opp.cooldown = list(opp_cd)
 
-            opp_actions = _gather_actions(
+            # Gather ALL opponent actions including diplomacy to model the real opponent.
+            # In practice opponents play diplomacy 60-78% of the time; a military-only
+            # counter model reasons about a world that never occurs.
+            all_opp_actions = _gather_actions(
                 snap, fake_opp, new_gci, nation_list,
                 turn_number=turn_number + 1,
                 weights=weights,
                 bot_goals=opp_goals,
-                exclude_diplomacy=True)
+                exclude_diplomacy=False)
 
-            if not opp_actions:
+            opp_would_play_diplomacy = (
+                bool(all_opp_actions) and all_opp_actions[0][1] == 'diplomacy'
+            )
+
+            if not all_opp_actions or opp_would_play_diplomacy:
+                # Opponent plays diplomacy (or has no moves) → pieces don't move.
+                # Evaluate the board as it stands after just the bot's own move.
                 pos_score = evaluate_position(snap, bot_goals=bot_goals, nation_list=nation_list,
                                               weights=eval_weights,
                                               ghost_name_set=_derive_ghost_set(snap))
             else:
+                # Opponent's best action is military — run the existing counter simulation.
+                opp_actions = [a for a in all_opp_actions if a[1] != 'diplomacy']
+                if not opp_actions:
+                    opp_actions = all_opp_actions
                 opp_valid = [a for a in opp_actions if a[0] > -1000]
                 if opp_valid:
                     opp_actions = opp_valid
@@ -903,11 +921,12 @@ def _lookahead_best(grid, bot_player, global_cooldown_name=None, nation_list=Non
                 pos_score = worst_pos_score
 
             if hybrid_ratio >= 1.0:
-                net = pos_score
+                net = pos_score / max(1.0, pos_score_scale)
             elif hybrid_ratio <= 0.0:
                 net = my_move_score
             else:
-                net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * pos_score
+                scaled_pos = pos_score / max(1.0, pos_score_scale)
+                net = (1.0 - hybrid_ratio) * my_move_score + hybrid_ratio * scaled_pos
         else:
             # ACTION MODE: net = my_score - opponent_best_score
             fake_opp = Player(is_bot=True, player_id='lookahead_opp')
