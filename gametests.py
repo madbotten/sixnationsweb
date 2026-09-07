@@ -143,6 +143,32 @@ class TestSixNations(unittest.TestCase):
         self.assertFalse(player.nation_on_cooldown(NATIONS[0]))
         self.assertFalse(player.nation_on_cooldown(NATIONS[3]))
 
+    def test_09_advance_cooldown_empty(self):
+        """advance_cooldown on an empty list is a no-op."""
+        player = Player()
+        player.advance_cooldown()
+        self.assertEqual(player.cooldown, [])
+
+    def test_09b_advance_cooldown_single_entry(self):
+        """advance_cooldown with one entry removes it (nation is now free)."""
+        player = Player()
+        player.add_to_cooldown(NATIONS[0])
+        player.advance_cooldown()
+        self.assertEqual(player.cooldown, [])
+        self.assertFalse(player.nation_on_cooldown(NATIONS[0]))
+
+    def test_09c_advance_cooldown_two_entries(self):
+        """advance_cooldown with two entries drops the oldest; newer stays."""
+        player = Player()
+        player.add_to_cooldown(NATIONS[0])   # older entry
+        player.add_to_cooldown(NATIONS[1])   # newer entry (position 0)
+        # Before: [NATIONS[1].color_name, NATIONS[0].color_name]
+        player.advance_cooldown()
+        # After: [NATIONS[1].color_name]  — NATIONS[0] is freed
+        self.assertEqual(player.cooldown, [NATIONS[1].color_name])
+        self.assertTrue(player.nation_on_cooldown(NATIONS[1]))
+        self.assertFalse(player.nation_on_cooldown(NATIONS[0]))
+
     # -----------------------------------------------------------------------
     # 4. Support System
     # -----------------------------------------------------------------------

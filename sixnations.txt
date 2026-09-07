@@ -71,7 +71,7 @@ COOLDOWNS ON PLAYER MOVES:
 To prevent players from repeatedly manipulating the same nation:
   - Player Move Cooldown: A player cannot move a nation they moved on either of their last 2 turns.
   - Global Move Cooldown: A player cannot move the nation that their opponent moved on the immediately preceding turn.
-  - A pass move does not generate a cooldown since no nation took a move.
+  - A pass move does not generate a new cooldown entry, but existing cooldowns still advance: the oldest cooldown entry expires, so a nation that was blocked for 2 turns becomes blocked for only 1.
 
 
 TERM DEFINITIONS & UNIT CAPABILITIES

@@ -1030,7 +1030,9 @@ async def main():
                     on_local_move_made(_move_data)
                     if settings.DEPLOYMENT == 'DEBUG':
                         print(f"[{active_player.player_id} pass] T{turn_number}")
-                    # Pass: no new cooldown generated; existing cooldowns still tick
+                    # Pass: no new cooldown generated, but existing cooldowns advance
+                    # (the oldest entry expires, freeing it up one turn sooner).
+                    active_player.advance_cooldown()
                     global_cooldown_name = None
                     dipl_panel.tick_cooldowns()
                     if check_trigger_game_end(grid, nation_list):
@@ -1554,7 +1556,9 @@ async def main():
                     on_local_move_made(_pass_data)
                     if settings.DEPLOYMENT == 'DEBUG':
                         print(f"[Bot] No legal moves — PASS T{turn_number}")
-                    # Pass: no new cooldown generated; existing cooldowns still tick
+                    # Pass: no new cooldown generated, but existing cooldowns advance
+                    # (the oldest entry expires, freeing it up one turn sooner).
+                    player2.advance_cooldown()
                     global_cooldown_name = None
                     game_state         = STATE_HUMAN_TURN
                     current_player_idx = 0

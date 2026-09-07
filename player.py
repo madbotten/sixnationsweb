@@ -37,6 +37,18 @@ class Player:
         if len(self.cooldown) > 2:
             self.cooldown.pop()
 
+    def advance_cooldown(self):
+        """Age the cooldown list by one turn without adding a new entry.
+
+        Called on a PASS move: the player spent their turn without moving any
+        nation, so the oldest cooldown entry should expire.  Concretely:
+          [A, B] → [A]   (B's 2-turn lock expires)
+          [A]    → []    (A's 1-turn lock expires)
+          []     → []    (nothing to advance)
+        """
+        if self.cooldown:
+            self.cooldown.pop()
+
     def nation_on_cooldown(self, nation) -> bool:
         """True if this player is forbidden from moving the given nation."""
         return nation.color_name in self.cooldown
