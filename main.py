@@ -1127,6 +1127,7 @@ async def main():
                             action_pending   = pending_nation = None
                             highlight_muster = highlight_promo = set()
 
+                            active_player = players[current_player_idx]
                             active_player.add_to_cooldown(moved_nation)
                             global_cooldown_name = moved_nation.color_name
                             dipl_panel.tick_cooldowns()
@@ -1210,6 +1211,7 @@ async def main():
                     _locked_up.add(global_cooldown_name)
                 action = dipl_panel.on_mouseup(event.pos, locked_nation_names=_locked_up)
                 if action:
+                    active_player = players[current_player_idx]
                     ok = _apply_diplomacy_move(
                         grid, dipl_panel, action, nation_list,
                         player=active_player,

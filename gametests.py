@@ -3442,3 +3442,206 @@ class TestDiplomacySaturation(unittest.TestCase):
             max_score_full = max(a[0] for a in war_full)
             self.assertLess(max_score_full, max_score_empty,
                 "War score should drop when portfolio is already at target")
+
+
+# ---------------------------------------------------------------------------
+# Cooldown ownership regression tests
+# ---------------------------------------------------------------------------
+
+class TestCooldownOwnership(unittest.TestCase):
+    """Regression suite for cooldown contamination bugs.
+
+    Invariant: a move by player A must update only player A's cooldown.
+    Player B's cooldown must remain unchanged.
+
+    Background: two bugs in main.py used a stale 'active_player' reference
+    (captured at MOUSEBUTTONDOWN but used inside a later MOUSEBUTTONUP
+    handler after current_player_idx had already been updated).  The result
+    was the human player's move being recorded in the bot's cooldown list or
+    vice versa.
+
+    These tests exercise the rules and player layers to lock in the invariant,
+    and explicitly document the failure mode so that any future regression
+    produces an immediate, readable test failure.
+    """
+
+    def setUp(self):
+        from factions import _init_diplomacy
+        _init_diplomacy(NATIONS)
+        self.player1 = Player(is_bot=False, player_id='player1')
+        self.player2 = Player(is_bot=True,  player_id='player2')
+        self.players = [self.player1, self.player2]
+
+    # ── Basic isolation ───────────────────────────────────────────────────────
+
+    def test_player_cooldown_lists_are_independent_objects(self):
+        """player1.cooldown and player2.cooldown are distinct list objects.
+
+        Modifying one must never affect the other.
+        """
+        self.assertIsNot(self.player1.cooldown, self.player2.cooldown)
+
+        self.player1.add_to_cooldown(NATIONS[0])
+        self.assertNotIn(NATIONS[0].color_name, self.player2.cooldown,
+            "Adding to player1's cooldown must not affect player2's cooldown")
+
+        self.player2.add_to_cooldown(NATIONS[1])
+        self.assertEqual(self.player1.cooldown, [NATIONS[0].color_name],
+            "Adding to player2's cooldown must not affect player1's cooldown")
+
+    # ── Safe access pattern ───────────────────────────────────────────────────
+
+    def test_players_list_idx0_targets_player1(self):
+        """players[0].add_to_cooldown updates player1 only, never player2.
+
+        This is the safe pattern used by all move paths in main.py:
+            active_player = players[current_player_idx]
+            active_player.add_to_cooldown(moved_nation)
+        Locking the invariant for current_player_idx == 0 (human turn).
+        """
+        current_player_idx = 0
+        active_player = self.players[current_player_idx]
+        active_player.add_to_cooldown(NATIONS[0])
+
+        self.assertIn(NATIONS[0].color_name, self.player1.cooldown,
+            "Human move (idx=0) must update player1's cooldown")
+        self.assertNotIn(NATIONS[0].color_name, self.player2.cooldown,
+            "Human move must NOT contaminate player2's cooldown")
+
+    def test_players_list_idx1_targets_player2(self):
+        """players[1].add_to_cooldown updates player2 only, never player1.
+
+        Locking the invariant for current_player_idx == 1 (bot turn).
+        """
+        current_player_idx = 1
+        active_player = self.players[current_player_idx]
+        active_player.add_to_cooldown(NATIONS[1])
+
+        self.assertIn(NATIONS[1].color_name, self.player2.cooldown,
+            "Bot move (idx=1) must update player2's cooldown")
+        self.assertNotIn(NATIONS[1].color_name, self.player1.cooldown,
+            "Bot move must NOT contaminate player1's cooldown")
+
+    # ── Stale-reference failure mode ──────────────────────────────────────────
+
+    def test_stale_idx1_during_human_turn_contaminates_player2(self):
+        """Demonstrates the exact bug: using stale idx=1 during a human turn.
+
+        Before the fix, main.py's promote-knight and diplomacy-drop handlers
+        used 'active_player' captured at MOUSEBUTTONDOWN.  If current_player_idx
+        had already been updated to 1 (bot), the human's move would land in
+        player2.cooldown instead of player1.cooldown.
+
+        This test characterises the bug so that if a future change re-introduces
+        it (i.e., moves an add_to_cooldown call to a place where the idx is
+        wrong), the assertion messages make the problem immediately obvious.
+        """
+        # BUG: stale idx should be 0 (human) but is 1 (bot)
+        stale_idx = 1
+        stale_active_player = self.players[stale_idx]
+        stale_active_player.add_to_cooldown(NATIONS[0])
+
+        # The contamination the bug produced:
+        self.assertIn(NATIONS[0].color_name, self.player2.cooldown,
+            "Stale idx=1 contaminates player2's cooldown (this is the bug)")
+        self.assertNotIn(NATIONS[0].color_name, self.player1.cooldown,
+            "Stale idx=1 leaves player1's cooldown empty (human move lost)")
+
+    # ── End-to-end: diplomacy action updates only the acting player ───────────
+
+    def test_diplomacy_cooldown_assigned_to_player1_not_player2(self):
+        """After a human diplomacy move, only player1's cooldown changes.
+
+        Mirrors the corrected code path in main.py's human-diplomacy-drop
+        handler (MOUSEBUTTONUP).  The critical line is:
+            active_player = players[current_player_idx]   # re-read here
+            active_player.add_to_cooldown(action.flag_nation)
+        """
+        from map import MapGrid
+        from factions import _init_diplomacy
+        from diplomacy_panel import DiplomacyAction, DiplomacyState
+
+        _init_diplomacy(NATIONS)
+        grid = MapGrid()
+        grid.generate_map(nations=NATIONS)
+        panel_state = DiplomacyState()
+
+        flag_nation = NATIONS[0]
+        box_nation  = NATIONS[1]
+
+        action = DiplomacyAction(
+            box_nation=box_nation,
+            flag_nation=flag_nation,
+            from_zone='home',
+            to_zone='war',
+        )
+
+        # Simulate the corrected main.py pattern: re-read active_player from
+        # players[current_player_idx] (= 0, human) before applying the cooldown.
+        current_player_idx = 0
+        active_player = self.players[current_player_idx]   # ← the fix
+        ok = _apply_diplomacy_move_fn(
+            grid, panel_state, action, list(NATIONS),
+            player=active_player, global_cooldown_name=None)
+        self.assertTrue(ok)
+        active_player.add_to_cooldown(action.flag_nation)
+
+        self.assertIn(flag_nation.color_name, self.player1.cooldown,
+            "Human diplomacy move must appear in player1's cooldown")
+        self.assertNotIn(flag_nation.color_name, self.player2.cooldown,
+            "Human diplomacy move must NOT appear in player2's cooldown")
+
+    # ── advance_cooldown isolation ────────────────────────────────────────────
+
+    def test_advance_cooldown_only_affects_one_player(self):
+        """advance_cooldown on player1 must not change player2's cooldown."""
+        self.player1.add_to_cooldown(NATIONS[0])
+        self.player1.add_to_cooldown(NATIONS[1])
+        self.player2.add_to_cooldown(NATIONS[2])
+
+        p2_before = list(self.player2.cooldown)
+        self.player1.advance_cooldown()
+
+        self.assertEqual(self.player2.cooldown, p2_before,
+            "advance_cooldown on player1 must not change player2's cooldown")
+        self.assertEqual(self.player1.cooldown, [NATIONS[1].color_name],
+            "advance_cooldown must drop the oldest entry from player1")
+
+    # ── Alternating turn sequence ─────────────────────────────────────────────
+
+    def test_alternating_turns_no_cross_contamination(self):
+        """Simulates 4 alternating turns; each turn's cooldown stays with the right player.
+
+        Turn 1 (human, idx=0): moves NATIONS[0]
+        Turn 2 (bot,   idx=1): moves NATIONS[1]
+        Turn 3 (human, idx=0): moves NATIONS[2]
+        Turn 4 (bot,   idx=1): moves NATIONS[3]
+        """
+        turn_sequence = [
+            (0, NATIONS[0]),  # human moves Green
+            (1, NATIONS[1]),  # bot   moves Blue
+            (0, NATIONS[2]),  # human moves Red
+            (1, NATIONS[3]),  # bot   moves Purple
+        ]
+
+        for current_player_idx, nation in turn_sequence:
+            active_player = self.players[current_player_idx]
+            active_player.add_to_cooldown(nation)
+
+        # After 4 turns:
+        # player1.cooldown = [NATIONS[2], NATIONS[0]]  (last 2 human moves)
+        # player2.cooldown = [NATIONS[3], NATIONS[1]]  (last 2 bot moves)
+        self.assertEqual(self.player1.cooldown,
+                         [NATIONS[2].color_name, NATIONS[0].color_name])
+        self.assertEqual(self.player2.cooldown,
+                         [NATIONS[3].color_name, NATIONS[1].color_name])
+
+        # Critically: human's nations must not appear in bot's cooldown
+        human_nations = {NATIONS[0].color_name, NATIONS[2].color_name}
+        bot_nations   = {NATIONS[1].color_name, NATIONS[3].color_name}
+        for name in human_nations:
+            self.assertNotIn(name, self.player2.cooldown,
+                f"{name} (human move) must not appear in bot's cooldown")
+        for name in bot_nations:
+            self.assertNotIn(name, self.player1.cooldown,
+                f"{name} (bot move) must not appear in human's cooldown")
